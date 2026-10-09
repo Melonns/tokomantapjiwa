@@ -1,0 +1,41 @@
+-- Clean install only. Existing orders tables are not altered by IF NOT EXISTS:
+-- audit and backfill each order from a trustworthy account linkage before adding
+-- owner_id uuid NOT NULL REFERENCES auth.users(id). Never infer owner from order ID.
+CREATE TABLE IF NOT EXISTS products (
+  id text PRIMARY KEY CHECK (id ~ '^[A-Za-z0-9_-]{1,64}$'),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+  game text NOT NULL CHECK (length(game) BETWEEN 1 AND 80),
+  price integer NOT NULL CHECK (price BETWEEN 1 AND 100000000),
+  digi_sku text NOT NULL CHECK (length(digi_sku) BETWEEN 1 AND 80),
+  -- ponytail: Hanya format tujuan Mobile Legends yang didukung; verifikasi SKU/format sebelum aktif.
+  customer_format text NOT NULL DEFAULT 'ml_concat' CHECK (customer_format = 'ml_concat'),
+  enabled boolean NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS products_enabled_idx ON products (game, id) WHERE enabled;
+
+CREATE TABLE IF NOT EXISTS orders (
+  id uuid PRIMARY KEY,
+  owner_id uuid NOT NULL REFERENCES auth.users(id),
+  product_id text NOT NULL REFERENCES products(id),
+  product_name text NOT NULL,
+  price integer NOT NULL CHECK (price BETWEEN 1 AND 100000000),
+  digi_sku text NOT NULL,
+  customer_no text NOT NULL CHECK (length(customer_no) BETWEEN 2 AND 128),
+  user_id text NOT NULL CHECK (user_id ~ '^[A-Za-z0-9_-]{1,64}$'),
+  zone_id text NOT NULL CHECK (zone_id ~ '^[A-Za-z0-9_-]{1,64}$'),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review')),
+  redirect_url text,
+  digiflazz_claimed_at timestamptz,
+  digi_checked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (digiflazz_claimed_at IS NULL OR status IN ('fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review'))
+);
+CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
+
+-- Browser hanya boleh mengakses API server. Tidak ada kebijakan RLS untuk klien:
+-- koneksi postgres server tetap bisa mengelola tabel; anon/authenticated tidak.
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON products, orders FROM anon, authenticated;

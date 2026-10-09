@@ -1,0 +1,162 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import { validateCheckout, verifiedPayment } from './core.mjs';
+import { createHandler } from './app.mjs';
+
+const env = { MIDTRANS_SERVER_KEY: 'sandbox-secret', DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', MIDTRANS_ENV: 'sandbox', DIGIFLAZZ_TESTING: 'true', DATABASE_URL: 'test', SUPABASE_URL: 'https://sample.supabase.co', SUPABASE_ANON_KEY: 'public-key' };
+const ownerId = '22222222-2222-4222-8222-222222222222';
+const authHeaders = { authorization: 'Bearer buyer-token' };
+const withAuth = next => async (url, options) => url === 'https://sample.supabase.co/auth/v1/user'
+  ? { ok: true, status: 200, json: async () => ({ id: ownerId }) }
+  : next(url, options);
+
+test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
+  assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234' }), { productId: 'ml-1', userId: '12345', zoneId: '1234' });
+  for (const body of [{ productId: 'x', userId: {}, zoneId: '1' }, { productId: 'x', userId: '123', zoneId: 'a b' }, { productId: 'x', userId: '1'.repeat(65), zoneId: '1' }, { productId: 'x/../', userId: '1', zoneId: '1' }]) assert.throws(() => validateCheckout(body));
+});
+
+test('signed settlement validates amount and rejects forged capture', () => {
+  const n = { order_id: '11111111-1111-4111-8111-111111111111', status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
+  n.signature_key = createHash('sha512').update(n.order_id + n.status_code + n.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+  assert.equal(verifiedPayment(n, env.MIDTRANS_SERVER_KEY), true);
+  assert.equal(verifiedPayment({ ...n, gross_amount: '1.00' }, env.MIDTRANS_SERVER_KEY), false);
+  assert.equal(verifiedPayment({ ...n, transaction_status: 'capture', fraud_status: 'challenge' }, env.MIDTRANS_SERVER_KEY), false);
+  assert.equal(verifiedPayment({ ...n, status_code: '201' }, env.MIDTRANS_SERVER_KEY), false);
+});
+
+test('forged notification never touches database or Digi', async () => {
+  let called = 0;
+  const handler = createHandler({ pool: { query() { called++; throw Error('db touched'); } }, fetchImpl() { called++; throw Error('digi touched'); }, env });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order_id: '1', transaction_status: 'settlement', signature_key: 'forged' }) });
+    assert.equal(response.status, 401);
+    assert.equal(called, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('sandbox payment cannot trigger live Digiflazz', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const n = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
+  n.signature_key = createHash('sha512').update(id + n.status_code + n.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+  let called = 0;
+  const handler = createHandler({ pool: { query() { called++; throw Error('db touched'); } }, fetchImpl() { called++; throw Error('api touched'); }, env: { ...env, DIGIFLAZZ_TESTING: 'false' } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(n) });
+    assert.equal(res.status, 503);
+    assert.equal(called, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('invalid checkout returns useful 400 JSON without touching DB', async () => {
+  let calls = 0;
+  const server = createServer(createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'x', userId: {}, zoneId: '1' }) });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /tidak valid/i);
+    assert.equal(calls, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('checkout uses server price and returns expected frontend contract', async () => {
+  let amount, inserts = 0;
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('INSERT INTO orders')) { inserts++; assert.equal(params[3], 25000); return { rows: [] }; }
+    if (sql.startsWith('UPDATE orders SET redirect_url')) return { rows: [] };
+    throw Error('unexpected SQL');
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
+    amount = JSON.parse(options.body).transaction_details.gross_amount;
+    return { ok: true, json: async () => ({ redirect_url: 'https://app.sandbox.midtrans.com/snap/v2/vtweb/token' }) };
+  }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', price: 1 }) });
+    assert.equal(response.status, 201);
+    assert.deepEqual(Object.keys(await response.json()).sort(), ['orderId', 'redirectUrl']);
+    assert.equal(inserts, 1);
+    assert.equal(amount, 25000);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('public products and owned order expose only frontend contract fields', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, name, game')) return { rows: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000 }] };
+    if (sql.startsWith('SELECT id, status, product_name')) { assert.match(sql, /WHERE owner_id = \$1 AND id = \$2/); return { rows: [{ id, status: 'pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] }; }
+    throw Error('unexpected SQL');
+  } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const products = await (await fetch(base + '/api/products')).json();
+    assert.deepEqual(products, { products: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000 }] });
+    const order = await (await fetch(base + '/api/orders/' + id, { headers: authHeaders })).json();
+    assert.deepEqual(order, { order: { id, status: 'pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' } });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('pending Digi response stays pending and duplicate webhook never retries', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let claimed = false, status = 'pending', calls = 0;
+  const pool = { async query(sql) {
+    if (sql.includes('SET status = CASE')) { if (status === 'pending') status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes('digiflazz_claimed_at = now()')) {
+      if (claimed) return { rows: [] };
+      claimed = true; status = 'fulfillment_pending';
+      return { rows: [{ id, digi_sku: 'ml10', customer_no: '123100', price: 25000 }] };
+    }
+    if (sql.includes('SET status = $2')) { status = 'fulfillment_pending'; return { rows: [] }; }
+    throw Error(`unexpected SQL: ${sql}`);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: async () => { calls++; return { ok: true, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Pending', rc: '03' } }) }; } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const notice = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
+    notice.signature_key = createHash('sha512').update(id + notice.status_code + notice.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+    const send = () => fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notice) });
+    assert.equal((await send()).status, 200);
+    assert.equal((await send()).status, 200);
+    assert.equal(calls, 1);
+    assert.equal(status, 'fulfillment_pending');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('duplicate paid notification claims exactly one Digi request', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let status = 'pending', calls = 0, claimed = false;
+  const pool = { async query(sql) {
+    if (sql.includes('SET status = CASE')) { status = status === 'pending' ? 'payment_paid' : status; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes('digiflazz_claimed_at = now()')) {
+      if (status !== 'payment_paid' || claimed) return { rows: [] };
+      claimed = true; status = 'fulfillment_pending';
+      return { rows: [{ id, digi_sku: 'ml10', customer_no: '12345678' }] };
+    }
+    if (sql.includes('SET status = $2')) { status = 'fulfilled'; return { rows: [] }; }
+    throw Error(`unexpected SQL: ${sql}`);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: async () => { calls++; return { ok: true, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '12345678', status: 'Sukses', rc: '00' } }) }; } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const notification = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
+    notification.signature_key = createHash('sha512').update(id + notification.status_code + notification.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+    const url = `http://127.0.0.1:${server.address().port}/api/webhooks/midtrans`;
+    const send = () => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notification) });
+    const results = await Promise.all([send(), send()]);
+    assert.deepEqual(results.map(r => r.status), [200, 200]);
+    assert.equal(calls, 1);
+    assert.equal(status, 'fulfilled');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
