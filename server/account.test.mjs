@@ -53,6 +53,20 @@ test('unverified buyer cannot access account or checkout', async () => {
   assert.equal(queries, 0);
 });
 
+test('verified phone-only buyer can access owned orders', async () => {
+  const pool = { async query(sql, params) {
+    assert.match(sql, /WHERE owner_id = \$1/);
+    assert.equal(params[0], owner);
+    return { rows: [] };
+  } };
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ id: owner, email_confirmed_at: null, phone_confirmed_at: '2026-01-01T00:00:00Z' }) });
+  await serve(createHandler({ env, pool, fetchImpl }), async base => {
+    const response = await fetch(base + '/api/orders', { headers: authorization });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { orders: [] });
+  });
+});
+
 test('rejected token and malformed identity never query orders', async () => {
   let queries = 0;
   const handler = createHandler({ env, pool: { query() { queries++; throw Error('DB touched'); } }, fetchImpl: async () => ({ ok: false, status: 401 }) });

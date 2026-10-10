@@ -52,7 +52,7 @@ async function authenticatedOwner(req, fetchImpl, env) {
   let user;
   try { user = await response.json(); } catch { throw error(502, 'Respons autentikasi tidak valid.'); }
   if (!user || typeof user.id !== 'string' || !idPattern.test(user.id)) throw error(401, 'Sesi tidak valid.');
-  if (!user.email_confirmed_at) throw error(403, 'Verifikasi email akun dulu.');
+  if (!user.email_confirmed_at && !user.phone_confirmed_at) throw error(403, 'Verifikasi email atau nomor HP akun dulu.');
   return user.id;
 }
 

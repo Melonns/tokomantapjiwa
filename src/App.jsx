@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
+import { parseContact, parseRegistration } from './contact.mjs'
 import './store.css'
 
 const supabase = import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -27,7 +28,7 @@ function App() {
   const [catalogError, setCatalogError] = useState('')
   const [game, setGame] = useState(null)
   const [category, setCategory] = useState('Game')
-  const [view, setView] = useState(window.location.hash === '#akun' ? 'account' : 'home')
+  const [view, setView] = useState(window.location.hash === '#daftar' ? 'register' : window.location.hash === '#akun' ? 'account' : 'home')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState(null)
   const [userId, setUserId] = useState('')
@@ -35,7 +36,17 @@ function App() {
   const [checkoutState, setCheckoutState] = useState('idle')
   const [checkoutError, setCheckoutError] = useState('')
   const [session, setSession] = useState(null)
-  const [email, setEmail] = useState('')
+  const [contact, setContact] = useState('')
+  const [registerEmail, setRegisterEmail] = useState('')
+  const [registerPhone, setRegisterPhone] = useState('')
+  const [registerUsername, setRegisterUsername] = useState('')
+  const [phoneToVerify, setPhoneToVerify] = useState('')
+  const [phoneCode, setPhoneCode] = useState('')
+  const [profileState, setProfileState] = useState('idle')
+  const [phoneState, setPhoneState] = useState('idle')
+  const [phoneMessage, setPhoneMessage] = useState('')
+  const [code, setCode] = useState('')
+  const [codeTarget, setCodeTarget] = useState('')
   const [loginState, setLoginState] = useState('idle')
   const [loginMessage, setLoginMessage] = useState('')
   const [orders, setOrders] = useState([])
@@ -70,11 +81,15 @@ function App() {
   useEffect(() => { loadProducts() }, [])
   useEffect(() => {
     const navigate = () => {
-      const account = window.location.hash === '#akun'
-      setView(account ? 'account' : 'home')
+      const hash = window.location.hash
+      setView(hash === '#daftar' ? 'register' : hash === '#akun' ? 'account' : 'home')
+      setLoginState('idle')
+      setLoginMessage('')
+      setCodeTarget('')
+      setCode('')
       requestAnimationFrame(() => {
-        if (account) window.scrollTo(0, 0)
-        else document.getElementById(window.location.hash === '#katalog' ? 'katalog' : 'main')?.scrollIntoView()
+        if (hash === '#akun' || hash === '#daftar') window.scrollTo(0, 0)
+        else document.getElementById(hash === '#katalog' ? 'katalog' : 'main')?.scrollIntoView()
       })
     }
     window.addEventListener('hashchange', navigate)
@@ -126,12 +141,132 @@ function App() {
 
   async function signIn(event) {
     event.preventDefault()
-    if (!supabase) return
+    if (!supabase || loginState === 'loading') return
     setLoginState('loading')
     setLoginMessage('')
-    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin + '/#akun' } })
-    setLoginState(error ? 'error' : 'sent')
-    setLoginMessage(error ? error.message : 'Tautan masuk dikirim. Buka emailmu, lalu kembali ke halaman ini.')
+    try {
+      const identity = parseContact(contact)
+      const credentials = identity.email
+        ? { email: identity.email, options: { emailRedirectTo: window.location.origin + '/#akun', shouldCreateUser: false } }
+        : { phone: identity.phone, options: { shouldCreateUser: false } }
+      const { error } = await supabase.auth.signInWithOtp(credentials)
+      if (error) throw error
+      setCodeTarget(identity.phone || '')
+      setCode('')
+      setLoginState('sent')
+      setLoginMessage(identity.phone ? 'Kode dikirim lewat SMS. Masukkan kodenya di bawah.' : 'Cek email untuk tautan masuk, lalu kembali ke halaman akun.')
+    } catch (error) {
+      setLoginState('error')
+      setLoginMessage(error.message || 'Gagal mengirim kode. Coba lagi.')
+    }
+  }
+
+  async function register(event) {
+    event.preventDefault()
+    if (!supabase || loginState === 'loading') return
+    setLoginState('loading')
+    setLoginMessage('')
+    try {
+      const { email, requested_phone, username } = parseRegistration(registerEmail, registerPhone, registerUsername)
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: window.location.origin + '/#akun',
+          shouldCreateUser: true,
+          data: { username, requested_phone },
+        },
+      })
+      if (error) throw error
+      setLoginState('sent')
+      setLoginMessage('Cek email untuk tautan verifikasi. Nomor HP belum terverifikasi dan belum bisa dipakai masuk. Setelah masuk, verifikasi nomor lewat kode SMS di halaman akun.')
+    } catch (error) {
+      setLoginState('error')
+      setLoginMessage(error.message || 'Pendaftaran gagal. Coba lagi.')
+    }
+  }
+
+  async function saveProfile(event) {
+    event.preventDefault()
+    if (!supabase || !session || profileState === 'loading') return
+    setProfileState('loading')
+    setPhoneMessage('')
+    try {
+      const { requested_phone, username } = parseRegistration(session.user.email || '', registerPhone, registerUsername)
+      const { error } = await supabase.auth.updateUser({ data: { ...session.user.user_metadata, username, requested_phone } })
+      if (error) throw error
+      setPhoneMessage('Data tersimpan. Verifikasi nomor HP agar bisa dipakai masuk.')
+      setProfileState('ready')
+    } catch (error) {
+      setProfileState('error')
+      setPhoneMessage(error.message || 'Gagal menyimpan data akun.')
+    }
+  }
+
+  async function sendPhoneCode() {
+    if (!supabase || !session || phoneState === 'loading') return
+    setPhoneState('loading')
+    setPhoneMessage('')
+    try {
+      const phone = parseContact(session.user.user_metadata?.requested_phone || '').phone
+      if (!phone) throw new Error('Nomor HP pendaftaran tidak valid.')
+      const { error } = await supabase.auth.updateUser({ phone })
+      if (error) throw error
+      setPhoneToVerify(phone)
+      setPhoneMessage('Kode SMS dikirim. Nomor belum aktif untuk login sampai kode diverifikasi.')
+      setPhoneState('sent')
+    } catch (error) {
+      setPhoneState('error')
+      setPhoneMessage(error.message || 'Gagal mengirim kode SMS.')
+    }
+  }
+
+  async function confirmPhone(event) {
+    event.preventDefault()
+    if (!supabase || !session || phoneState === 'loading' || !/^\d{6}$/.test(phoneCode)) return
+    setPhoneState('loading')
+    setPhoneMessage('')
+    try {
+      const { error } = await supabase.auth.verifyOtp({ phone: phoneToVerify, token: phoneCode, type: 'phone_change' })
+      if (error) throw error
+      setPhoneToVerify('')
+      setPhoneCode('')
+      setPhoneState('ready')
+      setPhoneMessage('Nomor HP terverifikasi. Kamu sekarang bisa masuk memakai nomor itu.')
+    } catch (error) {
+      setPhoneState('error')
+      setPhoneMessage(error.message || 'Kode SMS tidak valid.')
+    }
+  }
+
+  async function verifyPhone(event) {
+    event.preventDefault()
+    if (!supabase || loginState === 'loading' || !/^\d{6}$/.test(code)) return
+    setLoginState('loading')
+    setLoginMessage('')
+    try {
+      const { error } = await supabase.auth.verifyOtp({ phone: codeTarget, token: code, type: 'sms' })
+      if (error) throw error
+      window.location.hash = '#akun'
+      setCode('')
+      setCodeTarget('')
+      setLoginState('idle')
+    } catch (error) {
+      setLoginState('error')
+      setLoginMessage(error.message || 'Kode tidak valid. Coba lagi.')
+    }
+  }
+
+  async function signInGoogle() {
+    if (!supabase || loginState === 'loading') return
+    setLoginState('loading')
+    setLoginMessage('')
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin + '/#akun' } })
+      if (error) throw error
+    } catch (error) {
+      setLoginState('error')
+      setLoginMessage(error.message || 'Login Google gagal. Coba lagi.')
+    }
   }
 
   async function checkout(event) {
@@ -169,6 +304,7 @@ function App() {
           <nav aria-label="Navigasi utama">
             <a href="#katalog">Katalog</a>
             <a href="#akun" aria-current={view === 'account' ? 'page' : undefined}>{session ? 'Akun saya' : 'Masuk'}</a>
+            {!session && <a href="#daftar" aria-current={view === 'register' ? 'page' : undefined}>Daftar</a>}
           </nav>
         </div>
       </header>
@@ -227,8 +363,63 @@ function App() {
           </>}
         </section>}
         </> : <div className="account-page wrap" id="akun">
-          <h1>Akun saya</h1>
-          <section className="account-section" aria-labelledby="account-title"><div className="account-layout"><div><h2 id="account-title">{session ? 'Profil akun' : 'Masuk ke akun'}</h2><p>{session ? 'Pesanan yang kamu buat tersimpan di akun ini.' : 'Gunakan email untuk masuk sebelum membuat pesanan.'}</p></div><div className="order-panel">{!supabase ? <p role="status">Login belum aktif. Pemilik toko perlu menambahkan konfigurasi Supabase.</p> : session ? <><p>Masuk sebagai <strong>{session.user.email}</strong></p><button type="button" className="secondary-button" onClick={() => supabase.auth.signOut()}>Keluar akun</button></> : <form onSubmit={signIn}><label htmlFor="email">Email akun</label><div className="order-input"><input id="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email kamu" required autoComplete="email" /><button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Mengirim...' : 'Kirim tautan masuk'}</button></div>{loginMessage && <p role={loginState === 'error' ? 'alert' : 'status'}>{loginMessage}</p>}</form>}</div></div></section>
+          <h1>{view === 'register' && !session ? 'Daftar akun' : 'Akun saya'}</h1>
+          <section className="account-section" aria-labelledby="account-title">
+            <div className="account-layout">
+              <div>
+                <h2 id="account-title">{session ? 'Profil akun' : view === 'register' ? 'Buat akun buyer' : 'Masuk ke akun'}</h2>
+                <p>{session ? 'Pesanan yang kamu buat tersimpan di akun ini.' : view === 'register' ? 'Isi email, nomor HP, dan username. Verifikasi email dulu, lalu nomor HP lewat SMS.' : 'Pakai email atau nomor HP yang sudah terdaftar.'}</p>
+                {!session && <p>{view === 'register' ? <>Sudah punya akun? <a href="#akun">Masuk</a></> : <>Belum punya akun? <a href="#daftar">Daftar di sini</a></>}</p>}
+              </div>
+              <div className="order-panel">
+                {!supabase ? <p role="status">Akun belum aktif. Pemilik toko perlu menambahkan konfigurasi Supabase.</p> : session ? <>
+                  <p>Masuk sebagai <strong>{session.user.email || session.user.phone}</strong></p>
+                  {session.user.user_metadata?.username && <p>Username: <strong>{session.user.user_metadata.username}</strong></p>}
+                  {session.user.phone_confirmed_at ? <p role="status">Nomor HP terverifikasi: {session.user.phone}</p> : session.user.user_metadata?.requested_phone ? <div className="phone-setup">
+                    <p>Nomor HP pendaftaran: {session.user.user_metadata.requested_phone} (belum terverifikasi).</p>
+                    <button type="button" className="secondary-button" onClick={sendPhoneCode} disabled={phoneState === 'loading'}>{phoneState === 'loading' ? 'Mengirim...' : 'Kirim kode verifikasi SMS'}</button>
+                    {phoneToVerify && <form className="code-form" onSubmit={confirmPhone}><label htmlFor="phone-change-code">Kode SMS</label><div className="order-input"><input id="phone-change-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required value={phoneCode} onChange={(event) => setPhoneCode(event.target.value)} placeholder="6 digit kode" /><button type="submit" disabled={phoneState === 'loading'}>Verifikasi</button></div></form>}
+                  </div> : session.user.email ? <form className="profile-form" onSubmit={saveProfile}>
+                    <p>Lengkapi profil agar nomor HP bisa diverifikasi.</p>
+                    <label htmlFor="profile-username">Username</label><input id="profile-username" type="text" autoComplete="nickname" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} />
+                    <label htmlFor="profile-phone">Nomor HP</label><input id="profile-phone" type="tel" autoComplete="tel" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." />
+                    <button type="submit" className="secondary-button" disabled={profileState === 'loading'}>{profileState === 'loading' ? 'Menyimpan...' : 'Simpan data akun'}</button>
+                  </form> : null}
+                  {phoneMessage && <p role={phoneState === 'error' || profileState === 'error' ? 'alert' : 'status'}>{phoneMessage}</p>}
+                  <button type="button" className="secondary-button" onClick={() => supabase.auth.signOut()}>Keluar akun</button>
+                </> : view === 'register' ? <>
+                  <form className="profile-form" onSubmit={register}>
+                    <label htmlFor="register-email">Email</label><input id="register-email" type="email" autoComplete="email" required value={registerEmail} onChange={(event) => setRegisterEmail(event.target.value)} placeholder="email@contoh.com" />
+                    <label htmlFor="register-phone">Nomor HP</label><input id="register-phone" type="tel" autoComplete="tel" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." />
+                    <label htmlFor="register-username">Username</label><input id="register-username" type="text" autoComplete="nickname" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} placeholder="3–24 huruf, angka, atau _" />
+                    <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Mengirim...' : 'Daftar lewat email'}</button>
+                    <p className="auth-note">Nomor HP belum aktif untuk masuk sampai kamu verifikasi lewat SMS setelah mengonfirmasi email.</p>
+                  </form>
+                  {loginMessage && <p role={loginState === 'error' ? 'alert' : 'status'}>{loginMessage}</p>}
+                  <div className="auth-divider">atau</div>
+                  <button type="button" className="secondary-button google-button" onClick={signInGoogle} disabled={loginState === 'loading'}>Daftar dengan Google</button>
+                  <p className="auth-note">Sesudah masuk lewat Google, lengkapi username dan nomor HP di halaman akun.</p>
+                </> : <>
+                  <form onSubmit={signIn}>
+                    <label htmlFor="contact">Email atau nomor HP</label>
+                    <div className="order-input">
+                      <input id="contact" type="text" autoComplete="username" value={contact} onChange={(event) => { setContact(event.target.value); setCodeTarget(''); setCode(''); setLoginMessage(''); setLoginState('idle') }} placeholder="email@contoh.com atau 08..." required />
+                      <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Mengirim...' : 'Kirim kode atau tautan'}</button>
+                    </div>
+                    <p className="auth-note">Nomor 08... otomatis memakai kode SMS. Email memakai tautan masuk.</p>
+                  </form>
+                  {codeTarget && <form className="code-form" onSubmit={verifyPhone}>
+                    <label htmlFor="sms-code">Kode SMS untuk {codeTarget}</label>
+                    <div className="order-input"><input id="sms-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required value={code} onChange={(event) => setCode(event.target.value)} placeholder="6 digit kode" /><button type="submit" disabled={loginState === 'loading'}>Verifikasi</button></div>
+                  </form>}
+                  {loginMessage && <p role={loginState === 'error' ? 'alert' : 'status'}>{loginMessage}</p>}
+                  <div className="auth-divider">atau</div>
+                  <button type="button" className="secondary-button google-button" onClick={signInGoogle} disabled={loginState === 'loading'}>Masuk atau daftar dengan Google</button>
+                  <p className="auth-note">SMS dan Google perlu diaktifkan pemilik toko di Supabase. Akun baru selalu menjadi buyer.</p>
+                </>}
+              </div>
+            </div>
+          </section>
           {session && <section className="order-section" aria-labelledby="order-title"><div className="order-layout"><div><h2 id="order-title">Riwayat pesanan</h2><p>Status pending berarti pesanan masih diproses. Jangan bayar ulang sebelum mengecek statusnya.</p></div><div className="order-panel">{ordersState === 'loading' ? <p role="status">Memuat pesanan...</p> : ordersState === 'error' ? <p role="alert">Gagal memuat pesanan. {ordersError} <button type="button" onClick={() => setOrdersRetry((value) => value + 1)}>Coba lagi</button></p> : orders.length === 0 ? <p role="status">Belum ada pesanan di akun ini. <a href="#katalog">Lihat katalog</a></p> : <ul className="order-list">{orders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.status}</span><small>#{order.id}</small></li>)}</ul>}</div></div></section>}
           {session && roleState === 'loading' && <p role="status">Memeriksa akses akun...</p>}
           {session && roleState === 'error' && <p role="alert">Akses pengelola belum bisa diperiksa. {roleError} <button type="button" onClick={() => setRoleRetry((value) => value + 1)}>Coba lagi</button></p>}
