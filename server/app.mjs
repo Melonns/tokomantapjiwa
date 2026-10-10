@@ -1,9 +1,10 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { validateCheckout, verifiedPayment } from './core.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
 const error = (status, message) => Object.assign(new Error(message), { status });
 const ready = env => Boolean(env.DATABASE_URL && env.MIDTRANS_SERVER_KEY && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((env.MIDTRANS_ENV === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (env.MIDTRANS_ENV === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
+const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
 
 function send(res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
@@ -26,6 +27,13 @@ async function externalJson(fetchImpl, url, options) {
   return response.json();
 }
 
+async function authenticatedAdmin(req, pool, fetchImpl, env) {
+  const ownerId = await authenticatedOwner(req, fetchImpl, env);
+  const { rows } = await pool.query('SELECT user_id FROM admin_users WHERE user_id = $1', [ownerId]);
+  if (!rows[0]) throw error(403, 'Akses admin diperlukan.');
+  return ownerId;
+}
+
 async function authenticatedOwner(req, fetchImpl, env) {
   const token = /^Bearer ([^\s,]{1,8192})$/i.exec(req.headers.authorization || '')?.[1];
   if (!token) throw error(401, 'Silakan masuk terlebih dahulu.');
@@ -44,10 +52,11 @@ async function authenticatedOwner(req, fetchImpl, env) {
   let user;
   try { user = await response.json(); } catch { throw error(502, 'Respons autentikasi tidak valid.'); }
   if (!user || typeof user.id !== 'string' || !idPattern.test(user.id)) throw error(401, 'Sesi tidak valid.');
+  if (!user.email_confirmed_at) throw error(403, 'Verifikasi email akun dulu.');
   return user.id;
 }
 
-function digiRequest(row, env) {
+export function digiRequest(row, env) {
   return {
     username: env.DIGIFLAZZ_USERNAME,
     buyer_sku_code: row.digi_sku,
@@ -85,13 +94,23 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       const path = new URL(req.url, 'http://localhost').pathname;
       if (req.method === 'GET' && path === '/api/products') {
         const { rows } = await pool.query('SELECT id, name, game, price FROM products WHERE enabled = true ORDER BY game, id');
-        return send(res, 200, { products: rows.map(p => ({ ...p, id: String(p.id) })) });
+        return send(res, 200, { products: rows.map(p => ({ ...p, id: String(p.id) })), checkoutAvailable: checkoutReady(env) });
+      }
+      if (req.method === 'GET' && path === '/api/me') {
+        const ownerId = await authenticatedOwner(req, fetchImpl, env);
+        const { rows } = await pool.query('SELECT user_id FROM admin_users WHERE user_id = $1', [ownerId]);
+        return send(res, 200, { role: rows[0] ? 'admin' : 'buyer' });
+      }
+      if (req.method === 'GET' && path === '/api/admin/orders') {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
+        return send(res, 200, { orders: rows });
       }
       if (req.method === 'POST' && path === '/api/checkout') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         let input;
         try { input = validateCheckout(await readJson(req)); } catch (err) { throw err.status ? err : error(400, err.message); }
-        if (!ready(env)) throw error(503, 'Checkout belum siap.');
+        if (!checkoutReady(env)) throw error(503, 'Checkout belum siap.');
         const { rows } = await pool.query('SELECT id, name, price, digi_sku, customer_format FROM products WHERE id = $1 AND enabled = true', [input.productId]);
         const product = rows[0];
         if (!product) throw error(404, 'Produk tidak tersedia.');
@@ -141,9 +160,9 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       if (req.method === 'POST' && /^\/api\/admin\/orders\/[^/]+\/check-digiflazz$/.test(path)) {
         const id = path.split('/')[4];
-        const token = req.headers.authorization?.replace(/^Bearer /, '');
-        if (!env.ADMIN_TOKEN || !token || !timingSafeEqual(createHash('sha256').update(token).digest(), createHash('sha256').update(env.ADMIN_TOKEN).digest())) throw error(401, 'Tidak berwenang.');
-        if (!idPattern.test(id) || !ready(env)) throw error(503, 'Pemeriksaan tidak siap.');
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
+        if (!ready(env)) throw error(503, 'Pemeriksaan tidak siap.');
         const { rows } = await pool.query(`UPDATE orders SET digi_checked_at = now(), updated_at = now()
           WHERE id = $1 AND status = 'fulfillment_pending' AND digiflazz_claimed_at < now() - interval '5 minutes'
             AND (digi_checked_at IS NULL OR digi_checked_at < now() - interval '5 minutes')

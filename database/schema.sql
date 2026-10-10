@@ -34,8 +34,15 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
 
+-- Berikan akses admin secara manual dengan UUID auth.users yang sudah diverifikasi.
+-- Tidak ada admin bawaan; akun baru selalu buyer.
+CREATE TABLE IF NOT EXISTS admin_users (
+  user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE
+);
+
 -- Browser hanya boleh mengakses API server. Tidak ada kebijakan RLS untuk klien:
 -- koneksi postgres server tetap bisa mengelola tabel; anon/authenticated tidak.
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON products, orders FROM anon, authenticated;
+ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON products, orders, admin_users FROM anon, authenticated;

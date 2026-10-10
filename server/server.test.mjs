@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment } from './core.mjs';
-import { createHandler } from './app.mjs';
+import { createHandler, digiRequest } from './app.mjs';
 
-const env = { MIDTRANS_SERVER_KEY: 'sandbox-secret', DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', MIDTRANS_ENV: 'sandbox', DIGIFLAZZ_TESTING: 'true', DATABASE_URL: 'test', SUPABASE_URL: 'https://sample.supabase.co', SUPABASE_ANON_KEY: 'public-key' };
+const env = { MIDTRANS_SERVER_KEY: 'sandbox-secret', DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', MIDTRANS_ENV: 'sandbox', DIGIFLAZZ_TESTING: 'true', CHECKOUT_ENABLED: 'true', DATABASE_URL: 'test', SUPABASE_URL: 'https://sample.supabase.co', SUPABASE_ANON_KEY: 'public-key' };
 const ownerId = '22222222-2222-4222-8222-222222222222';
 const authHeaders = { authorization: 'Bearer buyer-token' };
 const withAuth = next => async (url, options) => url === 'https://sample.supabase.co/auth/v1/user'
-  ? { ok: true, status: 200, json: async () => ({ id: ownerId }) }
+  ? { ok: true, status: 200, json: async () => ({ id: ownerId, email_confirmed_at: '2026-01-01T00:00:00Z' }) }
   : next(url, options);
 
 test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
@@ -24,6 +24,28 @@ test('signed settlement validates amount and rejects forged capture', () => {
   assert.equal(verifiedPayment({ ...n, gross_amount: '1.00' }, env.MIDTRANS_SERVER_KEY), false);
   assert.equal(verifiedPayment({ ...n, transaction_status: 'capture', fraud_status: 'challenge' }, env.MIDTRANS_SERVER_KEY), false);
   assert.equal(verifiedPayment({ ...n, status_code: '201' }, env.MIDTRANS_SERVER_KEY), false);
+});
+
+test('Digiflazz request uses development testing flag and stable ref_id', () => {
+  const row = { id: '11111111-1111-4111-8111-111111111111', digi_sku: 'TEST', customer_no: '123100', price: 25000 };
+  const request = digiRequest(row, env);
+  assert.equal(request.username, 'buyer');
+  assert.equal(request.ref_id, row.id);
+  assert.equal(request.testing, true);
+  assert.equal(request.sign, createHash('md5').update('buyerapi-secret' + row.id).digest('hex'));
+  assert.equal(digiRequest(row, { ...env, DIGIFLAZZ_TESTING: 'false' }).testing, undefined);
+});
+
+test('checkout stays disabled without explicit operator flag', async () => {
+  let calls = 0;
+  const handler = createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, fetchImpl: withAuth(() => { calls++; throw Error('external touched'); }), env: { ...env, CHECKOUT_ENABLED: 'false' } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '123', zoneId: '100' }) });
+    assert.equal(response.status, 503);
+    assert.equal(calls, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
 test('forged notification never touches database or Digi', async () => {
@@ -100,7 +122,7 @@ test('public products and owned order expose only frontend contract fields', asy
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
     const products = await (await fetch(base + '/api/products')).json();
-    assert.deepEqual(products, { products: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000 }] });
+    assert.deepEqual(products, { products: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000 }], checkoutAvailable: true });
     const order = await (await fetch(base + '/api/orders/' + id, { headers: authHeaders })).json();
     assert.deepEqual(order, { order: { id, status: 'pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' } });
   } finally { await new Promise(resolve => server.close(resolve)); }
