@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { validateCheckout, verifiedPayment } from './core.mjs';
+import { supplierCatalog } from './catalog.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
+// ponytail: Checkout baru mendukung format ml_concat (Mobile Legends); brand lain disimpan sebagai draf harga saja.
+const supportedBrand = 'MOBILE LEGENDS';
 const error = (status, message) => Object.assign(new Error(message), { status });
 const ready = env => Boolean(env.DATABASE_URL && env.MIDTRANS_SERVER_KEY && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((env.MIDTRANS_ENV === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (env.MIDTRANS_ENV === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
 const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
@@ -88,7 +91,13 @@ async function submitDigi(pool, fetchImpl, env, row) {
   }
 }
 
+async function supplierList(env, loadSupplierCatalog) {
+  if (!env.DIGIFLAZZ_USERNAME || !env.DIGIFLAZZ_API_KEY) throw error(503, 'Katalog supplier belum dikonfigurasi di server.');
+  try { return await loadSupplierCatalog(); } catch { throw error(502, 'Katalog supplier belum bisa dimuat. Coba lagi nanti.'); }
+}
+
 export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
+  const loadSupplierCatalog = supplierCatalog(fetchImpl, env);
   return async (req, res) => {
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
@@ -105,6 +114,50 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
         return send(res, 200, { orders: rows });
+      }
+      if (req.method === 'GET' && path === '/api/admin/supplier-products') {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const catalog = await supplierList(env, loadSupplierCatalog);
+        const { rows } = await pool.query('SELECT id, name, game, price, enabled FROM products');
+        const saved = new Map(rows.map(row => [row.id, row]));
+        const q = (new URL(req.url, 'http://localhost').searchParams.get('q') || '').trim().toLowerCase();
+        const match = (name, game, sku) => !q || name.toLowerCase().includes(q) || game.toLowerCase().includes(q) || sku.toLowerCase().includes(q);
+        const products = catalog.filter(item => match(item.name, item.game, item.id)).slice(0, 200).map(item => ({
+          sku: item.id, name: item.name, game: item.game, category: item.category, cost: item.price,
+          supported: item.game === supportedBrand,
+          price: saved.get(item.id)?.price ?? null,
+          enabled: saved.get(item.id)?.enabled ?? false,
+        }));
+        const catalogIds = new Set(catalog.map(item => item.id));
+        const missing = rows.filter(row => !catalogIds.has(row.id) && match(row.name, row.game, row.id)).map(row => ({
+          sku: row.id, name: row.name, game: row.game, category: null, cost: null,
+          supported: row.game === supportedBrand, missing: true, price: row.price, enabled: row.enabled,
+        }));
+        return send(res, 200, { products: products.concat(missing) });
+      }
+      if (req.method === 'PUT' && path.startsWith('/api/admin/products/')) {
+        const sku = path.slice('/api/admin/products/'.length);
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(sku)) throw error(404, 'Produk tidak ditemukan.');
+        let body;
+        try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
+        const { price, enabled } = body ?? {};
+        if (!Number.isSafeInteger(price) || price < 1 || price > 100000000) throw error(400, 'Harga jual tidak valid.');
+        if (typeof enabled !== 'boolean') throw error(400, 'Status produk tidak valid.');
+        const item = (await supplierList(env, loadSupplierCatalog)).find(product => product.id === sku);
+        if (!item && enabled) throw error(409, 'SKU tidak ada di katalog supplier aktif.');
+        if (item && enabled && item.game !== supportedBrand) throw error(422, 'Format tujuan produk ini belum didukung checkout.');
+        const { rows } = item
+          ? await pool.query(`INSERT INTO products (id, name, game, price, digi_sku, customer_format, enabled) VALUES ($1, $2, $3, $4, $1, 'ml_concat', $5)
+            ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, game = EXCLUDED.game, price = EXCLUDED.price, digi_sku = EXCLUDED.digi_sku, enabled = EXCLUDED.enabled
+            RETURNING id, name, game, price, enabled`, [sku, item.name, item.game, price, enabled])
+          : await pool.query('UPDATE products SET price = $2, enabled = false WHERE id = $1 RETURNING id, name, game, price, enabled', [sku, price]);
+        if (!rows[0]) throw error(404, 'Produk tidak ditemukan.');
+        return send(res, 200, { product: {
+          sku: rows[0].id, name: rows[0].name, game: rows[0].game, category: item?.category ?? null, cost: item?.price ?? null,
+          supported: item ? item.game === supportedBrand : rows[0].game === supportedBrand,
+          missing: !item, price: rows[0].price, enabled: rows[0].enabled,
+        } });
       }
       if (req.method === 'POST' && path === '/api/checkout') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);

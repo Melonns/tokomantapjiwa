@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseContact, parseRegistration } from './contact.mjs'
+import { parseContact, parseRegistration, tryParseContact } from './contact.mjs'
 
 test('email and phone share one field without ambiguous fallback', () => {
   assert.deepEqual(parseContact(' aku@example.com '), { email: 'aku@example.com' })
@@ -23,4 +23,11 @@ test('registration stores three distinct fields only after validation', () => {
     ['aku@example.com', '081234567890', 'x'],
     ['aku@example.com', '081234567890', ' nama pakai spasi '],
   ]) assert.throws(() => parseRegistration(email, phone, username))
+})
+
+test('tryParseContact stays silent while the visitor is still typing', () => {
+  assert.deepEqual(tryParseContact('a@b'), {})
+  assert.deepEqual(tryParseContact('0812'), {})
+  assert.deepEqual(tryParseContact(''), {})
+  assert.deepEqual(tryParseContact('aku@example.com'), { email: 'aku@example.com' })
 })

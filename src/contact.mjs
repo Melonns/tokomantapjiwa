@@ -16,3 +16,7 @@ export function parseRegistration(emailInput, phoneInput, usernameInput) {
   if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) throw new Error('Username harus 3–24 karakter: huruf, angka, atau garis bawah.')
   return { email, requested_phone: phone, username }
 }
+
+export function tryParseContact(input) {
+  try { return parseContact(input) } catch { return {} }
+}
