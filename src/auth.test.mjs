@@ -55,3 +55,8 @@ test('profile page carries name, username, email, phone and the password change 
   assert.match(source, /signInWithPassword\(\{ email: session\.user\.email, password: passwordCurrent \}\)/)
 })
 
+test('back/forward cache restore releases the stuck Google button and reports a cancel', () => {
+  assert.match(source, /addEventListener\('pageshow', handleHistoryRestore\)/)
+  assert.match(source, /if \(!event\.persisted \|\| loginState !== 'loading'\) return/)
+  assert.match(source, /removeEventListener\('pageshow', handleHistoryRestore\)/)
+})

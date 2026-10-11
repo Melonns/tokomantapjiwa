@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { parseContact, parseRegistration, tryParseContact } from './contact.mjs'
 import { matchesCatalog } from './catalog.mjs'
-import { restoreSession } from './auth.mjs'
+import { authReturnFromUrl, restoreSession } from './auth.mjs'
 import { authErrorMessage } from './auth-errors.mjs'
 import { isPublicSupabaseKey } from './public-key.mjs'
 import './store.css'
@@ -11,6 +11,7 @@ const authConfigError = import.meta.env.VITE_SUPABASE_AUTH_ERROR || (import.meta
 const supabase = !authConfigError && import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
   ? createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, { auth: { flowType: 'pkce', detectSessionInUrl: false } })
   : null
+const authReturn = supabase ? authReturnFromUrl(window.location.href) : null
 const restoredSession = supabase ? restoreSession(supabase.auth, window.location, window.history)
   .then((session) => ({ session, error: null }), (error) => ({ session: null, error })) : Promise.resolve({ session: null, error: null })
 if (import.meta.hot) import.meta.hot.dispose(() => supabase?.auth.stopAutoRefresh())
@@ -33,6 +34,7 @@ function routeFromHash() {
   const hash = window.location.hash
   if (hash === '#daftar') return { view: 'register', game: null, checkoutId: '' }
   if (hash === '#akun') return { view: 'account', game: null, checkoutId: '' }
+  if (hash === '#admin' || hash === '#admin/produk') return { view: 'admin', adminPage: hash === '#admin/produk' ? 'products' : 'transactions', game: null, checkoutId: '' }
   if (hash.startsWith('#game/')) return { view: 'game', game: decodeHash(hash.slice(6)), checkoutId: '' }
   if (hash.startsWith('#beli/')) return { view: 'checkout', game: null, checkoutId: decodeHash(hash.slice(6)) }
   return { view: 'home', game: null, checkoutId: '' }
@@ -41,6 +43,40 @@ function routeFromHash() {
 function decodeHash(value) {
   try { return decodeURIComponent(value) } catch { return value }
 }
+const COVER_PALETTES = [['#b8ef72', '#5c9a3c'], ['#7cd3e0', '#2f7d92'], ['#f0c267', '#a9742a'], ['#b9a0ee', '#5f48a8'], ['#ef9a94', '#a44a4a'], ['#93b6f0', '#43639f']]
+const COVER_OVERRIDES = { 'mobile legends': 5 }
+
+function coverSeed(name) {
+  let h = 2166136261
+  for (let i = 0; i < name.length; i += 1) {
+    h ^= name.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+function GameCover({ name }) {
+  const seed = coverSeed(name)
+  const [from, to] = COVER_PALETTES[COVER_OVERRIDES[name.toLowerCase()] ?? seed % COVER_PALETTES.length]
+  const gid = `cov-${seed.toString(36)}`
+  return (
+    <span className="game-cover" aria-hidden="true">
+      <svg viewBox="0 0 64 64" focusable="false">
+        <defs>
+          <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor={from} />
+            <stop offset="1" stopColor={to} />
+          </linearGradient>
+        </defs>
+        <rect width="64" height="64" fill={`url(#${gid})`} />
+        <ellipse cx="54" cy="6" rx="28" ry="10" fill="#ffffff" opacity=".18" transform={`rotate(${(seed % 5) * 26 - 52} 54 6)`} />
+        <circle cx="10" cy="56" r="10" fill="#0b110e" opacity=".16" />
+        <text x="32" y="41.5" textAnchor="middle" fontSize="21" fontWeight="900" fill="#0f1a10">{name.slice(0, 2).toUpperCase()}</text>
+      </svg>
+    </span>
+  )
+}
+
 function App() {
   const [products, setProducts] = useState([])
   const [checkoutAvailable, setCheckoutAvailable] = useState(false)
@@ -49,9 +85,14 @@ function App() {
   const [game, setGame] = useState(() => routeFromHash().game)
   const [category, setCategory] = useState('Game')
   const [view, setView] = useState(() => routeFromHash().view)
+  const [adminPage, setAdminPage] = useState(() => routeFromHash().adminPage || 'transactions')
   const [checkoutId, setCheckoutId] = useState(() => routeFromHash().checkoutId)
 
   const [catalogSearch, setCatalogSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchBoxRef = useRef(null)
+  const [toast, setToast] = useState(null)
+  const toastTimer = useRef(null)
   const [userId, setUserId] = useState('')
   const [zoneId, setZoneId] = useState('')
   const [checkoutState, setCheckoutState] = useState('idle')
@@ -92,7 +133,6 @@ function App() {
   const [catalogQuery, setCatalogQuery] = useState('')
   const [catalogFilter, setCatalogFilter] = useState('semua')
   const [catalogShowUnsupported, setCatalogShowUnsupported] = useState(false)
-  const [catalogShown, setCatalogShown] = useState(24)
   const [batchNotice, setBatchNotice] = useState('')
   const [signOutState, setSignOutState] = useState('idle')
   const [passwordDraft, setPasswordDraft] = useState('')
@@ -104,6 +144,7 @@ function App() {
   const [roleState, setRoleState] = useState('idle')
   const [roleError, setRoleError] = useState('')
   const [roleRetry, setRoleRetry] = useState(0)
+  const canManage = Boolean(session && roleState === 'ready' && role === 'admin' && roleToken === session.access_token)
   const contactIdentity = tryParseContact(contact)
   useEffect(() => {
     if (!session) return
@@ -112,6 +153,13 @@ function App() {
     setProfileName(meta.name || '')
     setRegisterPhone(session.user.phone ? String(session.user.phone).replace(/^\+62/, '0') : meta.requested_phone ? String(meta.requested_phone).replace(/^\+62/, '0') : '')
   }, [session?.user?.id])
+
+  useEffect(() => {
+    if (!searchOpen) return
+    const closeSearch = (event) => { if (!searchBoxRef.current?.contains(event.target)) setSearchOpen(false) }
+    document.addEventListener('pointerdown', closeSearch)
+    return () => document.removeEventListener('pointerdown', closeSearch)
+  }, [searchOpen])
 
   async function loadProducts() {
     setCatalogState('loading')
@@ -133,6 +181,7 @@ function App() {
     const navigate = () => {
       const route = routeFromHash()
       setView(route.view)
+      setAdminPage(route.adminPage || 'transactions')
       setGame(route.game)
       setCheckoutId(route.checkoutId)
       if (route.view === 'checkout') setCheckoutError('')
@@ -142,7 +191,7 @@ function App() {
       setCode('')
       requestAnimationFrame(() => {
         const hash = window.location.hash
-        if (route.view === 'game' || route.view === 'checkout' || hash === '#akun' || hash === '#daftar') window.scrollTo(0, 0)
+        if (route.view === 'game' || route.view === 'checkout' || route.view === 'admin' || hash === '#akun' || hash === '#daftar') window.scrollTo(0, 0)
         else {
           const target = hash === '#katalog' ? 'katalog' : 'main'
           if (document.getElementById(target)) document.getElementById(target).scrollIntoView()
@@ -159,10 +208,19 @@ function App() {
     restoredSession.then(({ session: next, error }) => {
       if (!active) return
       if (error) {
-        setView('account')
-        setLoginState('error')
-        setLoginMessage(error.message)
-      } else setSession(next)
+        if (authReturn) {
+          if (authReturn.kind === 'cancelled') showToast('info', 'Login dibatalkan', 'Kamu membatalkan masuk dengan Google. Coba lagi kapan saja.')
+          else if (authReturn.kind === 'error') showToast('error', 'Login Google gagal', 'Google menolak proses masuk. Coba lagi sebentar lagi.')
+          else showToast('error', 'Login gagal', 'Kode login sudah tidak berlaku. Coba masuk lagi.')
+        } else {
+          setView('account')
+          setLoginState('error')
+          setLoginMessage(error.message)
+        }
+      } else {
+        setSession(next)
+        if (authReturn && (authReturn.kind === 'pkce' || authReturn.kind === 'session')) showToast('ok', 'Berhasil masuk', 'Kamu sudah masuk. Selamat datang lagi!')
+      }
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => setSession(next))
     const storagePrefix = supabase.auth.storageKey || ''
@@ -243,10 +301,11 @@ function App() {
     setLoginMessage('')
     try {
       if (identity.email) {
-        const { error } = await supabase.auth.signInWithPassword({ email: identity.email, password: loginPassword })
+        const { data, error } = await supabase.auth.signInWithPassword({ email: identity.email, password: loginPassword })
         if (error) throw error
         setLoginPassword('')
         setLoginState('idle')
+        showToast('ok', 'Berhasil masuk', `Halo, ${data.user?.user_metadata?.username || identity.email}!`)
       } else {
         const { error } = await supabase.auth.signInWithOtp({ phone: identity.phone, options: { shouldCreateUser: false } })
         if (error) throw error
@@ -389,6 +448,7 @@ function App() {
       }
     } catch { /* localStorage bisa diblokir; tombol logout tetap selesai */ }
     setSignOutState('idle')
+    showToast('ok', 'Kamu sudah keluar', 'Sesi di perangkat ini ditutup. Sampai jumpa lagi.')
   }
 
   async function sendPhoneCode() {
@@ -435,6 +495,7 @@ function App() {
     try {
       const { error } = await supabase.auth.verifyOtp({ phone: codeTarget, token: code, type: 'sms' })
       if (error) throw error
+      showToast('ok', 'Berhasil masuk', `Nomor ${codeTarget} terverifikasi. Kamu sudah masuk.`)
       window.location.hash = '#akun'
       setCode('')
       setCodeTarget('')
@@ -445,6 +506,29 @@ function App() {
     }
   }
 
+  function showToast(tone, title, body) {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast({ tone, title, body })
+    toastTimer.current = setTimeout(() => setToast(null), 5200)
+  }
+
+  function closeToast() {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast(null)
+  }
+
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
+
+  useEffect(() => {
+    function handleHistoryRestore(event) {
+      if (!event.persisted || loginState !== 'loading') return
+      setLoginState('idle')
+      showToast('info', 'Login dibatalkan', 'Kamu kembali sebelum menyelesaikan masuk dengan Google. Coba lagi kapan saja.')
+    }
+    window.addEventListener('pageshow', handleHistoryRestore)
+    return () => window.removeEventListener('pageshow', handleHistoryRestore)
+  }, [loginState])
+
   async function signInGoogle() {
     if (!supabase || loginState === 'loading') return
     setLoginState('loading')
@@ -453,8 +537,8 @@ function App() {
       const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin + '/' } })
       if (error) throw error
     } catch (error) {
-      setLoginState('error')
-      setLoginMessage(error.message || 'Login Google gagal. Coba lagi.')
+      setLoginState('idle')
+      showToast('error', 'Login Google gagal', authErrorMessage(error.message))
     }
   }
 
@@ -527,25 +611,80 @@ function App() {
     loadProducts()
   }
 
+  function toggleGroup(items, nextEnabled) {
+    if (catalogBusy) return
+    const updated = { ...catalogDrafts }
+    let changed = 0
+    let skipped = 0
+    for (const item of items) {
+      const draft = updated[item.sku] || { price: '', enabled: false }
+      const price = Number(draft.price)
+      const priceOk = Number.isSafeInteger(price) && price >= 1 && price <= 100000000
+      if (nextEnabled) {
+        if (!item.supported || item.missing === true || !priceOk) { skipped += 1; continue }
+        if (draft.enabled === true) continue
+        updated[item.sku] = { ...draft, enabled: true }
+        changed += 1
+      } else {
+        if (draft.enabled !== true) continue
+        if (!priceOk) { skipped += 1; continue }
+        updated[item.sku] = { ...draft, enabled: false }
+        changed += 1
+      }
+    }
+    if (changed === 0 && skipped === 0) { setBatchNotice('Tidak ada perubahan.'); return }
+    setCatalogDrafts(updated)
+    const reason = nextEnabled ? 'isi harga jual dulu atau belum didukung checkout' : 'harga jualnya belum lengkap'
+    if (changed === 0) { setBatchNotice(`Tidak ada yang berubah. ${skipped} produk dilewati: ${reason}.`); return }
+    setBatchNotice(`${changed} produk ${nextEnabled ? 'ditampilkan' : 'disembunyikan'}.${skipped > 0 ? ` ${skipped} dilewati: ${reason}.` : ''}`)
+  }
+
   const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
-  const catalogMatches = catalogSearch.trim() ? products.filter((item) => matchesCatalog(item, catalogSearch)) : []
+  const searchCatalogs = catalogSearch.trim() ? games.filter((name) => products.some((item) => item.game === name && matchesCatalog(item, catalogSearch))) : []
   const accountName = session?.user.user_metadata?.username || session?.user.email?.split('@')[0] || 'Akun'
   const accountInitial = String(accountName).trim().charAt(0).toLocaleUpperCase('id-ID') || 'A'
   const filtered = products.filter((item) => item.game === game)
   const selected = products.find((item) => item.id === checkoutId) || null
+
+  function openCatalog(name) {
+    setSearchOpen(false)
+    setCatalogSearch('')
+    window.location.hash = `#game/${encodeURIComponent(name)}`
+  }
   const pricingQuery = catalogQuery.trim().toLowerCase()
   const pricingItems = adminCatalog.filter((item) => (catalogShowUnsupported || item.supported) && (catalogFilter === 'semua' || Boolean((catalogDrafts[item.sku] || {}).enabled) === (catalogFilter === 'tampil')) && (!pricingQuery || [item.name, item.sku, item.game, item.category].some((value) => String(value || '').toLowerCase().includes(pricingQuery))))
-  const pricingVisible = pricingItems.slice(0, catalogShown)
+  const pricingGroups = (() => {
+    const categories = new Map()
+    for (const item of pricingItems) {
+      const categoryName = item.category || 'Lainnya'
+      const brandName = item.game || 'Lainnya'
+      if (!categories.has(categoryName)) categories.set(categoryName, { name: categoryName, items: [], brands: new Map() })
+      const category = categories.get(categoryName)
+      category.items.push(item)
+      if (!category.brands.has(brandName)) category.brands.set(brandName, { name: brandName, items: [] })
+      category.brands.get(brandName).items.push(item)
+    }
+    return [...categories.values()].map((category) => ({ ...category, brands: [...category.brands.values()] }))
+  })()
   const pricingDirty = adminCatalog.filter((item) => { const draft = catalogDrafts[item.sku] || { price: '', enabled: false }; return draft.price !== (item.price == null ? '' : String(item.price)) || (draft.enabled === true) !== (item.enabled === true) }).length
 
   return (
     <div className="site-shell">
       <a className="skip-link" href="#main">Lewati navigasi</a>
+      {toast && <div className={`toast ${toast.tone}`} role={toast.tone === 'error' ? 'alert' : 'status'}>
+        <span className="toast-icon" aria-hidden="true">{toast.tone === 'ok' ? '✓' : toast.tone === 'error' ? '!' : 'i'}</span>
+        <div className="toast-body"><strong>{toast.title}</strong>{toast.body ? <p>{toast.body}</p> : null}</div>
+        <button type="button" className="toast-close" onClick={closeToast} aria-label="Tutup pemberitahuan">✕</button>
+      </div>}
       <header className="site-header">
         <div className="wrap header-inner">
           <a className="wordmark" href="#main" aria-label="Melonbyte, kembali ke awal"><span>melon</span>byte<span className="wordmark-dot">.</span></a>
+          <form className="home-search" role="search" ref={searchBoxRef} onSubmit={(event) => { event.preventDefault(); const first = searchCatalogs[0]; if (first) openCatalog(first); else if (catalogSearch.trim()) setSearchOpen(true); else document.getElementById('katalog')?.scrollIntoView({ behavior: 'smooth' }) }}>
+            <div className="home-search-controls"><input id="home-catalog-search" type="search" aria-label="Cari di katalog" autoComplete="off" aria-autocomplete="list" aria-expanded={searchOpen && Boolean(catalogSearch.trim())} aria-controls="home-search-suggest" value={catalogSearch} onChange={(event) => { setCatalogSearch(event.target.value); setSearchOpen(true) }} onFocus={() => { if (catalogSearch.trim()) setSearchOpen(true) }} onKeyDown={(event) => { if (event.key === 'Escape') setSearchOpen(false) }} placeholder="Cari di katalog" /><button type="submit">Cari</button>{searchOpen && catalogSearch.trim() && <div className="search-suggest" id="home-search-suggest">{searchCatalogs.length === 0 ? <p className="suggest-empty" role="status">Layanan tidak ditemukan. Coba kata lain.</p> : searchCatalogs.map((name) => <button key={name} type="button" onClick={() => openCatalog(name)}><span className="game-initial" aria-hidden="true">{name.slice(0, 2).toUpperCase()}</span><span className="suggest-text"><strong>{name}</strong><small>{products.filter((item) => item.game === name).length} nominal</small></span></button>)}</div>}</div>
+          </form>
           <nav aria-label="Navigasi utama">
             <a href="#katalog">Katalog</a>
+            {canManage && <a href="#admin" aria-current={view === 'admin' ? 'page' : undefined}>Admin</a>}
             {session ? <a className="account-avatar" href="#akun" aria-label={`Akun ${accountName}`} title={accountName} aria-current={view === 'account' ? 'page' : undefined}>{accountInitial}</a> : <>
               <a href="#akun" aria-current={view === 'account' ? 'page' : undefined}>Masuk</a>
               <a href="#daftar" aria-current={view === 'register' ? 'page' : undefined}>Daftar</a>
@@ -559,12 +698,8 @@ function App() {
         <section className="hero wrap" aria-labelledby="hero-title">
           <div className="hero-copy">
             <p className="eyebrow"><span className="eyebrow-line" /> MELONBYTE / TOP UP DIGITAL</p>
-            <h1 id="hero-title">Mainnya lanjut.<br /><em>Top up-nya di sini.</em></h1>
+            <h1 id="hero-title">Mainnya lanjut.<br /><em>Top up-nya di&nbsp;sini.</em></h1>
             <p className="hero-description">Cari layanan digitalmu di katalog. Harga dan ketersediaan mengikuti produk aktif.</p>
-            <form className="home-search" role="search" onSubmit={(event) => { event.preventDefault(); document.getElementById('katalog')?.scrollIntoView({ behavior: 'smooth' }) }}>
-              <label htmlFor="home-catalog-search">Cari layanan atau nominal</label>
-              <div className="home-search-controls"><input id="home-catalog-search" type="search" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Cari di katalog" /><button type="submit">Cari</button></div>
-            </form>
             <a className="primary-link" href="#katalog">Lihat pilihan top up <span aria-hidden="true">↗</span></a>
           </div>
           <div className="hero-graphic" aria-hidden="true">
@@ -579,11 +714,11 @@ function App() {
             <div className="section-heading"><div><h2 id="catalog-title">Katalog</h2></div><p>Pilih kategori dan layanan yang kamu cari.</p></div>
 
             <div className="category-filter" role="group" aria-label="Kategori katalog">
-              {['Game', 'Pulsa', 'Hiburan'].map((item) => <button key={item} type="button" className={category === item && !catalogSearch.trim() ? 'active' : ''} aria-pressed={category === item && !catalogSearch.trim()} onClick={() => { setCategory(item); setCatalogSearch('') }}>{item}</button>)}
+              {['Game', 'Pulsa', 'Hiburan'].map((item) => <button key={item} type="button" className={category === item ? 'active' : ''} aria-pressed={category === item} onClick={() => { setCategory(item); setCatalogSearch('') }}>{item}</button>)}
             </div>
             {catalogState === 'loading' && <div className="notice" role="status">Memuat katalog...</div>}
             {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum bisa dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
-            {catalogState === 'ready' && (catalogSearch.trim() ? catalogMatches.length === 0 ? <div className="notice" role="status">{products.length === 0 ? 'Belum ada layanan aktif untuk dicari.' : 'Layanan tidak ditemukan. Coba kata lain.'}</div> : <div className="catalog-results" aria-label="Hasil pencarian katalog">{catalogMatches.map((item) => <button key={item.id} type="button" className="product" onClick={() => { window.location.hash = `#beli/${encodeURIComponent(item.id)}` }}><span className="product-game">{item.game}</span><strong>{item.name}</strong><span className="product-bottom"><span>{rupiah(item.price)}</span><span aria-hidden="true">›</span></span></button>)}</div> : category === 'Game' ? games.length === 0 ? <div className="notice" role="status"><strong>Belum ada game tersedia.</strong><p>Produk tampil di sini setelah aktif di server. Checkout belum tersedia.</p></div> : <div className="game-grid">{games.map((item) => <button key={item} type="button" className="game-card" onClick={() => { window.location.hash = `#game/${encodeURIComponent(item)}` }}><span className="game-initial" aria-hidden="true">{item.slice(0, 2).toUpperCase()}</span><span><strong>{item}</strong><small>Lihat nominal</small></span><span aria-hidden="true">›</span></button>)}</div> : <div className="notice" role="status"><strong>{category} belum tersedia.</strong><p>Belum ada layanan aktif dalam kategori ini. Cek lagi nanti.</p></div>)}
+            {catalogState === 'ready' && (category === 'Game' ? games.length === 0 ? <div className="notice" role="status"><strong>Belum ada game tersedia.</strong><p>Produk tampil di sini setelah aktif di server. Checkout belum tersedia.</p></div> : <div className="game-grid">{games.map((item) => <button key={item} type="button" className="game-card" onClick={() => { window.location.hash = `#game/${encodeURIComponent(item)}` }}><GameCover name={item} /><span><strong>{item}</strong><small>Lihat nominal</small></span><span aria-hidden="true">›</span></button>)}</div> : <div className="notice" role="status"><strong>{category} belum tersedia.</strong><p>Belum ada layanan aktif dalam kategori ini. Cek lagi nanti.</p></div>)}
           </div>
         </section>
 
@@ -611,8 +746,16 @@ function App() {
               </form>
               <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga produk</span><strong>{rupiah(selected.price)}</strong></div><p>Biaya pembayaran, jika ada, tampil di halaman pembayaran.</p></> : <p>Pilih nominal untuk melihat ringkasan.</p>}</aside>
             </div>}
-        </section> : <div className="account-page wrap" id="akun">
-          <h1>{view === 'register' && !session ? 'Daftar akun' : 'Akun saya'}</h1>
+        </section> : <div className={view === 'admin' ? 'admin-page wrap' : 'account-page wrap'} id={view === 'admin' ? 'admin' : 'akun'}>
+          {view === 'admin' ? <>
+            <div className="admin-heading"><div><h1>Panel admin</h1><p>Kelola pesanan toko dan harga produk.</p></div><a className="secondary-button" href="#katalog">Lihat toko</a></div>
+            {canManage && <nav className="admin-nav" aria-label="Navigasi admin">
+              <a href="#admin" aria-current={adminPage === 'transactions' ? 'page' : undefined}>Transaksi</a>
+              <a href="#admin/produk" aria-current={adminPage === 'products' ? 'page' : undefined}>Produk &amp; harga</a>
+            </nav>}
+            {!session ? <div className="notice" role="status"><p>Masuk dengan akun admin untuk mengelola toko.</p><a className="secondary-button" href="#akun">Masuk</a></div> : roleState === 'ready' && !canManage ? <div className="notice" role="status"><p>Halaman ini khusus admin toko.</p><a className="secondary-button" href="#akun">Kembali ke akun</a></div> : null}
+          </> : <h1>{view === 'register' && !session ? 'Daftar akun' : 'Akun saya'}</h1>}
+          {view !== 'admin' && <>
           <section className="account-section" aria-labelledby="account-title">
             <div className={session ? 'account-layout account-wide' : 'account-layout'}>
               <div>
@@ -626,10 +769,10 @@ function App() {
                     <div className="profile-col">
                       <form className="profile-form" onSubmit={saveProfile}>
                         <p className="form-title">Ubah profil</p>
-                        <div className="profile-field"><label htmlFor="profile-name">Nama</label><input id="profile-name" type="text" autoComplete="name" maxLength="40" value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Nama kamu" /></div>
-                        <div className="profile-field"><label htmlFor="profile-username">Username</label><input id="profile-username" type="text" autoComplete="nickname" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} placeholder="username kamu" /></div>
+                        <div className="profile-field"><label htmlFor="profile-name">Nama</label><input id="profile-name" type="text" autoComplete="off" maxLength="40" value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Nama kamu" /></div>
+                        <div className="profile-field"><label htmlFor="profile-username">Username</label><input id="profile-username" type="text" autoComplete="off" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} placeholder="username kamu" /></div>
                         <div className="profile-field"><label htmlFor="profile-email">Email</label><input id="profile-email" type="email" value={session.user.email} readOnly /></div>
-                        <div className="profile-field"><label htmlFor="profile-phone">Nomor HP</label><input id="profile-phone" type="tel" autoComplete="tel" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." /></div>
+                        <div className="profile-field"><label htmlFor="profile-phone">Nomor HP</label><input id="profile-phone" type="tel" autoComplete="off" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." /></div>
                         <button type="submit" className="secondary-button" disabled={profileState === 'loading'}>{profileState === 'loading' ? 'Menyimpan...' : 'Ubah profil'}</button>
                       </form>
                       {session.user.phone_confirmed_at ? <p role="status">Nomor HP terverifikasi: {session.user.phone}</p> : session.user.user_metadata?.requested_phone ? <div className="phone-setup">
@@ -653,24 +796,25 @@ function App() {
                   </div><div className="signout-zone"><p className="signout-hint">Kamu bisa masuk lagi kapan saja dengan email dan kata sandi.</p>{signOutButton}</div></> : <><p>Masuk sebagai <strong>{session.user.phone}</strong></p>{signOutButton}</>}
                 </> : view === 'register' ? <>
                   <form className="profile-form" onSubmit={register}>
-                    <label htmlFor="register-email">Email</label><input id="register-email" type="email" autoComplete="email" required value={registerEmail} onChange={(event) => setRegisterEmail(event.target.value)} placeholder="email@contoh.com" />
-                    <label htmlFor="register-password">Password</label><input id="register-password" type="password" autoComplete="new-password" minLength="6" required value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} placeholder="minimal 6 karakter" />
-                    <label htmlFor="register-phone">Nomor HP</label><input id="register-phone" type="tel" autoComplete="tel" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." />
-                    <label htmlFor="register-username">Username</label><input id="register-username" type="text" autoComplete="nickname" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} placeholder="3–24 huruf, angka, atau _" />
+                    <div className="profile-field"><label htmlFor="register-email">Email</label><input id="register-email" type="email" autoComplete="off" required value={registerEmail} onChange={(event) => setRegisterEmail(event.target.value)} placeholder="email@contoh.com" /></div>
+                    <div className="profile-field"><label htmlFor="register-password">Password</label><input id="register-password" type="password" autoComplete="new-password" minLength="6" required value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} placeholder="minimal 6 karakter" /></div>
+                    <div className="profile-field"><label htmlFor="register-phone">Nomor HP</label><input id="register-phone" type="tel" autoComplete="off" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." /></div>
+                    <div className="profile-field"><label htmlFor="register-username">Username</label><input id="register-username" type="text" autoComplete="off" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} placeholder="3–24 huruf, angka, atau _" /></div>
                     <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Memproses...' : 'Daftar akun'}</button>
                   </form>
                   {loginMessage && <p role={loginState === 'error' ? 'alert' : 'status'}>{loginMessage}</p>}
                   <div className="auth-divider">atau</div>
                   <button type="button" className="secondary-button google-button" onClick={signInGoogle} disabled={loginState === 'loading'}>Daftar dengan Google</button>
                 </> : <>
-                  <form onSubmit={signIn}>
-                    <label htmlFor="contact">Email atau nomor HP</label>
-                    <div className="order-input">
-                      <input id="contact" type="text" autoComplete="username" value={contact} onChange={(event) => { setContact(event.target.value); setCodeTarget(''); setCode(''); setLoginMessage(''); setLoginState('idle') }} placeholder="email@contoh.com atau 08..." required />
-                      <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Memproses...' : contactIdentity.email ? 'Masuk' : contactIdentity.phone ? 'Kirim kode SMS' : 'Lanjut'}</button>
+                  <form className="profile-form" onSubmit={signIn}>
+                    <div className="profile-field">
+                      <label htmlFor="contact">Email atau nomor HP</label>
+                      <div className="order-input">
+                        <input id="contact" type="text" autoComplete="off" value={contact} onChange={(event) => { setContact(event.target.value); setCodeTarget(''); setCode(''); setLoginMessage(''); setLoginState('idle') }} placeholder="email@contoh.com atau 08..." required />
+                        <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Memproses...' : contactIdentity.email ? 'Masuk' : contactIdentity.phone ? 'Kirim kode SMS' : 'Lanjut'}</button>
+                      </div>
                     </div>
-                    {contactIdentity.email && <label htmlFor="login-password">Password</label>}
-                    {contactIdentity.email && <input id="login-password" className="password-input" type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="Password akunmu" />}
+                    {contactIdentity.email && <div className="profile-field"><label htmlFor="login-password">Password</label><input id="login-password" type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="Password akunmu" /></div>}
                   </form>
                   {contactIdentity.email && <button type="button" className="link-button" onClick={sendEmailLink} disabled={loginState === 'loading'}>Masuk tanpa password (kirim tautan ke email)</button>}
                   {codeTarget && <form className="code-form" onSubmit={verifyPhone}>
@@ -686,10 +830,11 @@ function App() {
             </div>
           </section>
           {session && <section className="order-section" aria-labelledby="order-title"><div className="order-layout"><div><h2 id="order-title">Riwayat pesanan</h2><p>Status pending berarti pesanan masih diproses. Jangan bayar ulang sebelum mengecek statusnya.</p></div><div className="order-panel">{ordersState === 'loading' ? <p role="status">Memuat pesanan...</p> : ordersState === 'error' ? <p role="alert">Gagal memuat pesanan. {ordersError} <button type="button" onClick={() => setOrdersRetry((value) => value + 1)}>Coba lagi</button></p> : orders.length === 0 ? <p role="status">Belum ada pesanan di akun ini. <a href="#katalog">Lihat katalog</a></p> : <ul className="order-list">{orders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.status}</span><small>#{order.id}</small></li>)}</ul>}</div></div></section>}
-          {session && roleState === 'loading' && <p role="status">Memeriksa akses akun...</p>}
-          {session && roleState === 'error' && <p role="alert">Akses pengelola belum bisa diperiksa. {roleError} <button type="button" onClick={() => setRoleRetry((value) => value + 1)}>Coba lagi</button></p>}
-          {session && roleState === 'ready' && role === 'admin' && roleToken === session.access_token && <section className="order-section" aria-labelledby="admin-title"><div className="order-layout"><div><h2 id="admin-title">Pengelola</h2><p>Pesanan terbaru toko.</p></div><div className="order-panel">{adminState === 'loading' ? <p role="status">Memuat pesanan toko...</p> : adminState === 'error' ? <p role="alert">Gagal memuat pesanan toko. {adminError} <button type="button" onClick={() => setAdminRetry((value) => value + 1)}>Coba lagi</button></p> : adminOrders.length === 0 ? <p role="status">Belum ada pesanan toko.</p> : <ul className="order-list">{adminOrders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.status}</span><small>#{order.id}</small></li>)}</ul>}</div></div></section>}
-          {session && roleState === 'ready' && role === 'admin' && roleToken === session.access_token && <section className="order-section" aria-labelledby="pricing-title"><div className="section-heading"><div><h2 id="pricing-title">Harga jual</h2></div><p>Harga supplier adalah modal, tidak tampil ke pembeli. Atur harga jual dan centang produk yang tampil di katalog.</p></div>{adminCatalogState === 'loading' ? <p role="status">Memuat katalog supplier...</p> : adminCatalogState === 'error' ? <p role="alert">Katalog supplier belum bisa dimuat. {adminCatalogError} <button type="button" onClick={() => setAdminCatalogRetry((value) => value + 1)}>Coba lagi</button></p> : adminCatalog.length === 0 ? <p role="status">Belum ada produk supplier aktif.</p> : <><div className="pricing-toolbar"><input type="text" aria-label="Cari produk supplier" placeholder="Cari nama, kode, atau brand" value={catalogQuery} onChange={(event) => { setCatalogQuery(event.target.value); setCatalogShown(24) }} /><div className="category-filter" role="group" aria-label="Saring produk"><button type="button" className={catalogFilter === 'semua' ? 'active' : ''} aria-pressed={catalogFilter === 'semua'} onClick={() => { setCatalogFilter('semua'); setCatalogShown(24) }}>Semua</button><button type="button" className={catalogFilter === 'tampil' ? 'active' : ''} aria-pressed={catalogFilter === 'tampil'} onClick={() => { setCatalogFilter('tampil'); setCatalogShown(24) }}>Tampil</button><button type="button" className={catalogFilter === 'draf' ? 'active' : ''} aria-pressed={catalogFilter === 'draf'} onClick={() => { setCatalogFilter('draf'); setCatalogShown(24) }}>Draf</button></div></div><div className="pricing-meta"><span>Menampilkan {pricingVisible.length} dari {pricingItems.length} produk</span><div className="pricing-meta-actions">{batchNotice && <span role="status">{batchNotice}</span>}<label className="pricing-unsupported"><input type="checkbox" checked={catalogShowUnsupported} onChange={(event) => { setCatalogShowUnsupported(event.target.checked); setCatalogShown(24) }} />Tampilkan yang belum didukung checkout</label>{pricingDirty > 0 && <button type="button" className="secondary-button" onClick={saveAllChanges} disabled={Boolean(catalogBusy)}>Simpan semua ({pricingDirty})</button>}</div></div>{pricingItems.length === 0 ? <p className="pricing-empty" role="status">Tidak ada produk yang cocok. Ubah kata kunci atau saringan.</p> : <><ul className="price-grid">{pricingVisible.map((item) => { const draft = catalogDrafts[item.sku] || { price: '', enabled: false }; return <li key={item.sku} className="price-card"><div className="price-head"><strong>{item.name || item.sku}</strong><small>{item.game || item.sku}{item.category ? ` · ${item.category}` : ''}</small></div><div className="price-row"><span className="price-cost">{item.cost == null ? 'Tidak ada di katalog supplier aktif.' : `Modal ${rupiah(item.cost)}`}</span><label className="price-toggle"><input type="checkbox" checked={draft.enabled} disabled={!item.supported} aria-label={`Tampil di katalog: ${item.name || item.sku}`} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, enabled: event.target.checked } }))} />Tampil</label></div><div className="price-row price-actions"><input type="number" inputMode="numeric" min="1" step="1" placeholder="Harga jual (Rp)" aria-label={`Harga jual ${item.name || item.sku}`} value={draft.price} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: event.target.value } }))} onKeyDown={(event) => { if (event.key === 'Enter') saveSellingPrice(item.sku) }} /><button type="button" className="secondary-button" onClick={() => saveSellingPrice(item.sku)} disabled={Boolean(catalogBusy)}>{catalogBusy === item.sku ? 'Menyimpan...' : 'Simpan'}</button></div>{!item.supported && <p className="price-hint">Belum didukung checkout, jadi belum bisa tampil.</p>}{item.cost != null && Number(draft.price) > 0 && Number(draft.price) < item.cost && <p className="price-warning" role="status">Harga jual di bawah modal.</p>}{catalogNotice.sku === item.sku && <p className="price-hint" role={catalogNotice.error ? 'alert' : 'status'}>{catalogNotice.text}</p>}</li>; })}</ul>{pricingItems.length > pricingVisible.length && <button type="button" className="secondary-button price-more" onClick={() => setCatalogShown((value) => value + 24)}>Tampilkan lebih banyak (sisa {pricingItems.length - pricingVisible.length})</button>}</>}</>}</section>}
+          </>}
+          {view === 'admin' && session && roleState === 'loading' && <p role="status">Memeriksa akses akun...</p>}
+          {view === 'admin' && session && roleState === 'error' && <p role="alert">Akses pengelola belum bisa diperiksa. {roleError} <button type="button" onClick={() => setRoleRetry((value) => value + 1)}>Coba lagi</button></p>}
+          {view === 'admin' && canManage && adminPage === 'transactions' && <section className="order-section admin-section" aria-labelledby="admin-title"><div className="order-layout"><div><h2 id="admin-title">Transaksi</h2><p>Pesanan terbaru toko, dari seluruh pembeli.</p></div><div className="order-panel">{adminState === 'loading' ? <p role="status">Memuat pesanan toko...</p> : adminState === 'error' ? <p role="alert">Gagal memuat pesanan toko. {adminError} <button type="button" onClick={() => setAdminRetry((value) => value + 1)}>Coba lagi</button></p> : adminOrders.length === 0 ? <p role="status">Belum ada pesanan toko.</p> : <ul className="order-list">{adminOrders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.status}</span><small>#{order.id}</small></li>)}</ul>}</div></div></section>}
+          {view === 'admin' && canManage && adminPage === 'products' && <section className="order-section admin-section" aria-labelledby="pricing-title"><div className="section-heading"><div><h2 id="pricing-title">Harga jual</h2></div><p>Harga supplier adalah modal, tidak tampil ke pembeli. Simpan harga jual sebelum menampilkan produk.</p></div>{adminCatalogState === 'loading' ? <p role="status">Memuat katalog supplier...</p> : adminCatalogState === 'error' ? <p role="alert">Katalog supplier belum bisa dimuat. {adminCatalogError} <button type="button" onClick={() => setAdminCatalogRetry((value) => value + 1)}>Coba lagi</button></p> : adminCatalog.length === 0 ? <p role="status">Belum ada produk supplier aktif.</p> : <><div className="pricing-toolbar"><input type="text" aria-label="Cari produk supplier" placeholder="Cari nama, kode, atau brand" autoComplete="off" value={catalogQuery} onChange={(event) => { setCatalogQuery(event.target.value) }} /><div className="category-filter" role="group" aria-label="Saring produk"><button type="button" className={catalogFilter === 'semua' ? 'active' : ''} aria-pressed={catalogFilter === 'semua'} onClick={() => { setCatalogFilter('semua') }}>Semua</button><button type="button" className={catalogFilter === 'tampil' ? 'active' : ''} aria-pressed={catalogFilter === 'tampil'} onClick={() => { setCatalogFilter('tampil') }}>Tampil</button><button type="button" className={catalogFilter === 'draf' ? 'active' : ''} aria-pressed={catalogFilter === 'draf'} onClick={() => { setCatalogFilter('draf') }}>Draf</button></div></div><div className="pricing-meta"><div className="pricing-meta-actions">{batchNotice && <span role="status">{batchNotice}</span>}<label className="pricing-unsupported"><input type="checkbox" checked={catalogShowUnsupported} onChange={(event) => { setCatalogShowUnsupported(event.target.checked) }} />Tampilkan yang belum didukung checkout</label>{pricingDirty > 0 && <button type="button" className="secondary-button" onClick={saveAllChanges} disabled={Boolean(catalogBusy)}>Simpan semua ({pricingDirty})</button>}</div></div>{pricingItems.length === 0 ? <p className="pricing-empty" role="status">Tidak ada produk yang cocok. Ubah kata kunci atau saringan.</p> : <><div className="price-groups">{pricingGroups.map((category) => { const categoryShown = category.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <section key={category.name} className="price-group"><div className="price-cat-head"><h3 className="price-cat-title">{category.name}<small className="price-group-count">{category.items.length} produk · {categoryShown} tampil</small></h3><label className="switch" title={`Nyala/matikan semua produk kategori ${category.name}`}><input type="checkbox" role="switch" checked={categoryShown === category.items.length} ref={(el) => { if (el) el.indeterminate = categoryShown > 0 && categoryShown < category.items.length }} aria-label={`Tampilkan semua produk kategori ${category.name}`} onChange={(event) => toggleGroup(category.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label></div>{category.brands.map((brand) => { const brandShown = brand.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <div key={brand.name} className="price-brand"><div className="price-brand-head"><span className="price-brand-cover"><GameCover name={brand.name} /></span><h4 className="price-brand-title">{brand.name}<small className="price-group-count">{brand.items.length} produk · {brandShown} tampil</small></h4><label className="switch" title={`Nyala/matikan semua produk ${brand.name}`}><input type="checkbox" role="switch" checked={brandShown === brand.items.length} ref={(el) => { if (el) el.indeterminate = brandShown > 0 && brandShown < brand.items.length }} aria-label={`Tampilkan semua produk ${brand.name}`} onChange={(event) => toggleGroup(brand.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label></div><ul className="price-grid">{brand.items.map((item) => { const draft = catalogDrafts[item.sku] || { price: '', enabled: false }; return <li key={item.sku} className="price-card"><div className="price-head"><strong>{item.name || item.sku}</strong><small>{item.game || item.sku}{item.category ? ` · ${item.category}` : ''}</small></div><div className="price-row"><span className="price-cost">{item.cost == null ? 'Tidak ada di katalog supplier aktif.' : `Modal ${rupiah(item.cost)}`}</span><label className="price-toggle"><input type="checkbox" checked={draft.enabled} disabled={!item.supported} aria-label={`Tampil di katalog: ${item.name || item.sku}`} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, enabled: event.target.checked } }))} />Tampil</label></div><div className="price-row price-actions"><input type="number" inputMode="numeric" min="1" step="1" placeholder="Harga jual (Rp)" autoComplete="off" aria-label={`Harga jual ${item.name || item.sku}`} value={draft.price} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: event.target.value } }))} onKeyDown={(event) => { if (event.key === 'Enter') saveSellingPrice(item.sku) }} /><button type="button" className="secondary-button" onClick={() => saveSellingPrice(item.sku)} disabled={Boolean(catalogBusy)}>{catalogBusy === item.sku ? 'Menyimpan...' : 'Simpan'}</button></div>{!item.supported && <p className="price-hint">Belum didukung checkout, jadi belum bisa tampil.</p>}{item.cost != null && Number(draft.price) > 0 && Number(draft.price) < item.cost && <p className="price-warning" role="status">Harga jual di bawah modal.</p>}{catalogNotice.sku === item.sku && <p className="price-hint" role={catalogNotice.error ? 'alert' : 'status'}>{catalogNotice.text}</p>}</li>; })}</ul></div>; })}</section>; })}</div></>}</>}</section>}
         </div>}
       </main>
       <footer className="footer"><div className="wrap footer-inner"><span className="wordmark"><span>melon</span>byte<span className="wordmark-dot">.</span></span><p>Layanan digital. Harga dan ketersediaan mengikuti katalog aktif.</p><a href="#main">Kembali ke atas ↑</a></div></footer>

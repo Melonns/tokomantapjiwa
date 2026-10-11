@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { restoreSession } from './auth.mjs'
+import { authReturnFromUrl, restoreSession } from './auth.mjs'
 
 function page(href) {
   const location = new URL(href)
@@ -56,4 +56,29 @@ test('OAuth error description is removed and never displayed verbatim', async ()
   const { location, history } = page('http://localhost:5173/#error=access_denied&error_description=secret-test-only')
   await assert.rejects(restoreSession({}, location, history), { message: 'Sesi login gagal dibaca. Coba masuk lagi.' })
   assert.equal(location.hash, '')
+})
+
+test('OAuth cancel return is detected as cancelled', () => {
+  assert.deepEqual(authReturnFromUrl('http://localhost:5173/?error=access_denied&error_description=secret-test-only'), { kind: 'cancelled' })
+  assert.deepEqual(authReturnFromUrl('http://localhost:5173/#error=access_denied'), { kind: 'cancelled' })
+})
+
+test('OAuth failure keeps kind but never exposes description', () => {
+  const info = authReturnFromUrl('http://localhost:5173/?error=server_error&error_description=secret-test-only')
+  assert.equal(info.kind, 'error')
+  assert.equal(JSON.stringify(info).includes('secret-test-only'), false)
+})
+
+test('PKCE and legacy returns are detected for success feedback', () => {
+  assert.deepEqual(authReturnFromUrl('http://localhost:5173/?code=test-code&sb_flow_id=test-flow'), { kind: 'pkce' })
+  assert.deepEqual(authReturnFromUrl('http://localhost:5173/?access_token=test-only&refresh_token=test-refresh'), { kind: 'session' })
+})
+
+test('broken token return fails closed', () => {
+  assert.deepEqual(authReturnFromUrl('http://localhost:5173/#access_token=test-only'), { kind: 'error' })
+})
+
+test('ordinary routes are not auth returns', () => {
+  assert.equal(authReturnFromUrl('http://localhost:5173/'), null)
+  assert.equal(authReturnFromUrl('http://localhost:5173/#akun'), null)
 })

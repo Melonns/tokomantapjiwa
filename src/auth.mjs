@@ -25,3 +25,14 @@ export async function restoreSession(auth, location, history) {
     throw new Error('Sesi login gagal dibaca. Coba masuk lagi.')
   }
 }
+
+export function authReturnFromUrl(href) {
+  const url = new URL(href)
+  const fragment = new URLSearchParams(url.hash.slice(1).replace(/^akun#/, ''))
+  const pick = (key) => url.searchParams.get(key) ?? fragment.get(key)
+  if (pick('error') === 'access_denied') return { kind: 'cancelled' }
+  if (pick('error') || pick('error_code') || pick('error_description')) return { kind: 'error' }
+  if (pick('access_token')) return pick('refresh_token') ? { kind: 'session' } : { kind: 'error' }
+  if (pick('code')) return { kind: 'pkce' }
+  return null
+}

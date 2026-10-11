@@ -25,10 +25,36 @@ test('profile panel compacts on wide screens without touching other forms', () =
   assert.match(css, /@media\(min-width:761px\)\{\.profile-cols \.profile-form input\{min-height:40px;padding-block:8px\}/)
 })
 
+test('account fields keep labels close and separate adjacent fields', async () => {
+  const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
+  assert.match(css, /\.profile-form\{display:grid;gap:18px\}/)
+  assert.match(css, /\.profile-field\{display:grid;gap:8px\}/)
+  assert.match(css, /\.profile-field \.order-input\{margin-top:0\}/)
+  assert.match(source, /<form className="profile-form" onSubmit=\{signIn\}>/)
+  for (const id of ['register-email', 'register-password', 'register-phone', 'register-username', 'login-password']) {
+    assert.match(source, new RegExp(`<div className="profile-field"><label htmlFor="${id}">`))
+  }
+})
+
+test('supporting text stays separate from headings and checkout inputs', () => {
+  assert.match(css, /\.account-layout h2\+p,\.order-layout h2\+p\{margin-top:14px;line-height:1\.6\}/)
+  assert.match(css, /\.checkout-form \.field-hint\{margin:14px 0\}/)
+})
+
 test('sign out is a red danger action in its own separated zone', () => {
   assert.match(css, /:root\{[^}]*--danger:#ff8f83/)
   assert.match(css, /\.signout-button\{[^}]*var\(--danger\)/)
   assert.match(css, /\.signout-zone\{[^}]*border-top:1px solid var\(--line\)/)
 })
 
-
+test('setiap input mematikan riwayat/autofill browser (kredensial & OTP tetap semantik)', async () => {
+  const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
+  const tags = source.match(/<input\b[\s\S]*?\/>/g) ?? []
+  assert.equal(tags.length, (source.match(/<input\b/g) ?? []).length, 'ekstraksi tag input gagal')
+  assert.ok(tags.length >= 18, `hanya ${tags.length} input terbaca`)
+  for (const tag of tags) {
+    assert.doesNotMatch(tag, /autoComplete="(?:email|name|nickname|tel|username|on)"/, tag)
+    const exempt = /type="(?:checkbox|radio|hidden)"/.test(tag) || /readOnly/.test(tag)
+    if (!exempt) assert.match(tag, /autoComplete="(?:off|one-time-code|current-password|new-password)"/, tag)
+  }
+})

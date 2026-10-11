@@ -18,3 +18,33 @@ test('choosing a game or voucher navigates to a page instead of stacking on home
   assert.doesNotMatch(source, /setSelected\(/);
   assert.doesNotMatch(source, /category === 'Game' && game/);
 });
+
+
+test('catalog search suggests entries in a dropdown and opens the game page', () => {
+  assert.match(source, /const searchCatalogs = /);
+  assert.match(source, /id="home-search-suggest"/);
+  assert.match(source, /aria-label="Cari di katalog"/);
+  assert.ok(source.indexOf('className="home-search"') < source.indexOf('</header>'));
+  assert.match(source, /const \[searchOpen, setSearchOpen\] = useState\(false\)/);
+  assert.match(source, /function openCatalog\(name\) \{/);
+  assert.match(source, /#game\/\$\{encodeURIComponent\(name\)\}/);
+  assert.doesNotMatch(source, /catalog-results/);
+  assert.doesNotMatch(source, /catalogMatches/);
+});
+;
+
+test('admin pages are separate from personal profile and gated by server-verified role', () => {
+  assert.match(source, /hash === '#admin' \|\| hash === '#admin\/produk'/);
+  assert.match(source, /const canManage = Boolean\(session && roleState === 'ready' && role === 'admin' && roleToken === session\.access_token\)/);
+  assert.match(source, /canManage && <a href="#admin"/);
+  assert.match(source, /aria-label="Navigasi admin"/);
+  assert.match(source, /href="#admin\/produk"/);
+  assert.match(source, /view !== 'admin' && <>/);
+  assert.match(source, /view === 'admin' && canManage && adminPage === 'transactions'/);
+  assert.match(source, /view === 'admin' && canManage && adminPage === 'products'/);
+  assert.match(source, /Halaman ini khusus admin toko\./);
+  const personal = source.slice(source.indexOf("{view !== 'admin' && <>"), source.indexOf("{view === 'admin' && session && roleState === 'loading'"));
+  assert.match(personal, /Profil akun/);
+  assert.match(personal, /Riwayat pesanan/);
+  assert.doesNotMatch(personal, /pricing-title|admin-title|Navigasi admin/);
+});
