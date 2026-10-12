@@ -75,3 +75,15 @@ test('panel harga menyimpan katalog di server dan bisa menyinkron ulang sendiri'
   assert.match(source, /setAdminCatalogStale\(data\.catalogStale === true\)/);
   assert.match(css, /\.pricing-stale\{flex-basis:100%/);
 });
+
+test('panel harga bisa mengisi draft dari margin persen per brand', () => {
+  assert.match(source, /const \[marginDrafts, setMarginDrafts\] = useState\(\{\}\)/);
+  assert.match(source, /applyBrandMargin/);
+  assert.match(source, /Math\.ceil\(\(cost \* \(1 \+ pct \/ 100\)\) \/ 100\) \* 100/);
+  assert.match(source, /className="price-margin"/);
+  assert.match(source, /aria-label=\{`Margin harga \$\{brand\.name\} \(%\)`\}/);
+  assert.match(source, /Modal × \(1 \+ %\), dibulatkan ke atas\./);
+  assert.match(source, /Math\.ceil\(\(cost \* \(1 \+ pct \/ 100\)\) \/ 100\) \* 100/);
+  assert.match(css, /\.price-margin\{display:flex/);
+  assert.match(css, /\.price-margin-field input\{[^}]*min-height:44px/);
+});

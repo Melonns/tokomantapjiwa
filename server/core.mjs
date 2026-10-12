@@ -4,14 +4,18 @@ export function validateCheckout(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('Data checkout tidak valid.');
   const { productId, userId, zoneId } = body;
   if (typeof productId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(productId) ||
-      typeof userId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(userId)) throw Error('Produk, User ID, atau Zone ID tidak valid.');
+      typeof userId !== 'string' || !/^[a-zA-Z0-9 ._#-]{1,64}$/.test(userId)) throw Error('Produk, User ID, atau Zone ID tidak valid.');
   if (zoneId !== undefined && (typeof zoneId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(zoneId))) throw Error('Produk, User ID, atau Zone ID tidak valid.');
   return { productId, userId, zoneId: zoneId ?? '' };
 }
 
 // ponytail: Format tujuan menentukan nomor tujuan yang dikirim ke Digiflazz; jangan menebak bentuk lain.
 export function customerNo(format, input) {
-  if (format === 'plain') return input.userId;
+  if (format === 'plain' || format === 'riot') return input.userId;
+  if (format === 'uid_server') {
+    if (!input.zoneId) throw Error('Server wajib dipilih untuk produk ini.');
+    return `${input.userId}|${input.zoneId}`;
+  }
   if (format !== 'ml_concat' || !input.zoneId) throw Error('Format tujuan produk ini belum didukung checkout.');
   return input.userId + input.zoneId;
 }

@@ -45,3 +45,12 @@ test('detail kontak terisi otomatis untuk member dan bisa diisi tamu', () => {
   assert.match(source, /session\.user\.phone \|\| session\.user\.user_metadata\?\.requested_phone/);
   assert.match(source, /Transaksi tamu \(email \+ nomor HP\) belum aktif/);
 });
+
+test('halaman beli mendukung format uid_server (pilih server) dan riot (Riot ID)', () => {
+  assert.match(source, /const uidServerOptions = \[/);
+  assert.match(source, /<label>Server <select value=\{zoneId\}/);
+  assert.match(source, /orderFormat === 'uid_server'/);
+  assert.match(source, /orderFormat === 'riot'/);
+  assert.match(source, /Nama#1234/);
+  assert.match(source, /Riot ID/);
+});

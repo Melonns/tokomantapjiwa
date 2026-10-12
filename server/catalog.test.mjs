@@ -52,7 +52,7 @@ test('empty merchant catalog serves no supplier prices and never touches Digifla
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/products`);
     const body = await response.json();
     assert.equal(response.status, 200);
-    assert.deepEqual(body, { products: [], checkoutAvailable: false });
+    assert.deepEqual(body, { products: [], checkoutAvailable: false, checkAvailable: false });
     assert.equal(supplierCalls, 0);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

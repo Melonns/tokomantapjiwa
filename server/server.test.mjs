@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment, customerNo } from './core.mjs';
 import { createHandler, digiRequest } from './app.mjs';
+import { checkGames } from './check.mjs';
 
 const env = { MIDTRANS_SERVER_KEY: 'sandbox-secret', DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', MIDTRANS_ENV: 'sandbox', DIGIFLAZZ_TESTING: 'true', CHECKOUT_ENABLED: 'true', DATABASE_URL: 'test', SUPABASE_URL: 'https://sample.supabase.co', SUPABASE_ANON_KEY: 'public-key' };
 const ownerId = '22222222-2222-4222-8222-222222222222';
@@ -15,6 +16,8 @@ const withAuth = next => async (url, options) => url === 'https://sample.supabas
 test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
   assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234' }), { productId: 'ml-1', userId: '12345', zoneId: '1234' });
   assert.deepEqual(validateCheckout({ productId: 'ff-1', userId: '12345' }), { productId: 'ff-1', userId: '12345', zoneId: '' });
+  assert.deepEqual(validateCheckout({ productId: 'val5', userId: 'Nama Kamu#1234' }), { productId: 'val5', userId: 'Nama Kamu#1234', zoneId: '' });
+  assert.deepEqual(validateCheckout({ productId: 'gi60', userId: '800123456', zoneId: 'os_asia' }), { productId: 'gi60', userId: '800123456', zoneId: 'os_asia' });
   for (const body of [{ productId: 'x', userId: {}, zoneId: '1' }, { productId: 'x', userId: '123', zoneId: 'a b' }, { productId: 'x', userId: '1'.repeat(65), zoneId: '1' }, { productId: 'x/../', userId: '1', zoneId: '1' }, { productId: 'x', userId: '123', zoneId: '' }]) assert.throws(() => validateCheckout(body));
 });
 
@@ -23,6 +26,9 @@ test('customer number follows the destination format of the product', () => {
   assert.equal(customerNo('plain', { userId: '123', zoneId: '' }), '123');
   assert.throws(() => customerNo('ml_concat', { userId: '123', zoneId: '' }), /belum didukung/);
   assert.throws(() => customerNo('voucher', { userId: '123', zoneId: '100' }), /belum didukung/);
+  assert.equal(customerNo('uid_server', { userId: '800123456', zoneId: 'os_asia' }), '800123456|os_asia');
+  assert.throws(() => customerNo('uid_server', { userId: '800123456', zoneId: '' }), /Server wajib/);
+  assert.equal(customerNo('riot', { userId: 'Nama Kamu#1234', zoneId: '' }), 'Nama Kamu#1234');
 });
 
 test('signed settlement validates amount and rejects forged capture', () => {
@@ -149,7 +155,7 @@ test('public products and owned order expose only frontend contract fields', asy
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
     const products = await (await fetch(base + '/api/products')).json();
-    assert.deepEqual(products, { products: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000, format: 'ml_concat', category: 'Games' }], checkoutAvailable: true });
+    assert.deepEqual(products, { products: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000, format: 'ml_concat', category: 'Games', checkable: true }], checkoutAvailable: true, checkAvailable: false });
     const order = await (await fetch(base + '/api/orders/' + id, { headers: authHeaders })).json();
     assert.deepEqual(order, { order: { id, status: 'pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' } });
   } finally { await new Promise(resolve => server.close(resolve)); }
@@ -227,7 +233,7 @@ test('empty public catalog never exposes supplier costs', async () => {
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const body = await (await fetch(`http://127.0.0.1:${server.address().port}/api/products`)).json();
-    assert.deepEqual(body, { products: [], checkoutAvailable: true });
+    assert.deepEqual(body, { products: [], checkoutAvailable: true, checkAvailable: false });
     assert.equal(supplierCalls, 0);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
@@ -358,5 +364,237 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
     isAdmin = false;
     assert.equal((await put('ml10', { price: 22000, enabled: true })).status, 403);
     assert.equal(supplierCalls, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('produk menandai dukungan cek per brand dan status cek mengikuti konfigurasi server', async () => {
+  const rows = [
+    { id: 'ml10', name: '10 Diamonds', game: 'MOBILE LEGENDS', price: 25000, format: 'ml_concat', category: 'Games' },
+    { id: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', price: 20000, format: 'plain', category: 'Games' },
+    { id: 'ax10', name: 'AXIS 10.000', game: 'AXIS', price: 10000, format: 'plain', category: 'Pulsa' },
+  ];
+  const pool = { async query(sql) { if (sql.startsWith('SELECT p.id, p.name, p.game')) return { rows }; throw Error('unexpected SQL: ' + sql); } };
+  const open = (serverEnv) => createServer(createHandler({ pool, env: serverEnv, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  const first = open(env);
+  try {
+    await new Promise(resolve => first.once('listening', resolve));
+    const body = await (await fetch(`http://127.0.0.1:${first.address().port}/api/products`)).json();
+    assert.deepEqual(body.products.map(product => product.checkable), [true, true, false]);
+    assert.equal(body.checkAvailable, false);
+  } finally { await new Promise(resolve => first.close(resolve)); }
+  const second = open({ ...env, CHECK_API_URL: 'https://check.example/v1/account', CHECK_API_KEY: 'check-key' });
+  try {
+    await new Promise(resolve => second.once('listening', resolve));
+    const body = await (await fetch(`http://127.0.0.1:${second.address().port}/api/products`)).json();
+    assert.equal(body.checkAvailable, true);
+  } finally { await new Promise(resolve => second.close(resolve)); }
+});
+
+const checkEnv = { ...env, CHECK_API_URL: 'https://check.example/v1/account', CHECK_API_KEY: 'check-key' };
+
+test('cek nickname memakai layanan sesuai brand produk, menyimpan hasil, dan mencatat pemakaian', async () => {
+  const statements = [];
+  let provider = null;
+  const pool = { async query(sql, params) {
+    statements.push({ sql, params });
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 0 }] };
+    if (sql.startsWith('INSERT')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
+    provider = { url, options };
+    return { ok: true, status: 200, json: async () => ({ error: false, code: 200, message: 'Success', data: { product: { name: 'Mobile Legends', code: 'MLBB' }, account: { region: 'ID', nickname: 'Purbaya Sadewa. RI' } } }) };
+  }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 200);
+    const { check } = await response.json();
+    assert.equal(check.nickname, 'Purbaya Sadewa. RI');
+    assert.equal(check.region, 'ID');
+    assert.equal(check.cached, false);
+    assert.equal(checkGames['MOBILE LEGENDS'].code, 'MLBB');
+    assert.equal(provider.url, 'https://check.example/v1/account');
+    assert.equal(provider.options.headers['x-api-key'], 'check-key');
+    assert.deepEqual(JSON.parse(provider.options.body), { game: 'MLBB', user_id: '12345', zone_id: '100' });
+    const saved = statements.find(item => item.sql.startsWith('INSERT INTO account_checks'));
+    assert.match(saved.sql, /ON CONFLICT \(game, user_id, zone_id\) DO UPDATE SET nickname = EXCLUDED\.nickname/);
+    assert.deepEqual(saved.params, ['MOBILE LEGENDS', '12345', '100', 'Purbaya Sadewa. RI', 'ID']);
+    assert.equal(statements.filter(item => item.sql.startsWith('INSERT INTO account_check_logs')).length, 1);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('hasil tersimpan yang masih segar menjawab tanpa provider dan tanpa tulis ulang', async () => {
+  const checkedAt = new Date('2026-10-10T09:30:00Z');
+  const statements = [];
+  let providerCalls = 0;
+  const pool = { async query(sql) {
+    statements.push(sql);
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [{ nickname: 'Purbaya Sadewa. RI', region: 'ID', checked_at: checkedAt }] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => { providerCalls++; return { ok: true, json: async () => ({}) }; }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { check: { nickname: 'Purbaya Sadewa. RI', region: 'ID', cached: true, checkedAt: checkedAt.toISOString() } });
+    assert.equal(providerCalls, 0);
+    assert.ok(statements.every(sql => !sql.startsWith('INSERT')));
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('brand Free Fire memakai layanan cek Free Fire tanpa Zone ID; force melewati simpanan', async () => {
+  const bodies = [];
+  const statements = [];
+  const pool = { async query(sql) {
+    statements.push(sql);
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ff12', game: 'FREE FIRE', customer_format: 'plain' }] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 3 }] };
+    if (sql.startsWith('INSERT')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ data: { account: { region: 'ID', nickname: 'FreeFire Player' } } }) };
+  }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ff12', userId: '456', force: true }) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).check.nickname, 'FreeFire Player');
+    assert.deepEqual(bodies, [{ game: checkGames['FREE FIRE'].code, user_id: '456', zone_id: '' }]);
+    assert.ok(statements.every(sql => !sql.startsWith('SELECT nickname')));
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('kuota harian habis ditolak sebelum provider dipanggil', async () => {
+  let providerCalls = 0;
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 10 }] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => { providerCalls++; return { ok: true, json: async () => ({}) }; }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 429);
+    assert.match((await response.json()).error, /Batas cek nickname harian/);
+    assert.equal(providerCalls, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('ID tidak ketemu dan provider mati tidak disimpan', async () => {
+  let inserts = 0;
+  let mode = 'missing';
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 1 }] };
+    if (sql.startsWith('INSERT')) { inserts++; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => mode === 'missing'
+    ? { ok: true, status: 200, json: async () => ({ error: true, code: 404, message: 'Account not found', data: null }) }
+    : { ok: false, status: 500, json: async () => ({}) }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/check-account`;
+    const call = () => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '999', zoneId: '1' }) });
+    const missing = await call();
+    assert.equal(missing.status, 404);
+    assert.match((await missing.json()).error, /tidak ditemukan/);
+    mode = 'down';
+    const down = await call();
+    assert.equal(down.status, 502);
+    assert.match((await down.json()).error, /tidak tersedia/);
+    assert.equal(inserts, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('brand tanpa layanan cek ditolak jelas (422)', async () => {
+  const pool = { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ax10', game: 'AXIS', customer_format: 'plain' }] }; throw Error('unexpected SQL: ' + sql); } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ax10', userId: '0812345' }) });
+    assert.equal(response.status, 422);
+    assert.match((await response.json()).error, /belum tersedia/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('cek nickname menolak tanpa sesi terverifikasi dan saat provider belum diset', async () => {
+  const unauthorized = createServer(createHandler({ pool: { query() { throw Error('db touched'); } }, env: checkEnv, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => unauthorized.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${unauthorized.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 401);
+  } finally { await new Promise(resolve => unauthorized.close(resolve)); }
+  let fetchCalls = 0;
+  const inactive = createServer(createHandler({ pool: { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] }; throw Error('unexpected SQL: ' + sql); } }, env, fetchImpl: withAuth(async () => { fetchCalls++; return { ok: true, json: async () => ({}) }; }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => inactive.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${inactive.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /belum aktif/);
+    assert.equal(fetchCalls, 0);
+  } finally { await new Promise(resolve => inactive.close(resolve)); }
+});
+
+
+test('brand baru (Genshin/Honkai uid_server dan Valorant riot) bisa diaktifkan', async () => {
+  const inserts = [];
+  const mirror = [
+    { sku: 'gi60', name: 'Genshin 60 Genesis Crystals', game: 'Genshin Impact', category: 'Games', variant: 'Indonesia', price: 15000 },
+    { sku: 'val5', name: 'Valorant 5 Points', game: 'Valorant', category: 'Games', variant: 'Indonesia', price: 8000 },
+  ];
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: [{ user_id: ownerId }] };
+    if (sql.startsWith('SELECT name, game, category, variant, price FROM supplier_products')) return { rows: mirror.filter(row => row.sku === params[0]) };
+    if (sql.startsWith('INSERT INTO products')) { inserts.push(params); return { rows: [{ id: params[0], name: params[1], game: params[2], price: params[3], enabled: params[4] }] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { throw Error('unexpected external request: ' + url); }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const put = (sku, payload) => fetch(`${base}/api/admin/products/${sku}`, { method: 'PUT', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify(payload) });
+    const genshin = await put('gi60', { price: 20000, enabled: true });
+    assert.equal(genshin.status, 200);
+    assert.equal((await genshin.json()).product.supported, true);
+    assert.equal(inserts[0][5], 'uid_server');
+    const valorant = await put('val5', { price: 12000, enabled: true });
+    assert.equal(valorant.status, 200);
+    assert.equal(inserts[1][5], 'riot');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('panel katalog mengirim semua baris supplier aktif tanpa dipotong', async () => {
+  const rows = Array.from({ length: 230 }, (_, index) => ({ sku: `sku${index}`, name: `Item ${index}`, game: 'GENSHIN IMPACT', category: 'Games', variant: '', price: 1000 + index, synced_at: '2026-10-12T04:00:00Z' }));
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: [{ user_id: ownerId }] };
+    if (sql.startsWith('SELECT sku, name, game, category, variant, price, synced_at FROM supplier_products')) return { rows };
+    if (sql.startsWith('SELECT id, name, game, price, enabled FROM products')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { throw Error('unexpected external request: ' + url); }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/supplier-products`, { headers: authHeaders });
+    assert.equal(response.status, 200);
+    const { products } = await response.json();
+    assert.equal(products.length, 230);
+    assert.equal(products.every(item => item.supported), true);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

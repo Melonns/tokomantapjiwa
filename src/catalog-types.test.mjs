@@ -26,8 +26,8 @@ test('tab, grid brand, dan empty state mengikuti tipe aktif', () => {
 test('kotak tujuan memakai salinan per tipe layanan', () => {
   assert.match(source, /const orderType = catalogTypeOf\(selected \|\| orderItems\[0\] \|\| \{\}\)/)
   assert.match(source, /<span className="step-badge" aria-hidden="true">1<\/span><h3>\{orderType\.targetTitle\}<\/h3>/)
-  assert.match(source, /<label>\{orderType\.targetLabel\} <input/)
-  assert.match(source, /placeholder=\{orderType\.targetPlaceholder\}/)
-  assert.match(source, /\{orderFormat !== 'plain' && <p className="field-hint">Pastikan User ID dan Zone ID sesuai akun game tujuan\.<\/p>\}/)
-  assert.match(source, /\{orderFormat === 'plain' \? orderType\.targetHint : 'User ID dan Zone ID numerik\. Jangan masukkan password game\.'\}/)
+  assert.match(source, /<label>\{orderFormat === 'riot' \? 'Riot ID' : orderType\.targetLabel\} <input/)
+  assert.match(source, /placeholder=\{orderFormat === 'riot' \? 'Nama#1234' : orderType\.targetPlaceholder\}/)
+  assert.match(source, /\{orderFormat === 'ml_concat' && <p className="field-hint">Pastikan User ID dan Zone ID sesuai akun game tujuan\.<\/p>\}/)
+  assert.match(source, /\{orderFormat === 'plain' \? orderType\.targetHint : orderFormat === 'ml_concat' \? 'User ID dan Zone ID numerik\. Jangan masukkan password game\.'/)
 })

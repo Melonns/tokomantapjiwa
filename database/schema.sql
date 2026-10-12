@@ -3,19 +3,22 @@
 -- owner_id uuid NOT NULL REFERENCES auth.users(id). Never infer owner from order ID.
 -- Instalasi lama (produk sudah ada) harus memperbarui constraint CHECK secara manual:
 --   ALTER TABLE products DROP CONSTRAINT products_customer_format_check;
---   ALTER TABLE products ADD CONSTRAINT products_customer_format_check CHECK (customer_format IN ('ml_concat', 'plain'));
+--   ALTER TABLE products ADD CONSTRAINT products_customer_format_check CHECK (customer_format IN ('ml_concat', 'plain', 'uid_server', 'riot'));
+--   ALTER TABLE orders DROP CONSTRAINT orders_user_id_check;
+--   ALTER TABLE orders ADD CONSTRAINT orders_user_id_check CHECK (user_id ~ '^[A-Za-z0-9 ._#-]{1,64}$');
 --   ALTER TABLE orders DROP CONSTRAINT orders_customer_no_check;
 --   ALTER TABLE orders ADD CONSTRAINT orders_customer_no_check CHECK (length(customer_no) BETWEEN 1 AND 128);
 --   ALTER TABLE orders DROP CONSTRAINT orders_zone_id_check;
 --   ALTER TABLE orders ADD CONSTRAINT orders_zone_id_check CHECK (zone_id ~ '^[A-Za-z0-9_-]{0,64}$');
+-- Instalasi lama juga menjalankan blok CREATE TABLE IF NOT EXISTS account_checks/account_check_logs (beserta RLS/REVOKE) dari file ini.
 CREATE TABLE IF NOT EXISTS products (
   id text PRIMARY KEY CHECK (id ~ '^[A-Za-z0-9_-]{1,64}$'),
   name text NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
   game text NOT NULL CHECK (length(game) BETWEEN 1 AND 80),
   price integer NOT NULL CHECK (price BETWEEN 1 AND 100000000),
   digi_sku text NOT NULL CHECK (length(digi_sku) BETWEEN 1 AND 80),
-  -- ponytail: Format tujuan harus terdaftar di server (MOBILE LEGENDS: ml_concat, FREE FIRE: plain); verifikasi SKU/format sebelum aktif.
-  customer_format text NOT NULL DEFAULT 'ml_concat' CHECK (customer_format IN ('ml_concat', 'plain')),
+  -- ponytail: Format tujuan harus terdaftar di server (MOBILE LEGENDS: ml_concat, GENSHIN/HONKAI: uid_server, VALORANT: riot, lainnya: plain); verifikasi SKU/format sebelum aktif.
+  customer_format text NOT NULL DEFAULT 'ml_concat' CHECK (customer_format IN ('ml_concat', 'plain', 'uid_server', 'riot')),
   enabled boolean NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS products_enabled_idx ON products (game, id) WHERE enabled;
@@ -39,7 +42,7 @@ CREATE TABLE IF NOT EXISTS orders (
   price integer NOT NULL CHECK (price BETWEEN 1 AND 100000000),
   digi_sku text NOT NULL,
   customer_no text NOT NULL CHECK (length(customer_no) BETWEEN 1 AND 128),
-  user_id text NOT NULL CHECK (user_id ~ '^[A-Za-z0-9_-]{1,64}$'),
+  user_id text NOT NULL CHECK (user_id ~ '^[A-Za-z0-9 ._#-]{1,64}$'),
   zone_id text NOT NULL CHECK (zone_id ~ '^[A-Za-z0-9_-]{0,64}$'),
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review')),
   redirect_url text,
@@ -51,6 +54,27 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
+
+
+-- Cache global hasil cek nickname per (brand, User ID, Zone ID). Baris dianggap segar 30 hari oleh server; baris gagal tidak disimpan.
+CREATE TABLE IF NOT EXISTS account_checks (
+  game text NOT NULL CHECK (length(game) BETWEEN 1 AND 80),
+  user_id text NOT NULL CHECK (user_id ~ '^[A-Za-z0-9_-]{1,64}$'),
+  zone_id text NOT NULL DEFAULT '' CHECK (zone_id ~ '^[A-Za-z0-9_-]{0,64}$'),
+  nickname text NOT NULL CHECK (length(nickname) BETWEEN 1 AND 120),
+  region text NOT NULL DEFAULT '' CHECK (length(region) <= 40),
+  checked_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (game, user_id, zone_id)
+);
+
+-- Catatan pemakaian cek per akun pembeli, untuk batas harian (kuota di server/check.mjs).
+CREATE TABLE IF NOT EXISTS account_check_logs (
+  id bigserial PRIMARY KEY,
+  owner_id uuid NOT NULL REFERENCES auth.users(id),
+  game text NOT NULL CHECK (length(game) BETWEEN 1 AND 80),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS account_check_logs_owner_idx ON account_check_logs (owner_id, created_at DESC);
 
 -- Berikan akses admin secara manual dengan UUID auth.users yang sudah diverifikasi.
 -- Tidak ada admin bawaan; akun baru selalu buyer.
@@ -65,3 +89,6 @@ ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE supplier_products ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON products, orders, admin_users, supplier_products FROM anon, authenticated;
+ALTER TABLE account_checks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE account_check_logs ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON account_checks, account_check_logs FROM anon, authenticated;

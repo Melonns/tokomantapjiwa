@@ -1,13 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
+import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
 // ponytail: Format tujuan per brand. Brand di luar daftar ini hanya bisa disimpan sebagai draf harga
 // sampai format tujuannya dipastikan. Telco/e-money/PLN/TV = input polos (nomor tujuan apa adanya).
+// Genshin/Honkai memakai uid_server (UID|server; token server mengikuti petunjuk seller "[UID]|[Server]"); Valorant memakai Riot ID bertag apa adanya (riot).
 const customerFormats = {
   'MOBILE LEGENDS': 'ml_concat',
   'FREE FIRE': 'plain',
+  'GENSHIN IMPACT': 'uid_server', 'HONKAI STAR RAIL': 'uid_server',
+  'VALORANT': 'riot',
+  'SPEED DRIFTERS': 'plain', 'PERTAMINA GAS': 'plain',
   'TELKOMSEL': 'plain', 'INDOSAT': 'plain', 'XL': 'plain', 'AXIS': 'plain', 'TRI': 'plain', 'SMARTFREN': 'plain', 'BY.U': 'plain',
   'DANA': 'plain', 'GO PAY': 'plain', 'OVO': 'plain', 'SHOPEE PAY': 'plain',
   'PLN': 'plain', 'K-VISION DAN GOL': 'plain',
@@ -133,7 +138,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       const path = new URL(req.url, 'http://localhost').pathname;
       if (req.method === 'GET' && path === '/api/products') {
         const { rows } = await pool.query('SELECT p.id, p.name, p.game, p.price, p.customer_format AS "format", COALESCE(s.category, \'\') AS category FROM products p LEFT JOIN supplier_products s ON s.sku = p.id WHERE p.enabled = true ORDER BY p.game, p.id');
-        return send(res, 200, { products: rows.map(p => ({ ...p, id: String(p.id), category: String(p.category || '') })), checkoutAvailable: checkoutReady(env) });
+        return send(res, 200, { products: rows.map(p => ({ ...p, id: String(p.id), category: String(p.category || ''), checkable: Boolean(checkableGame(p.game)) })), checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env) });
       }
       if (req.method === 'GET' && path === '/api/me') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
@@ -154,7 +159,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const saved = new Map(rows.map(row => [row.id, row]));
         const q = (new URL(req.url, 'http://localhost').searchParams.get('q') || '').trim().toLowerCase();
         const match = (name, game, sku) => !q || name.toLowerCase().includes(q) || game.toLowerCase().includes(q) || sku.toLowerCase().includes(q);
-        const products = catalog.filter(item => match(item.name, item.game, item.id)).slice(0, 200).map(item => ({
+        const products = catalog.filter(item => match(item.name, item.game, item.id)).map(item => ({
           sku: item.id, name: item.name, game: item.game, category: item.category, variant: item.variant, cost: item.price,
           supported: Boolean(formatFor(item.game)),
           price: saved.get(item.id)?.price ?? null,
@@ -222,6 +227,38 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (typeof snap?.redirect_url !== 'string' || !snap.redirect_url.startsWith(`https://app.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/snap/`)) throw error(502, 'Respons pembayaran tidak valid.');
         await pool.query('UPDATE orders SET redirect_url = $2, updated_at = now() WHERE id = $1', [id, snap.redirect_url]);
         return send(res, 201, { orderId: id, redirectUrl: snap.redirect_url });
+      }
+      // ponytail: cek nickname = layanan cek per brand (ML pakai cek ML, FF pakai cek FF); hasil disimpan supaya tidak bayar berulang.
+      if (req.method === 'POST' && path === '/api/check-account') {
+        const ownerId = await authenticatedOwner(req, fetchImpl, env);
+        let body, input;
+        try { body = await readJson(req); input = validateCheckout(body); } catch (err) { throw err.status ? err : error(400, err.message); }
+        const { rows } = await pool.query('SELECT id, game, customer_format FROM products WHERE id = $1 AND enabled = true', [input.productId]);
+        const product = rows[0];
+        if (!product) throw error(404, 'Produk tidak tersedia.');
+        const checkGame = checkableGame(product.game);
+        if (!checkGame) throw error(422, 'Cek nickname belum tersedia untuk layanan ini.');
+        if (!checkReady(env)) throw error(503, 'Cek nickname belum aktif di server ini.');
+        try { buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
+        const brand = String(product.game || '').toUpperCase();
+        if (body?.force !== true) {
+          const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '30 days'", [brand, input.userId, input.zoneId]);
+          if (cached.rows[0]) return send(res, 200, { check: { nickname: cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
+        }
+        const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
+        if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas cek nickname harian tercapai. Coba lagi besok.');
+        let payload;
+        try {
+          const provider = checkRequest(env, checkGame, input);
+          const response = await fetchImpl(provider.url, provider.options);
+          if (!response.ok) throw error(502, 'Cek nickname sedang tidak tersedia. Coba lagi nanti.');
+          payload = await response.json();
+        } catch (err) { throw err.status ? err : error(502, 'Cek nickname sedang tidak tersedia. Coba lagi nanti.'); }
+        const result = checkResult(payload);
+        if (!result) throw error(404, 'Akun tidak ditemukan. Periksa lagi User ID dan Zone ID.');
+        await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [brand, input.userId, input.zoneId, result.nickname, result.region]);
+        await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
+        return send(res, 200, { check: { nickname: result.nickname, region: result.region, cached: false, checkedAt: new Date().toISOString() } });
       }
       if (req.method === 'GET' && path === '/api/orders') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);

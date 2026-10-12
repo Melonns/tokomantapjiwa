@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises'
 const css = await readFile(new URL('./store.css', import.meta.url), 'utf8')
 
 test('input boxes shrink to 44px with 16px text (checkout 14.4px bug fixed)', () => {
-  assert.match(css, /\.search-field input,\.checkout-form input,\.order-panel input\{[^}]*min-height:44px[^}]*font-size:1rem\}/)
+  assert.match(css, /\.search-field input,\.checkout-form input,\.order-panel input,\.checkout-form select\{[^}]*min-height:44px[^}]*font-size:1rem\}/)
   assert.match(css, /\.home-search input\{[^}]*min-height:44px[^}]*\}/)
   assert.match(css, /\.profile-form input\{width:100%;min-width:0;min-height:44px\}/)
 })
@@ -66,8 +66,9 @@ test('setiap input mematikan riwayat/autofill browser (kredensial & OTP tetap se
   }
 })
 
-test('checkout hanya meminta Zone ID untuk produk berformat ml_concat', async () => {
+test('checkout meminta Zone ID hanya untuk produk ml_concat dan pilih server untuk uid_server', async () => {
   const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
-  assert.match(source, /\{orderFormat !== 'plain' && <label>Zone ID/)
-  assert.match(source, /selected\.format === 'plain' \? \{ productId: selected\.id, userId: userId\.trim\(\) \} : \{ productId: selected\.id, userId: userId\.trim\(\), zoneId: zoneId\.trim\(\) \}/)
+  assert.match(source, /\{orderFormat === 'ml_concat' && <label>Zone ID/)
+  assert.match(source, /\{orderFormat === 'uid_server' && <label>Server <select/)
+  assert.match(source, /selected\.format === 'plain' \|\| selected\.format === 'riot' \? \{ productId: selected\.id, userId: userId\.trim\(\) \} : \{ productId: selected\.id, userId: userId\.trim\(\), zoneId: zoneId\.trim\(\) \}/)
 })
