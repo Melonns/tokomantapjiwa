@@ -1,13 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { validateCheckout, verifiedPayment } from './core.mjs';
-import { supplierCatalog } from './catalog.mjs';
+import { validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
+import { fetchSupplierCatalog } from './catalog.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
-// ponytail: Checkout baru mendukung format ml_concat (Mobile Legends); brand lain disimpan sebagai draf harga saja.
-const supportedBrand = 'MOBILE LEGENDS';
+// ponytail: Format tujuan per brand. Brand di luar daftar ini hanya bisa disimpan sebagai draf harga
+// sampai format tujuannya dipastikan. Telco/e-money/PLN/TV = input polos (nomor tujuan apa adanya).
+const customerFormats = {
+  'MOBILE LEGENDS': 'ml_concat',
+  'FREE FIRE': 'plain',
+  'TELKOMSEL': 'plain', 'INDOSAT': 'plain', 'XL': 'plain', 'AXIS': 'plain', 'TRI': 'plain', 'SMARTFREN': 'plain', 'BY.U': 'plain',
+  'DANA': 'plain', 'GO PAY': 'plain', 'OVO': 'plain', 'SHOPEE PAY': 'plain',
+  'PLN': 'plain', 'K-VISION DAN GOL': 'plain',
+};
+const formatFor = game => customerFormats[String(game || '').toUpperCase()] || null;
 const error = (status, message) => Object.assign(new Error(message), { status });
 const ready = env => Boolean(env.DATABASE_URL && env.MIDTRANS_SERVER_KEY && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((env.MIDTRANS_ENV === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (env.MIDTRANS_ENV === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
 const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
+// ponytail: cermin katalog supplier disimpan di DB; pembacaan selalu memakai hasil sinkron terakhir.
+const supplierRowWhere = 'synced_at = (SELECT max(synced_at) FROM supplier_products)';
 
 function send(res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
@@ -91,19 +101,39 @@ async function submitDigi(pool, fetchImpl, env, row) {
   }
 }
 
-async function supplierList(env, loadSupplierCatalog) {
+// ponytail: pull Digiflazz hanya saat sinkron diminta; INSERT + DELETE memakai tanda synced_at yang sama supaya pembacaan konsisten.
+async function saveSupplierCatalog(pool, fetchImpl, env) {
+  const items = await supplierList(env, fetchImpl);
+  if (!items.length) throw error(502, 'Katalog supplier kosong; sinkron dibatalkan agar daftar lama tidak terhapus.');
+  const syncedAt = new Date();
+  const params = [syncedAt];
+  const values = items.map(item => {
+    const base = params.length + 1;
+    params.push(item.id, item.name, item.game, item.category, item.variant, item.price);
+    return `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $1)`;
+  });
+  await pool.query(`INSERT INTO supplier_products (sku, name, game, category, variant, price, synced_at) VALUES ${values.join(', ')}
+    ON CONFLICT (sku) DO UPDATE SET name = EXCLUDED.name, game = EXCLUDED.game, category = EXCLUDED.category, variant = EXCLUDED.variant, price = EXCLUDED.price, synced_at = EXCLUDED.synced_at`, params);
+  await pool.query('DELETE FROM supplier_products WHERE synced_at < $1', [syncedAt]);
+  return { items, syncedAt };
+}
+
+async function supplierList(env, fetchImpl) {
   if (!env.DIGIFLAZZ_USERNAME || !env.DIGIFLAZZ_API_KEY) throw error(503, 'Katalog supplier belum dikonfigurasi di server.');
-  try { return await loadSupplierCatalog(); } catch { throw error(502, 'Katalog supplier belum bisa dimuat. Coba lagi nanti.'); }
+  try { return await fetchSupplierCatalog(fetchImpl, env); } catch (err) {
+    // ponytail: rc 83 = Digiflazz membatasi cek pricelist; pesannya dibedakan supaya admin tahu harus menunggu, bukan server rusak.
+    if (err?.rc === '83') throw error(502, 'Digiflazz membatasi cek katalog (beberapa kali dalam beberapa menit). Coba lagi nanti.');
+    throw error(502, 'Katalog supplier belum bisa dimuat. Coba lagi nanti.');
+  }
 }
 
 export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
-  const loadSupplierCatalog = supplierCatalog(fetchImpl, env);
   return async (req, res) => {
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
       if (req.method === 'GET' && path === '/api/products') {
-        const { rows } = await pool.query('SELECT id, name, game, price FROM products WHERE enabled = true ORDER BY game, id');
-        return send(res, 200, { products: rows.map(p => ({ ...p, id: String(p.id) })), checkoutAvailable: checkoutReady(env) });
+        const { rows } = await pool.query('SELECT p.id, p.name, p.game, p.price, p.customer_format AS "format", COALESCE(s.category, \'\') AS category FROM products p LEFT JOIN supplier_products s ON s.sku = p.id WHERE p.enabled = true ORDER BY p.game, p.id');
+        return send(res, 200, { products: rows.map(p => ({ ...p, id: String(p.id), category: String(p.category || '') })), checkoutAvailable: checkoutReady(env) });
       }
       if (req.method === 'GET' && path === '/api/me') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
@@ -117,23 +147,30 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       if (req.method === 'GET' && path === '/api/admin/supplier-products') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
-        const catalog = await supplierList(env, loadSupplierCatalog);
+        const { rows: catalogRows } = await pool.query(`SELECT sku, name, game, category, variant, price, synced_at FROM supplier_products WHERE ${supplierRowWhere}`);
+        const catalog = catalogRows.map(row => ({ id: row.sku, name: row.name, game: row.game, category: row.category, variant: row.variant, price: Number(row.price) }));
+        const syncedAt = catalogRows.length ? new Date(Math.max(...catalogRows.map(row => new Date(row.synced_at).getTime()))) : null;
         const { rows } = await pool.query('SELECT id, name, game, price, enabled FROM products');
         const saved = new Map(rows.map(row => [row.id, row]));
         const q = (new URL(req.url, 'http://localhost').searchParams.get('q') || '').trim().toLowerCase();
         const match = (name, game, sku) => !q || name.toLowerCase().includes(q) || game.toLowerCase().includes(q) || sku.toLowerCase().includes(q);
         const products = catalog.filter(item => match(item.name, item.game, item.id)).slice(0, 200).map(item => ({
-          sku: item.id, name: item.name, game: item.game, category: item.category, cost: item.price,
-          supported: item.game === supportedBrand,
+          sku: item.id, name: item.name, game: item.game, category: item.category, variant: item.variant, cost: item.price,
+          supported: Boolean(formatFor(item.game)),
           price: saved.get(item.id)?.price ?? null,
           enabled: saved.get(item.id)?.enabled ?? false,
         }));
         const catalogIds = new Set(catalog.map(item => item.id));
         const missing = rows.filter(row => !catalogIds.has(row.id) && match(row.name, row.game, row.id)).map(row => ({
-          sku: row.id, name: row.name, game: row.game, category: null, cost: null,
-          supported: row.game === supportedBrand, missing: true, price: row.price, enabled: row.enabled,
+          sku: row.id, name: row.name, game: row.game, category: null, variant: null, cost: null,
+          supported: Boolean(formatFor(row.game)), missing: true, price: row.price, enabled: row.enabled,
         }));
-        return send(res, 200, { products: products.concat(missing) });
+        return send(res, 200, { products: products.concat(missing), catalogFetchedAt: syncedAt ? syncedAt.toISOString() : null, catalogStale: !syncedAt || Date.now() - syncedAt.getTime() > 10 * 60 * 1000 });
+      }
+      if (req.method === 'POST' && path === '/api/admin/supplier-products/sync') {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const { items, syncedAt } = await saveSupplierCatalog(pool, fetchImpl, env);
+        return send(res, 200, { synced: items.length, catalogFetchedAt: syncedAt.toISOString() });
       }
       if (req.method === 'PUT' && path.startsWith('/api/admin/products/')) {
         const sku = path.slice('/api/admin/products/'.length);
@@ -144,18 +181,20 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const { price, enabled } = body ?? {};
         if (!Number.isSafeInteger(price) || price < 1 || price > 100000000) throw error(400, 'Harga jual tidak valid.');
         if (typeof enabled !== 'boolean') throw error(400, 'Status produk tidak valid.');
-        const item = (await supplierList(env, loadSupplierCatalog)).find(product => product.id === sku);
+        // ponytail: katalog dibaca dari tabel sinkron; SKU baru yang belum tersinkron tetap ditolak sampai sinkron berikutnya.
+        const { rows: supplierRows } = await pool.query(`SELECT name, game, category, variant, price FROM supplier_products WHERE sku = $1 AND ${supplierRowWhere}`, [sku]);
+        const item = supplierRows[0];
         if (!item && enabled) throw error(409, 'SKU tidak ada di katalog supplier aktif.');
-        if (item && enabled && item.game !== supportedBrand) throw error(422, 'Format tujuan produk ini belum didukung checkout.');
+        if (item && enabled && !formatFor(item.game)) throw error(422, 'Format tujuan produk ini belum didukung checkout.');
         const { rows } = item
-          ? await pool.query(`INSERT INTO products (id, name, game, price, digi_sku, customer_format, enabled) VALUES ($1, $2, $3, $4, $1, 'ml_concat', $5)
+          ? await pool.query(`INSERT INTO products (id, name, game, price, digi_sku, customer_format, enabled) VALUES ($1, $2, $3, $4, $1, $6, $5)
             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, game = EXCLUDED.game, price = EXCLUDED.price, digi_sku = EXCLUDED.digi_sku, enabled = EXCLUDED.enabled
-            RETURNING id, name, game, price, enabled`, [sku, item.name, item.game, price, enabled])
+            RETURNING id, name, game, price, enabled`, [sku, item.name, item.game, price, enabled, formatFor(item.game)])
           : await pool.query('UPDATE products SET price = $2, enabled = false WHERE id = $1 RETURNING id, name, game, price, enabled', [sku, price]);
         if (!rows[0]) throw error(404, 'Produk tidak ditemukan.');
         return send(res, 200, { product: {
-          sku: rows[0].id, name: rows[0].name, game: rows[0].game, category: item?.category ?? null, cost: item?.price ?? null,
-          supported: item ? item.game === supportedBrand : rows[0].game === supportedBrand,
+          sku: rows[0].id, name: rows[0].name, game: rows[0].game, category: item?.category ?? null, variant: item?.variant ?? null, cost: item?.price ?? null,
+          supported: Boolean(formatFor(item ? item.game : rows[0].game)),
           missing: !item, price: rows[0].price, enabled: rows[0].enabled,
         } });
       }
@@ -167,9 +206,10 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const { rows } = await pool.query('SELECT id, name, price, digi_sku, customer_format FROM products WHERE id = $1 AND enabled = true', [input.productId]);
         const product = rows[0];
         if (!product) throw error(404, 'Produk tidak tersedia.');
-        if (product.customer_format !== 'ml_concat') throw error(422, 'Format tujuan belum didukung.');
+        if (!Object.values(customerFormats).includes(product.customer_format)) throw error(422, 'Format tujuan belum didukung.');
         const id = randomUUID();
-        const customerNo = input.userId + input.zoneId;
+        let customerNo;
+        try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)', [id, product.id, product.name, product.price, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId]);
         // ponytail: Snap create is one-shot; failed/ambiguous requests stay pending for manual reconciliation, never reuse order_id.
         let snap;

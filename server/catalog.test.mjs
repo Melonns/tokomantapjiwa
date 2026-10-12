@@ -2,34 +2,42 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { supplierCatalog } from './catalog.mjs';
+import { fetchSupplierCatalog } from './catalog.mjs';
 import { createHandler } from './app.mjs';
 
 const env = { DIGIFLAZZ_USERNAME: 'test-buyer', DIGIFLAZZ_API_KEY: 'test-key', CHECKOUT_ENABLED: 'true' };
-const active = { product_name: 'Test product', brand: 'Test brand', category: 'Pulsa', buyer_sku_code: 'test-sku', price: '10000', buyer_product_status: true, seller_product_status: true, unlimited_stock: false, stock: '1' };
+const active = { product_name: 'Test product', brand: 'Test brand', type: 'Umum', category: 'Pulsa', buyer_sku_code: 'test-sku', price: '10000', buyer_product_status: true, seller_product_status: true, unlimited_stock: false, stock: '1' };
 
-test('catalog filters unavailable and invalid products, caches concurrent requests, exposes no credentials', async () => {
+test('katalog supplier disaring, SKU ganda memakai baris terakhir, kredensial tidak ikut keluar', async () => {
   let calls = 0;
-  const load = supplierCatalog(async (url, options) => {
+  const items = await fetchSupplierCatalog(async (url, options) => {
     calls++;
     assert.equal(url, 'https://api.digiflazz.com/v1/price-list');
     assert.deepEqual(JSON.parse(options.body), { cmd: 'prepaid', username: env.DIGIFLAZZ_USERNAME, sign: createHash('md5').update('test-buyertest-keypricelist').digest('hex') });
-    return { ok: true, json: async () => ({ data: [active, { ...active, seller_product_status: false }, { ...active, stock: 0 }, { ...active, price: -1 }, { ...active, buyer_sku_code: 'unlimited', unlimited_stock: true, stock: 0 }] }) };
+    return { ok: true, json: async () => ({ data: [
+      active,
+      { ...active, seller_product_status: false },
+      { ...active, stock: 0 },
+      { ...active, price: -1 },
+      { ...active, buyer_sku_code: 'unlimited', unlimited_stock: true, stock: 0 },
+      { ...active, price: '12000', product_name: ' Test product ' },
+      { ...active, buyer_sku_code: 'bad-game', brand: 'X'.repeat(200) },
+    ] }) };
   }, env);
-  const [a, b] = await Promise.all([load(), load()]);
-  assert.equal(a, b);
-  assert.equal(a.length, 2);
-  assert.deepEqual(a[0], { id: 'test-sku', name: 'Test product', game: 'Test brand', category: 'Pulsa', price: 10000 });
-  await load();
   assert.equal(calls, 1);
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.find(item => item.id === 'test-sku'), { id: 'test-sku', name: 'Test product', game: 'Test brand', category: 'Pulsa', variant: 'Umum', price: 12000 });
+  assert.equal(items.find(item => item.id === 'unlimited').price, 10000);
+  assert.equal(JSON.stringify(items).includes('test-key'), false);
 });
 
-test('provider error is not cached and retry can recover', async () => {
+test('error provider membawa rc supaya endpoint bisa membedakan pesannya, dan pull berikutnya bisa pulih', async () => {
   let calls = 0;
-  const load = supplierCatalog(async () => ({ ok: true, json: async () => ++calls === 1 ? { data: { rc: '03' } } : { data: [active] } }), env);
-  await assert.rejects(load());
-  assert.equal((await load()).length, 1);
-  assert.equal(calls, 2);
+  await assert.rejects(fetchSupplierCatalog(async () => { calls++; return { ok: true, json: async () => ({ data: { rc: '83', message: 'limitasi pengecekan pricelist' } }) }; }, env), err => err.rc === '83');
+  const items = await fetchSupplierCatalog(async () => ({ ok: true, json: async () => ({ data: [active] }) }), env);
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0], { id: 'test-sku', name: 'Test product', game: 'Test brand', category: 'Pulsa', variant: 'Umum', price: 10000 });
+  assert.equal(calls, 1);
 });
 
 test('empty merchant catalog serves no supplier prices and never touches Digiflazz', async () => {

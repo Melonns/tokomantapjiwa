@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
+const css = await readFile(new URL('./store.css', import.meta.url), 'utf8');
+const server = await readFile(new URL('../server/app.mjs', import.meta.url), 'utf8');
 
 test('storefront never renders raw supplier prices', () => {
   assert.equal(source.includes('supplierPreview'), false);
@@ -43,10 +45,33 @@ test('admin pricing groups per kategori dan game dengan sakelar, tanpa tombol te
   assert.match(source, /role="switch"/);
   assert.match(source, /toggleGroup\(category\.items, event\.target\.checked\)/);
   assert.match(source, /toggleGroup\(brand\.items, event\.target\.checked\)/);
-  assert.doesNotMatch(source, /price-collapse/);
+  assert.match(source, /<details className="price-category" open=\{Boolean\(catalogQuery\.trim\(\)\)\}/);
+  assert.match(source, /<details className="price-brand-details" open=\{Boolean\(catalogQuery\.trim\(\)\)\}/);
+  assert.match(source, /<summary className="price-cat-head"/);
+  assert.match(source, /<summary className="price-brand-head"/);
+  assert.match(source, /className="switch price-category-switch"/);
+  assert.match(source, /className="switch price-brand-switch"/);
+  assert.match(css, /\.price-group>\.price-category-switch,\.price-brand>\.price-brand-switch\{position:absolute/);
+  assert.doesNotMatch(source, /<summary[^>]*>[^]*?<label className="switch"[^]*?<\/summary>/);
   assert.doesNotMatch(source, /price-group-button/);
   assert.doesNotMatch(source, /Sembunyikan semua/);
   assert.match(source, /item\.category \|\| 'Lainnya'/);
   assert.match(source, /item\.game \|\| 'Lainnya'/);
   assert.match(source, /!item\.supported \|\| item\.missing === true \|\| !priceOk/);
+});
+
+test('admin pricing menampilkan varian tujuan dan brand berformat plain', () => {
+  assert.match(source, /item\.variant \? ` · \$\{item\.variant\}` : ''/);
+  assert.match(server, /'FREE FIRE': 'plain'/);
+  assert.match(server, /'MOBILE LEGENDS': 'ml_concat'/);
+});
+
+test('panel harga menyimpan katalog di server dan bisa menyinkron ulang sendiri', () => {
+  assert.match(source, /className="catalog-sync"/);
+  assert.match(source, /Perbarui katalog/);
+  assert.match(source, /\/api\/admin\/supplier-products\/sync/);
+  assert.match(source, /setCatalogSyncNotice\(''\)[^]*?request\('\/api\/admin\/supplier-products\/sync', \{ method: 'POST'/);
+  assert.match(source, /className="pricing-stale"/);
+  assert.match(source, /setAdminCatalogStale\(data\.catalogStale === true\)/);
+  assert.match(css, /\.pricing-stale\{flex-basis:100%/);
 });

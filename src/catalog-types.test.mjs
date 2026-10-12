@@ -1,0 +1,33 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+
+const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
+
+test('katalog memakai tipe dari kategori supplier, bukan tab statis', () => {
+  assert.match(source, /const CATALOG_TYPES = \[/)
+  assert.match(source, /const catalogTypeOf = \(item\) => CATALOG_TYPES\.find\(\(type\) => type\.categories\.includes\(item && item\.category\)\) \|\| OTHER_CATALOG_TYPE/)
+  assert.match(source, /const \[category, setCategory\] = useState\('game'\)/)
+  assert.match(source, /const ALL_CATALOG_TYPES = \[\.\.\.CATALOG_TYPES, OTHER_CATALOG_TYPE\]/)
+  assert.match(source, /const activeType = ALL_CATALOG_TYPES\.find\(\(type\) => type\.id === category\) \|\| CATALOG_TYPES\[0\]/)
+  for (const category of ["'Games'", "'Pulsa'", "'Data'", "'E-Money'", "'PLN'", "'TV'"]) {
+    assert.ok(source.includes(category), `kategori ${category} hilang dari peta tipe`)
+  }
+  assert.doesNotMatch(source, /\['Game', 'Pulsa', 'Hiburan'\]/)
+})
+
+test('tab, grid brand, dan empty state mengikuti tipe aktif', () => {
+  assert.match(source, /\{typeTabs\.map\(\(type\) => <button key=\{type\.id\} type="button" className=\{activeType\.id === type\.id \? 'active' : ''\}/)
+  assert.match(source, /const activeBrands = \[\.\.\.new Set\(products\.filter\(\(item\) => catalogTypeOf\(item\)\.id === activeType\.id\)\.map\(\(item\) => item\.game\)\.filter\(Boolean\)\)\]/)
+  assert.match(source, /\{activeBrands\.map\(\(item\) => <button key=\{item\} type="button" className="game-card"/)
+  assert.match(source, /<strong>\{activeType\.label\} belum tersedia\.<\/strong>/)
+})
+
+test('kotak tujuan memakai salinan per tipe layanan', () => {
+  assert.match(source, /const orderType = catalogTypeOf\(selected \|\| orderItems\[0\] \|\| \{\}\)/)
+  assert.match(source, /<span className="step-badge" aria-hidden="true">1<\/span><h3>\{orderType\.targetTitle\}<\/h3>/)
+  assert.match(source, /<label>\{orderType\.targetLabel\} <input/)
+  assert.match(source, /placeholder=\{orderType\.targetPlaceholder\}/)
+  assert.match(source, /\{orderFormat !== 'plain' && <p className="field-hint">Pastikan User ID dan Zone ID sesuai akun game tujuan\.<\/p>\}/)
+  assert.match(source, /\{orderFormat === 'plain' \? orderType\.targetHint : 'User ID dan Zone ID numerik\. Jangan masukkan password game\.'\}/)
+})

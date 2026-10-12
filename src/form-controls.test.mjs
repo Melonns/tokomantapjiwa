@@ -41,6 +41,13 @@ test('supporting text stays separate from headings and checkout inputs', () => {
   assert.match(css, /\.checkout-form \.field-hint\{margin:14px 0\}/)
 })
 
+test('login and SMS forms keep labels, actions, and messages separate', () => {
+  assert.match(css, /\.order-panel>\.profile-form\{margin-top:20px\}/);
+  assert.match(css, /\.order-panel \.code-form\{display:grid;gap:8px;margin-top:22px\}/);
+  assert.match(css, /\.order-panel \.code-form \.order-input\{margin-top:0\}/);
+  assert.match(css, /\.order-panel>\.link-button\{margin-top:18px\}/);
+})
+
 test('sign out is a red danger action in its own separated zone', () => {
   assert.match(css, /:root\{[^}]*--danger:#ff8f83/)
   assert.match(css, /\.signout-button\{[^}]*var\(--danger\)/)
@@ -57,4 +64,10 @@ test('setiap input mematikan riwayat/autofill browser (kredensial & OTP tetap se
     const exempt = /type="(?:checkbox|radio|hidden)"/.test(tag) || /readOnly/.test(tag)
     if (!exempt) assert.match(tag, /autoComplete="(?:off|one-time-code|current-password|new-password)"/, tag)
   }
+})
+
+test('checkout hanya meminta Zone ID untuk produk berformat ml_concat', async () => {
+  const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
+  assert.match(source, /\{orderFormat !== 'plain' && <label>Zone ID/)
+  assert.match(source, /selected\.format === 'plain' \? \{ productId: selected\.id, userId: userId\.trim\(\) \} : \{ productId: selected\.id, userId: userId\.trim\(\), zoneId: zoneId\.trim\(\) \}/)
 })

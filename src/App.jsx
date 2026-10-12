@@ -17,6 +17,27 @@ const restoredSession = supabase ? restoreSession(supabase.auth, window.location
 if (import.meta.hot) import.meta.hot.dispose(() => supabase?.auth.stopAutoRefresh())
 const rupiah = (amount) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amount)
 
+// Blueprint metode bayar: satu tempat untuk diubah sesuai kanal Midtrans yang aktif nanti.
+const PAYMENT_METHODS = [
+  { id: 'qris', label: 'QRIS', note: 'Scan dari aplikasi bank atau e-wallet' },
+  { id: 'va', label: 'Transfer bank / VA', note: 'Nomor virtual account per pesanan' },
+  { id: 'ewallet', label: 'E-wallet', note: 'GoPay, OVO, DANA, ShopeePay' },
+]
+const MAX_ITEM_QTY = 10
+
+// ponytail: Tipe katalog storefront. Kategori mengikuti kolom category dari data supplier (mirror);
+// tab + salinan teks ditulis di sini biar gampang diubah saat kategori baru muncul.
+const CATALOG_TYPES = [
+  { id: 'game', label: 'Game', categories: ['Games'], targetTitle: 'Kredensial akun tujuan', targetLabel: 'User ID', targetHint: 'User ID numerik. Jangan masukkan password game.', targetPlaceholder: 'ID akun game' },
+  { id: 'pulsa', label: 'Pulsa & Data', categories: ['Pulsa', 'Data', 'Masa Aktif', 'Paket SMS & Telpon', 'Aktivasi Voucher', 'Aktivasi Perdana'], targetTitle: 'Nomor tujuan', targetLabel: 'Nomor HP', targetHint: 'Nomor HP tujuan yang aktif. Jangan masukkan PIN atau kode OTP.', targetPlaceholder: '08xxxxxxxxxx' },
+  { id: 'ewallet', label: 'E-Money', categories: ['E-Money'], targetTitle: 'Nomor akun tujuan', targetLabel: 'Nomor HP', targetHint: 'Nomor HP yang terdaftar pada akun e-money tujuan.', targetPlaceholder: '08xxxxxxxxxx' },
+  { id: 'hiburan', label: 'Hiburan', categories: ['TV'], targetTitle: 'Nomor pelanggan', targetLabel: 'Nomor pelanggan', targetHint: 'Nomor pelanggan atau smart card layanan TV berlangganan.', targetPlaceholder: 'Nomor smart card' },
+  { id: 'tagihan', label: 'Tagihan', categories: ['PLN'], targetTitle: 'Nomor pelanggan', targetLabel: 'Nomor meter / ID pelanggan', targetHint: 'Nomor meter atau ID pelanggan dari tagihan.', targetPlaceholder: 'Nomor meter' },
+]
+const OTHER_CATALOG_TYPE = { id: 'lainnya', label: 'Lainnya', categories: [], targetTitle: 'ID tujuan', targetLabel: 'ID tujuan', targetHint: 'Isi ID atau nomor tujuan sesuai layanan.', targetPlaceholder: 'ID tujuan' }
+const ALL_CATALOG_TYPES = [...CATALOG_TYPES, OTHER_CATALOG_TYPE]
+const catalogTypeOf = (item) => CATALOG_TYPES.find((type) => type.categories.includes(item && item.category)) || OTHER_CATALOG_TYPE
+
 async function request(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } })
   const payload = await response.json().catch(() => ({}))
@@ -83,7 +104,7 @@ function App() {
   const [catalogState, setCatalogState] = useState('loading')
   const [catalogError, setCatalogError] = useState('')
   const [game, setGame] = useState(() => routeFromHash().game)
-  const [category, setCategory] = useState('Game')
+  const [category, setCategory] = useState('game')
   const [view, setView] = useState(() => routeFromHash().view)
   const [adminPage, setAdminPage] = useState(() => routeFromHash().adminPage || 'transactions')
   const [checkoutId, setCheckoutId] = useState(() => routeFromHash().checkoutId)
@@ -97,6 +118,11 @@ function App() {
   const [zoneId, setZoneId] = useState('')
   const [checkoutState, setCheckoutState] = useState('idle')
   const [checkoutError, setCheckoutError] = useState('')
+  const [itemQty, setItemQty] = useState(1)
+  const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0].id)
+  const [promoCode, setPromoCode] = useState('')
+  const [guestEmail, setGuestEmail] = useState('')
+  const [guestPhone, setGuestPhone] = useState('')
   const [session, setSession] = useState(null)
   const [contact, setContact] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
@@ -126,6 +152,10 @@ function App() {
   const [adminCatalog, setAdminCatalog] = useState([])
   const [adminCatalogState, setAdminCatalogState] = useState('idle')
   const [adminCatalogError, setAdminCatalogError] = useState('')
+  const [adminCatalogStale, setAdminCatalogStale] = useState(false)
+  const [adminCatalogFetchedAt, setAdminCatalogFetchedAt] = useState('')
+  const [catalogSyncing, setCatalogSyncing] = useState(false)
+  const [catalogSyncNotice, setCatalogSyncNotice] = useState('')
   const [adminCatalogRetry, setAdminCatalogRetry] = useState(0)
   const [catalogDrafts, setCatalogDrafts] = useState({})
   const [catalogBusy, setCatalogBusy] = useState('')
@@ -267,19 +297,38 @@ function App() {
   }, [session?.access_token, role, roleState, roleToken, adminRetry])
 
   useEffect(() => {
-    if (!session || role !== 'admin' || roleState !== 'ready' || roleToken !== session.access_token) { setAdminCatalog([]); setAdminCatalogState('idle'); return }
+    if (!session || role !== 'admin' || roleState !== 'ready' || roleToken !== session.access_token) { setAdminCatalog([]); setAdminCatalogState('idle'); setAdminCatalogStale(false); return }
     let active = true
     setAdminCatalogState('loading')
     setAdminCatalogError('')
+    setAdminCatalogStale(false)
     authHeaders().then((headers) => request('/api/admin/supplier-products', { headers })).then((data) => {
       if (!active) return
       const items = Array.isArray(data.products) ? data.products : []
       setAdminCatalog(items)
+      setAdminCatalogStale(data.catalogStale === true)
+      setAdminCatalogFetchedAt(typeof data.catalogFetchedAt === 'string' ? data.catalogFetchedAt : '')
       setCatalogDrafts(Object.fromEntries(items.map((item) => [item.sku, { price: item.price == null ? '' : String(item.price), enabled: item.enabled === true }])))
       setAdminCatalogState('ready')
     }).catch((error) => { if (active) { setAdminCatalogError(error.message); setAdminCatalogState('error') } })
     return () => { active = false }
   }, [session?.access_token, role, roleState, roleToken, adminCatalogRetry])
+
+  async function syncCatalog() {
+    if (catalogSyncing) return
+    setCatalogSyncing(true)
+    setCatalogSyncNotice('')
+    try {
+      const headers = await authHeaders()
+      const data = await request('/api/admin/supplier-products/sync', { method: 'POST', headers })
+      setCatalogSyncNotice(`Katalog diperbarui: ${Number(data.synced) || 0} produk.`)
+      setAdminCatalogRetry((value) => value + 1)
+    } catch (error) {
+      setCatalogSyncNotice(error.message)
+    } finally {
+      setCatalogSyncing(false)
+    }
+  }
 
   async function signIn(event) {
     event.preventDefault()
@@ -552,7 +601,7 @@ function App() {
       const data = await request('/api/checkout', {
         method: 'POST',
         headers: await authHeaders(),
-        body: JSON.stringify({ productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim() }),
+        body: JSON.stringify(selected.format === 'plain' ? { productId: selected.id, userId: userId.trim() } : { productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim() }),
       })
       if (!data.orderId || !data.redirectUrl || !/^https:\/\/(app|app\.sandbox)\.midtrans\.com\/snap\//.test(data.redirectUrl)) {
         throw new Error('Tautan pembayaran tidak tersedia. Hubungi pengelola toko.')
@@ -640,11 +689,26 @@ function App() {
   }
 
   const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
+  const activeType = ALL_CATALOG_TYPES.find((type) => type.id === category) || CATALOG_TYPES[0]
+  const typeTabs = products.some((item) => catalogTypeOf(item) === OTHER_CATALOG_TYPE) ? [...CATALOG_TYPES, OTHER_CATALOG_TYPE] : CATALOG_TYPES
+  const activeBrands = [...new Set(products.filter((item) => catalogTypeOf(item).id === activeType.id).map((item) => item.game).filter(Boolean))]
   const searchCatalogs = catalogSearch.trim() ? games.filter((name) => products.some((item) => item.game === name && matchesCatalog(item, catalogSearch))) : []
   const accountName = session?.user.user_metadata?.username || session?.user.email?.split('@')[0] || 'Akun'
   const accountInitial = String(accountName).trim().charAt(0).toLocaleUpperCase('id-ID') || 'A'
   const filtered = products.filter((item) => item.game === game)
   const selected = products.find((item) => item.id === checkoutId) || null
+  const orderItems = view === 'checkout' ? (selected ? products.filter((item) => item.game === selected.game) : []) : filtered
+  const orderFormat = selected?.format || orderItems[0]?.format || 'plain'
+  const orderType = catalogTypeOf(selected || orderItems[0] || {})
+
+  function changeQuantity(delta) {
+    setItemQty((value) => Math.min(MAX_ITEM_QTY, Math.max(1, value + delta)))
+  }
+
+  function setQuantityValue(raw) {
+    const digits = String(raw).replace(/[^0-9]/g, '')
+    setItemQty(digits ? Math.min(MAX_ITEM_QTY, Math.max(1, Number(digits))) : 1)
+  }
 
   function openCatalog(name) {
     setSearchOpen(false)
@@ -714,38 +778,67 @@ function App() {
             <div className="section-heading"><div><h2 id="catalog-title">Katalog</h2></div><p>Pilih kategori dan layanan yang kamu cari.</p></div>
 
             <div className="category-filter" role="group" aria-label="Kategori katalog">
-              {['Game', 'Pulsa', 'Hiburan'].map((item) => <button key={item} type="button" className={category === item ? 'active' : ''} aria-pressed={category === item} onClick={() => { setCategory(item); setCatalogSearch('') }}>{item}</button>)}
+              {typeTabs.map((type) => <button key={type.id} type="button" className={activeType.id === type.id ? 'active' : ''} aria-pressed={activeType.id === type.id} onClick={() => { setCategory(type.id); setCatalogSearch('') }}>{type.label}</button>)}
             </div>
             {catalogState === 'loading' && <div className="notice" role="status">Memuat katalog...</div>}
             {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum bisa dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
-            {catalogState === 'ready' && (category === 'Game' ? games.length === 0 ? <div className="notice" role="status"><strong>Belum ada game tersedia.</strong><p>Produk tampil di sini setelah aktif di server. Checkout belum tersedia.</p></div> : <div className="game-grid">{games.map((item) => <button key={item} type="button" className="game-card" onClick={() => { window.location.hash = `#game/${encodeURIComponent(item)}` }}><GameCover name={item} /><span><strong>{item}</strong><small>Lihat nominal</small></span><span aria-hidden="true">›</span></button>)}</div> : <div className="notice" role="status"><strong>{category} belum tersedia.</strong><p>Belum ada layanan aktif dalam kategori ini. Cek lagi nanti.</p></div>)}
+            {catalogState === 'ready' && (activeBrands.length === 0 ? <div className="notice" role="status"><strong>{activeType.label} belum tersedia.</strong><p>Belum ada layanan aktif dalam kategori ini. Cek lagi nanti.</p></div> : <div className="game-grid">{activeBrands.map((item) => <button key={item} type="button" className="game-card" onClick={() => { window.location.hash = `#game/${encodeURIComponent(item)}` }}><GameCover name={item} /><span><strong>{item}</strong><small>Lihat nominal</small></span><span aria-hidden="true">›</span></button>)}</div>)}
           </div>
         </section>
 
-        </> : view === 'game' ? <section className="checkout-section wrap" id="game-detail" aria-labelledby="game-title">
-          <div className="section-heading"><div><a className="back-button" href="#katalog">‹ Semua game</a><h2 id="game-title">{game}</h2></div><p>Pilih nominal, lalu lanjut ke halaman checkout.</p></div>
-          {catalogState === 'loading' && <div className="notice" role="status">Memuat nominal...</div>}
-          {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum bisa dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
-          {catalogState === 'ready' && filtered.length === 0 && <div className="notice" role="status"><strong>Belum ada nominal aktif.</strong><p>Produk baru tampil setelah harga dan stok dikonfigurasi. Checkout belum tersedia.</p></div>}
-          {catalogState === 'ready' && filtered.length > 0 && <div className="product-grid">{filtered.map((item) => <button key={item.id} type="button" className="product" onClick={() => { window.location.hash = `#beli/${encodeURIComponent(item.id)}` }}><span className="product-game">{game}</span><strong>{item.name}</strong><span className="product-bottom"><span>{rupiah(item.price)}</span><span aria-hidden="true">›</span></span></button>)}</div>}
-        </section> : view === 'checkout' ? <section className="checkout-section wrap" id="data-akun" aria-labelledby="checkout-title">
-          <div className="section-heading"><div><a className="back-button" href={selected ? `#game/${encodeURIComponent(selected.game)}` : '#katalog'}>‹ Kembali</a><h2 id="checkout-title">{selected ? selected.game : 'Checkout'}</h2></div><p>Periksa nominal, isi ID akun game tujuan, lalu lanjut ke pembayaran.</p></div>
+        </> : view === 'game' || view === 'checkout' ? <section className="checkout-section wrap" id={view === 'game' ? 'game-detail' : 'data-akun'} aria-labelledby="order-title">
+          <div className="section-heading"><div><a className="back-button" href={view === 'game' ? '#katalog' : selected ? `#game/${encodeURIComponent(selected.game)}` : '#katalog'}>‹ {view === 'game' ? 'Semua layanan' : 'Kembali'}</a><h2 id="order-title">{game || 'Checkout'}</h2></div><p>{view === 'game' ? 'Isi data berurutan; ringkasan di samping ikut berubah.' : 'Periksa pesanan, lalu lanjut ke pembayaran.'}</p></div>
           {catalogState === 'loading' && <div className="notice" role="status">Memuat produk...</div>}
           {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum bisa dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
-          {catalogState === 'ready' && !selected && <div className="notice" role="status"><strong>Produk tidak ditemukan.</strong><p>Produk mungkin sudah tidak aktif. Pilih lagi dari katalog.</p><p><a href="#katalog">Kembali ke katalog</a></p></div>}
-          {catalogState === 'ready' && selected && <div className="checkout-layout">
-              <form className="checkout-form" onSubmit={checkout}>
-                <h3>Data akun game</h3><p>Pastikan ID dan Zone ID sesuai dengan akun Mobile Legends tujuan.</p>
-                <div className="field-row"><label>User ID <input value={userId} onChange={(event) => setUserId(event.target.value)} required maxLength="32" inputMode="numeric" pattern="[0-9]+" placeholder="ID akun game" autoComplete="off" /></label><label>Zone ID <input value={zoneId} onChange={(event) => setZoneId(event.target.value)} required maxLength="20" inputMode="numeric" pattern="[0-9]+" placeholder="Zone ID" autoComplete="off" /></label></div>
-                <p className="field-hint">User ID dan Zone ID numerik. Jangan masukkan password game.</p>
-                {!session && <p className="field-hint">Masuk ke akun Melonbyte dulu agar pesanan tersimpan di akunmu. <a href="#akun">Masuk di sini</a>.</p>}
-                {!checkoutAvailable && <p className="field-hint" role="status">Checkout belum tersedia. Integrasi pembayaran dan Digiflazz masih menunggu verifikasi.</p>}
-                {checkoutError && <p className="form-error" role="alert">{checkoutError}</p>}
-                <button className="checkout-button" type="submit" disabled={!checkoutAvailable || !selected || !session || checkoutState === 'loading'}>{checkoutState === 'loading' ? 'Menyiapkan pembayaran...' : 'Lanjut ke pembayaran'}</button>
-                <p className="form-note">Pembayaran lewat Midtrans saat layanan terhubung. Pesanan dikirim setelah pembayaran terkonfirmasi.</p>
-              </form>
-              <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga produk</span><strong>{rupiah(selected.price)}</strong></div><p>Biaya pembayaran, jika ada, tampil di halaman pembayaran.</p></> : <p>Pilih nominal untuk melihat ringkasan.</p>}</aside>
-            </div>}
+          {catalogState === 'ready' && view === 'game' && filtered.length === 0 && <div className="notice" role="status"><strong>Belum ada nominal aktif.</strong><p>Produk baru tampil setelah harga dan stok dikonfigurasi. Checkout belum tersedia.</p></div>}
+          {catalogState === 'ready' && view === 'checkout' && !selected && <div className="notice" role="status"><strong>Produk tidak ditemukan.</strong><p>Produk mungkin sudah tidak aktif. Pilih lagi dari katalog.</p><p><a href="#katalog">Kembali ke katalog</a></p></div>}
+          {catalogState === 'ready' && (view === 'game' ? filtered.length > 0 : selected) && <div className="checkout-layout">
+            <form className="checkout-form order-form" onSubmit={checkout}>
+              <ol className="order-steps">
+                <li className="order-step">
+                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">1</span><h3>{orderType.targetTitle}</h3></div>
+                  {orderFormat !== 'plain' && <p className="field-hint">Pastikan User ID dan Zone ID sesuai akun game tujuan.</p>}
+                  <div className="field-row"><label>{orderType.targetLabel} <input value={userId} onChange={(event) => setUserId(event.target.value)} required maxLength="32" inputMode="numeric" pattern="[0-9]+" placeholder={orderType.targetPlaceholder} autoComplete="off" /></label>{orderFormat !== 'plain' && <label>Zone ID <input value={zoneId} onChange={(event) => setZoneId(event.target.value)} required maxLength="20" inputMode="numeric" pattern="[0-9]+" placeholder="Zone ID" autoComplete="off" /></label>}</div>
+                  <p className="field-hint">{orderFormat === 'plain' ? orderType.targetHint : 'User ID dan Zone ID numerik. Jangan masukkan password game.'}</p>
+                </li>
+                <li className="order-step">
+                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">2</span><h3>Pilih nominal</h3></div>
+                  {view === 'checkout' && <p className="field-hint">Ganti nominal kapan saja; ringkasan ikut berubah.</p>}
+                  <div className="product-grid">{orderItems.map((item) => <button key={item.id} type="button" className={item.id === selected?.id ? 'product selected' : 'product'} aria-current={item.id === selected?.id ? 'true' : undefined} onClick={() => { window.location.hash = `#beli/${encodeURIComponent(item.id)}` }}><span className="product-game">{item.game}</span><strong>{item.name}</strong><span className="product-bottom"><span>{rupiah(item.price)}</span><span aria-hidden="true">›</span></span></button>)}</div>
+                </li>
+                <li className="order-step">
+                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">3</span><h3>Jumlah pembelian</h3><span className="step-tag">Pratinjau</span></div>
+                  <div className="qty-stepper"><button type="button" className="qty-button" onClick={() => changeQuantity(-1)} disabled={itemQty <= 1} aria-label="Kurangi jumlah">−</button><input value={itemQty} onChange={(event) => setQuantityValue(event.target.value)} inputMode="numeric" pattern="[0-9]+" maxLength="2" aria-label="Jumlah pembelian" autoComplete="off" /><button type="button" className="qty-button" onClick={() => changeQuantity(1)} disabled={itemQty >= MAX_ITEM_QTY} aria-label="Tambah jumlah">+</button></div>
+                  <p className="field-hint">Maksimal {MAX_ITEM_QTY} per pesanan. Jumlah belum dikirim ke server.</p>
+                </li>
+                <li className="order-step">
+                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">4</span><h3>Metode pembayaran</h3><span className="step-tag">Pratinjau</span></div>
+                  <div className="pay-options" role="radiogroup" aria-label="Metode pembayaran">{PAYMENT_METHODS.map((method) => <label key={method.id} className={paymentMethod === method.id ? 'pay-option active' : 'pay-option'}><input type="radio" name="payment" value={method.id} checked={paymentMethod === method.id} onChange={() => setPaymentMethod(method.id)} autoComplete="off" /><span><strong>{method.label}</strong><small>{method.note}</small></span></label>)}</div>
+                  <p className="field-hint">Metode final masih dipilih di halaman Midtrans saat checkout aktif.</p>
+                </li>
+                <li className="order-step">
+                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">5</span><h3>Kode promo</h3><span className="step-tag">Pratinjau</span></div>
+                  <label>Kode promo <input value={promoCode} onChange={(event) => setPromoCode(event.target.value)} maxLength="24" placeholder="Contoh: MANGGA10" autoComplete="off" /></label>
+                  <p className="field-hint">Kode promo belum aktif — kolom ini disiapkan untuk promo mendatang.</p>
+                </li>
+                <li className="order-step">
+                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">6</span><h3>Detail kontak</h3></div>
+                  {session ? <>
+                    <div className="field-row"><label>Email <input value={session.user.email || ''} readOnly /></label><label>Nomor HP <input value={session.user.phone || session.user.user_metadata?.requested_phone || ''} readOnly /></label></div>
+                    <p className="field-hint">Detail kontak mengikuti profil akunmu. <a href="#akun">Ubah di profil</a>.</p>
+                  </> : <>
+                    <div className="field-row"><label>Email <input value={guestEmail} onChange={(event) => setGuestEmail(event.target.value)} type="email" maxLength="120" placeholder="nama@email.com" autoComplete="off" /></label><label>Nomor HP <input value={guestPhone} onChange={(event) => setGuestPhone(event.target.value)} type="tel" maxLength="20" inputMode="tel" placeholder="08..." autoComplete="off" /></label></div>
+                    <p className="field-hint">Transaksi tamu (email + nomor HP) belum aktif. Masuk dulu agar pesanan tersimpan di akunmu. <a href="#akun">Masuk di sini</a>.</p>
+                  </>}
+                </li>
+              </ol>
+              {!checkoutAvailable && <p className="field-hint" role="status">Checkout belum tersedia. Integrasi pembayaran dan Digiflazz masih menunggu verifikasi.</p>}
+              {checkoutError && <p className="form-error" role="alert">{checkoutError}</p>}
+              <button className="checkout-button" type="submit" disabled={!checkoutAvailable || !selected || !session || checkoutState === 'loading'}>{checkoutState === 'loading' ? 'Menyiapkan pembayaran...' : 'Lanjut ke pembayaran'}</button>
+              <p className="form-note">Pembayaran lewat Midtrans saat layanan terhubung. Pesanan dikirim setelah pembayaran terkonfirmasi.</p>
+            </form>
+            <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga</span><strong>{rupiah(selected.price)}</strong></div><div className="summary-total"><span>Jumlah</span><strong>{itemQty} item</strong></div><div className="summary-total"><span>Total</span><strong>{rupiah(selected.price * itemQty)}</strong></div><p>Biaya pembayaran, jika ada, tampil di halaman pembayaran.</p></> : <p>Belum ada item produk yang dipilih.</p>}</aside>
+          </div>}
         </section> : <div className={view === 'admin' ? 'admin-page wrap' : 'account-page wrap'} id={view === 'admin' ? 'admin' : 'akun'}>
           {view === 'admin' ? <>
             <div className="admin-heading"><div><h1>Panel admin</h1><p>Kelola pesanan toko dan harga produk.</p></div><a className="secondary-button" href="#katalog">Lihat toko</a></div>
@@ -834,7 +927,7 @@ function App() {
           {view === 'admin' && session && roleState === 'loading' && <p role="status">Memeriksa akses akun...</p>}
           {view === 'admin' && session && roleState === 'error' && <p role="alert">Akses pengelola belum bisa diperiksa. {roleError} <button type="button" onClick={() => setRoleRetry((value) => value + 1)}>Coba lagi</button></p>}
           {view === 'admin' && canManage && adminPage === 'transactions' && <section className="order-section admin-section" aria-labelledby="admin-title"><div className="order-layout"><div><h2 id="admin-title">Transaksi</h2><p>Pesanan terbaru toko, dari seluruh pembeli.</p></div><div className="order-panel">{adminState === 'loading' ? <p role="status">Memuat pesanan toko...</p> : adminState === 'error' ? <p role="alert">Gagal memuat pesanan toko. {adminError} <button type="button" onClick={() => setAdminRetry((value) => value + 1)}>Coba lagi</button></p> : adminOrders.length === 0 ? <p role="status">Belum ada pesanan toko.</p> : <ul className="order-list">{adminOrders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.status}</span><small>#{order.id}</small></li>)}</ul>}</div></div></section>}
-          {view === 'admin' && canManage && adminPage === 'products' && <section className="order-section admin-section" aria-labelledby="pricing-title"><div className="section-heading"><div><h2 id="pricing-title">Harga jual</h2></div><p>Harga supplier adalah modal, tidak tampil ke pembeli. Simpan harga jual sebelum menampilkan produk.</p></div>{adminCatalogState === 'loading' ? <p role="status">Memuat katalog supplier...</p> : adminCatalogState === 'error' ? <p role="alert">Katalog supplier belum bisa dimuat. {adminCatalogError} <button type="button" onClick={() => setAdminCatalogRetry((value) => value + 1)}>Coba lagi</button></p> : adminCatalog.length === 0 ? <p role="status">Belum ada produk supplier aktif.</p> : <><div className="pricing-toolbar"><input type="text" aria-label="Cari produk supplier" placeholder="Cari nama, kode, atau brand" autoComplete="off" value={catalogQuery} onChange={(event) => { setCatalogQuery(event.target.value) }} /><div className="category-filter" role="group" aria-label="Saring produk"><button type="button" className={catalogFilter === 'semua' ? 'active' : ''} aria-pressed={catalogFilter === 'semua'} onClick={() => { setCatalogFilter('semua') }}>Semua</button><button type="button" className={catalogFilter === 'tampil' ? 'active' : ''} aria-pressed={catalogFilter === 'tampil'} onClick={() => { setCatalogFilter('tampil') }}>Tampil</button><button type="button" className={catalogFilter === 'draf' ? 'active' : ''} aria-pressed={catalogFilter === 'draf'} onClick={() => { setCatalogFilter('draf') }}>Draf</button></div></div><div className="pricing-meta"><div className="pricing-meta-actions">{batchNotice && <span role="status">{batchNotice}</span>}<label className="pricing-unsupported"><input type="checkbox" checked={catalogShowUnsupported} onChange={(event) => { setCatalogShowUnsupported(event.target.checked) }} />Tampilkan yang belum didukung checkout</label>{pricingDirty > 0 && <button type="button" className="secondary-button" onClick={saveAllChanges} disabled={Boolean(catalogBusy)}>Simpan semua ({pricingDirty})</button>}</div></div>{pricingItems.length === 0 ? <p className="pricing-empty" role="status">Tidak ada produk yang cocok. Ubah kata kunci atau saringan.</p> : <><div className="price-groups">{pricingGroups.map((category) => { const categoryShown = category.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <section key={category.name} className="price-group"><div className="price-cat-head"><h3 className="price-cat-title">{category.name}<small className="price-group-count">{category.items.length} produk · {categoryShown} tampil</small></h3><label className="switch" title={`Nyala/matikan semua produk kategori ${category.name}`}><input type="checkbox" role="switch" checked={categoryShown === category.items.length} ref={(el) => { if (el) el.indeterminate = categoryShown > 0 && categoryShown < category.items.length }} aria-label={`Tampilkan semua produk kategori ${category.name}`} onChange={(event) => toggleGroup(category.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label></div>{category.brands.map((brand) => { const brandShown = brand.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <div key={brand.name} className="price-brand"><div className="price-brand-head"><span className="price-brand-cover"><GameCover name={brand.name} /></span><h4 className="price-brand-title">{brand.name}<small className="price-group-count">{brand.items.length} produk · {brandShown} tampil</small></h4><label className="switch" title={`Nyala/matikan semua produk ${brand.name}`}><input type="checkbox" role="switch" checked={brandShown === brand.items.length} ref={(el) => { if (el) el.indeterminate = brandShown > 0 && brandShown < brand.items.length }} aria-label={`Tampilkan semua produk ${brand.name}`} onChange={(event) => toggleGroup(brand.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label></div><ul className="price-grid">{brand.items.map((item) => { const draft = catalogDrafts[item.sku] || { price: '', enabled: false }; return <li key={item.sku} className="price-card"><div className="price-head"><strong>{item.name || item.sku}</strong><small>{item.game || item.sku}{item.category ? ` · ${item.category}` : ''}</small></div><div className="price-row"><span className="price-cost">{item.cost == null ? 'Tidak ada di katalog supplier aktif.' : `Modal ${rupiah(item.cost)}`}</span><label className="price-toggle"><input type="checkbox" checked={draft.enabled} disabled={!item.supported} aria-label={`Tampil di katalog: ${item.name || item.sku}`} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, enabled: event.target.checked } }))} />Tampil</label></div><div className="price-row price-actions"><input type="number" inputMode="numeric" min="1" step="1" placeholder="Harga jual (Rp)" autoComplete="off" aria-label={`Harga jual ${item.name || item.sku}`} value={draft.price} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: event.target.value } }))} onKeyDown={(event) => { if (event.key === 'Enter') saveSellingPrice(item.sku) }} /><button type="button" className="secondary-button" onClick={() => saveSellingPrice(item.sku)} disabled={Boolean(catalogBusy)}>{catalogBusy === item.sku ? 'Menyimpan...' : 'Simpan'}</button></div>{!item.supported && <p className="price-hint">Belum didukung checkout, jadi belum bisa tampil.</p>}{item.cost != null && Number(draft.price) > 0 && Number(draft.price) < item.cost && <p className="price-warning" role="status">Harga jual di bawah modal.</p>}{catalogNotice.sku === item.sku && <p className="price-hint" role={catalogNotice.error ? 'alert' : 'status'}>{catalogNotice.text}</p>}</li>; })}</ul></div>; })}</section>; })}</div></>}</>}</section>}
+          {view === 'admin' && canManage && adminPage === 'products' && <section className="order-section admin-section" aria-labelledby="pricing-title"><div className="section-heading"><div><h2 id="pricing-title">Harga jual</h2></div><p>Harga supplier adalah modal, tidak tampil ke pembeli. Simpan harga jual sebelum menampilkan produk.</p></div><div className="catalog-sync"><span className="catalog-sync-state">{adminCatalogFetchedAt ? `Katalog supplier · sinkron ${new Date(adminCatalogFetchedAt).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Katalog supplier belum disinkron.'}</span><button type="button" className="secondary-button" onClick={syncCatalog} disabled={catalogSyncing}>{catalogSyncing ? 'Menyinkron...' : 'Perbarui katalog'}</button></div>{catalogSyncNotice && <p className="catalog-sync-notice" role="status">{catalogSyncNotice}</p>}{adminCatalogState === 'loading' ? <p role="status">Memuat katalog supplier...</p> : adminCatalogState === 'error' ? <p role="alert">Katalog supplier belum bisa dimuat. {adminCatalogError} <button type="button" onClick={() => setAdminCatalogRetry((value) => value + 1)}>Coba lagi</button></p> : adminCatalog.length === 0 ? <p role="status">Katalog supplier kosong — tekan Perbarui katalog.</p> : <><div className="pricing-toolbar"><input type="text" aria-label="Cari produk supplier" placeholder="Cari nama, kode, atau brand" autoComplete="off" value={catalogQuery} onChange={(event) => { setCatalogQuery(event.target.value) }} /><div className="category-filter" role="group" aria-label="Saring produk"><button type="button" className={catalogFilter === 'semua' ? 'active' : ''} aria-pressed={catalogFilter === 'semua'} onClick={() => { setCatalogFilter('semua') }}>Semua</button><button type="button" className={catalogFilter === 'tampil' ? 'active' : ''} aria-pressed={catalogFilter === 'tampil'} onClick={() => { setCatalogFilter('tampil') }}>Tampil</button><button type="button" className={catalogFilter === 'draf' ? 'active' : ''} aria-pressed={catalogFilter === 'draf'} onClick={() => { setCatalogFilter('draf') }}>Draf</button></div></div><div className="pricing-meta"><div className="pricing-meta-actions">{adminCatalogStale && <span className="pricing-stale" role="status">Katalog sudah lama tidak disinkron.</span>}{batchNotice && <span role="status">{batchNotice}</span>}<label className="pricing-unsupported"><input type="checkbox" checked={catalogShowUnsupported} onChange={(event) => { setCatalogShowUnsupported(event.target.checked) }} />Tampilkan yang belum didukung checkout</label>{pricingDirty > 0 && <button type="button" className="secondary-button" onClick={saveAllChanges} disabled={Boolean(catalogBusy)}>Simpan semua ({pricingDirty})</button>}</div></div>{pricingItems.length === 0 ? <p className="pricing-empty" role="status">Tidak ada produk yang cocok. Ubah kata kunci atau saringan.</p> : <><div className="price-groups">{pricingGroups.map((category) => { const categoryShown = category.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <section key={category.name} className="price-group"><label className="switch price-category-switch" title={`Nyala/matikan semua produk kategori ${category.name}`}><input type="checkbox" role="switch" checked={categoryShown === category.items.length} ref={(el) => { if (el) el.indeterminate = categoryShown > 0 && categoryShown < category.items.length }} aria-label={`Tampilkan semua produk kategori ${category.name}`} onChange={(event) => toggleGroup(category.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label><details className="price-category" open={Boolean(catalogQuery.trim())}><summary className="price-cat-head"><h3 className="price-cat-title">{category.name}<small className="price-group-count">{category.items.length} produk · {categoryShown} tampil</small></h3></summary>{category.brands.map((brand) => { const brandShown = brand.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <div key={brand.name} className="price-brand"><label className="switch price-brand-switch" title={`Nyala/matikan semua produk ${brand.name}`}><input type="checkbox" role="switch" checked={brandShown === brand.items.length} ref={(el) => { if (el) el.indeterminate = brandShown > 0 && brandShown < brand.items.length }} aria-label={`Tampilkan semua produk ${brand.name}`} onChange={(event) => toggleGroup(brand.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label><details className="price-brand-details" open={Boolean(catalogQuery.trim())}><summary className="price-brand-head"><span className="price-brand-cover"><GameCover name={brand.name} /></span><h4 className="price-brand-title">{brand.name}<small className="price-group-count">{brand.items.length} produk · {brandShown} tampil</small></h4></summary><ul className="price-grid">{brand.items.map((item) => { const draft = catalogDrafts[item.sku] || { price: '', enabled: false }; return <li key={item.sku} className="price-card"><div className="price-head"><strong>{item.name || item.sku}</strong><small>{item.game || item.sku}{item.variant ? ` · ${item.variant}` : ''}{item.category ? ` · ${item.category}` : ''}</small></div><div className="price-row"><span className="price-cost">{item.cost == null ? 'Tidak ada di katalog supplier aktif.' : `Modal ${rupiah(item.cost)}`}</span><label className="price-toggle"><input type="checkbox" checked={draft.enabled} disabled={!item.supported} aria-label={`Tampil di katalog: ${item.name || item.sku}`} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, enabled: event.target.checked } }))} />Tampil</label></div><div className="price-row price-actions"><input type="number" inputMode="numeric" min="1" step="1" placeholder="Harga jual (Rp)" autoComplete="off" aria-label={`Harga jual ${item.name || item.sku}`} value={draft.price} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: event.target.value } }))} onKeyDown={(event) => { if (event.key === 'Enter') saveSellingPrice(item.sku) }} /><button type="button" className="secondary-button" onClick={() => saveSellingPrice(item.sku)} disabled={Boolean(catalogBusy)}>{catalogBusy === item.sku ? 'Menyimpan...' : 'Simpan'}</button></div>{!item.supported && <p className="price-hint">Belum didukung checkout, jadi belum bisa tampil.</p>}{item.cost != null && Number(draft.price) > 0 && Number(draft.price) < item.cost && <p className="price-warning" role="status">Harga jual di bawah modal.</p>}{catalogNotice.sku === item.sku && <p className="price-hint" role={catalogNotice.error ? 'alert' : 'status'}>{catalogNotice.text}</p>}</li>; })}</ul></details></div>; })}</details></section>; })}</div></>}</>}</section>}
         </div>}
       </main>
       <footer className="footer"><div className="wrap footer-inner"><span className="wordmark"><span>melon</span>byte<span className="wordmark-dot">.</span></span><p>Layanan digital. Harga dan ketersediaan mengikuti katalog aktif.</p><a href="#main">Kembali ke atas ↑</a></div></footer>
