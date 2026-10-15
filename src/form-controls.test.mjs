@@ -17,6 +17,11 @@ test('paired buttons follow the compact input height', () => {
   assert.match(css, /\.checkout-button\{[^}]*min-height:48px[^}]*\}/)
 })
 
+test('register submit uses the brand primary style, never the browser default', () => {
+  assert.match(css, /\.profile-form>button:not\(\.secondary-button\)\{[^}]*background:var\(--lime\)[^}]*\}/)
+  assert.match(css, /\.profile-form>button:not\(\.secondary-button\):disabled\{[^}]*background:#455545/)
+})
+
 test('no oversized input rule remains (48px+)', () => {
   assert.doesNotMatch(css, /input\{[^}]*min-height:(?:48|50|54)px/)
 })
@@ -71,4 +76,15 @@ test('checkout meminta Zone ID hanya untuk produk ml_concat dan pilih server unt
   assert.match(source, /\{orderFormat === 'ml_concat' && <label>Zone ID/)
   assert.match(source, /\{orderFormat === 'uid_server' && <label>Server <select/)
   assert.match(source, /selected\.format === 'plain' \|\| selected\.format === 'riot' \? \{ productId: selected\.id, userId: userId\.trim\(\) \} : \{ productId: selected\.id, userId: userId\.trim\(\), zoneId: zoneId\.trim\(\) \}/)
+})
+
+test('zona 2 langkah: baris aksi rapat dan tombol nonaktif jelas', () => {
+  assert.match(css, /\.two-step-zone \.code-actions\{display:flex;flex-wrap:wrap;align-items:center;gap:4px 20px\}/)
+  assert.match(css, /\.two-step-zone \.code-actions \.link-button\{margin-top:0\}/)
+  assert.match(css, /\.link-button:disabled,\.secondary-button:disabled\{color:#849e80;cursor:not-allowed\}/)
+})
+
+test('form profil nggak melar ngikutin tinggi kolom kanan', () => {
+  assert.match(css, /\.profile-col \.profile-form\{flex:0 1 auto;align-content:start\}/)
+  assert.equal(css.includes('align-content:space-between'), false)
 })

@@ -5,6 +5,7 @@ import { matchesCatalog } from './catalog.mjs'
 import { authReturnFromUrl, restoreSession } from './auth.mjs'
 import { clearSessionStart, readSessionStart, seedSessionStart, sessionExpired, writeSessionStart } from './session.mjs'
 import { authErrorMessage } from './auth-errors.mjs'
+import { clearPendingCode, readPendingCode, writePendingCode } from './pending-code.mjs'
 import { isPublicSupabaseKey } from './public-key.mjs'
 import './store.css'
 
@@ -143,15 +144,18 @@ function App() {
   const [registerPhone, setRegisterPhone] = useState('')
   const [registerPassword, setRegisterPassword] = useState('')
   const [registerUsername, setRegisterUsername] = useState('')
-  const [phoneToVerify, setPhoneToVerify] = useState('')
-  const [phoneCode, setPhoneCode] = useState('')
   const [profileState, setProfileState] = useState('idle')
-  const [phoneState, setPhoneState] = useState('idle')
   const [phoneMessage, setPhoneMessage] = useState('')
-  const [code, setCode] = useState('')
-  const [codeTarget, setCodeTarget] = useState('')
   const [loginState, setLoginState] = useState('idle')
   const [loginMessage, setLoginMessage] = useState('')
+  const [emailCode, setEmailCode] = useState('')
+  const [emailCodeFor, setEmailCodeFor] = useState('')
+  const [emailCodePurpose, setEmailCodePurpose] = useState('')
+  const [resendWait, setResendWait] = useState(0)
+  const [twoStepState, setTwoStepState] = useState('idle')
+  const [twoStepMessage, setTwoStepMessage] = useState('')
+  const [twoStepCode, setTwoStepCode] = useState('')
+  const [twoStepNext, setTwoStepNext] = useState(null)
   const [orders, setOrders] = useState([])
   const [ordersState, setOrdersState] = useState('idle')
   const [ordersError, setOrdersError] = useState('')
@@ -190,12 +194,38 @@ function App() {
   const [roleRetry, setRoleRetry] = useState(0)
   const canManage = Boolean(session && roleState === 'ready' && role === 'admin' && roleToken === session.access_token)
   const contactIdentity = tryParseContact(contact)
+  const twoStepOn = session?.user?.user_metadata?.two_step === true
+  const emailCodeForm = emailCodeFor ? <form className="code-form" onSubmit={verifyEmailCode}>
+    <label htmlFor="email-code">{emailCodePurpose === 'signup' ? 'Kode konfirmasi untuk' : 'Kode masuk untuk'} {emailCodeFor}</label>
+    <div className="order-input"><input id="email-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6,10}" maxLength="10" required value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, ''))} placeholder="kode dari email" /><button type="submit" disabled={loginState === 'loading'}>Verifikasi</button></div>
+    <button type="button" className="link-button" onClick={resendEmailCode} disabled={loginState === 'loading' || resendWait > 0}>{resendWait > 0 ? `Kirim ulang kode (${resendWait}s)` : 'Kirim ulang kode'}</button>
+  </form> : null
   useEffect(() => {
     if (!session) return
     const meta = session.user.user_metadata || {}
     setRegisterUsername(meta.username || '')
-    setProfileName(meta.name || '')
+    setProfileName(meta.name || meta.full_name || '')
     setRegisterPhone(session.user.phone ? String(session.user.phone).replace(/^\+62/, '0') : meta.requested_phone ? String(meta.requested_phone).replace(/^\+62/, '0') : '')
+  }, [session?.user?.id])
+
+  useEffect(() => {
+    if (resendWait <= 0) return
+    const timer = setTimeout(() => setResendWait(resendWait - 1), 1000)
+    return () => clearTimeout(timer)
+  }, [resendWait])
+
+  useEffect(() => {
+    const pending = readPendingCode(window.localStorage, Date.now())
+    if (!pending) return
+    setEmailCodeFor(pending.email)
+    setEmailCodePurpose(pending.purpose)
+    setResendWait(pending.resendWait)
+    setLoginState('sent')
+    setLoginMessage(pending.purpose === 'signup' ? 'Akun dibuat. Kode sudah dikirim ke email — masukkan di bawah, atau klik tautan konfirmasinya.' : 'Kode sudah dikirim ke email — masukkan di bawah, atau klik tautannya buat langsung masuk.')
+  }, [])
+
+  useEffect(() => {
+    if (session) clearPendingCode(window.localStorage)
   }, [session?.user?.id])
 
   useEffect(() => {
@@ -232,8 +262,6 @@ function App() {
       if (route.view === 'checkout') setCheckoutError('')
       setLoginState('idle')
       setLoginMessage('')
-      setCodeTarget('')
-      setCode('')
       requestAnimationFrame(() => {
         const hash = window.location.hash
         if (route.view === 'game' || route.view === 'checkout' || route.view === 'admin' || hash === '#akun' || hash === '#daftar') window.scrollTo(0, 0)
@@ -389,22 +417,54 @@ function App() {
       if (identity.email) {
         const { data, error } = await supabase.auth.signInWithPassword({ email: identity.email, password: loginPassword })
         if (error) throw error
-        setLoginPassword('')
-        writeSessionStart(window.localStorage, Date.now())
-        setLoginState('idle')
-        showToast('ok', 'Berhasil masuk', `Halo, ${data.user?.user_metadata?.username || identity.email}!`)
+        if (data.user?.user_metadata?.two_step === true) {
+          await supabase.auth.signOut({ scope: 'local' })
+          await sendLoginEmail(identity.email)
+          setLoginPassword('')
+          setEmailCodeFor(identity.email)
+          setEmailCodePurpose('login')
+          setEmailCode('')
+          setResendWait(60)
+          setLoginState('sent')
+          setLoginMessage('Verifikasi 2 langkah aktif. Kode sudah dikirim ke email — masukkan di bawah.')
+        } else {
+          setLoginPassword('')
+          writeSessionStart(window.localStorage, Date.now())
+          setLoginState('idle')
+          showToast('ok', 'Berhasil masuk', `Halo, ${data.user?.user_metadata?.name || data.user?.user_metadata?.full_name || data.user?.user_metadata?.username || identity.email}!`)
+        }
       } else {
-        const { error } = await supabase.auth.signInWithOtp({ phone: identity.phone, options: { shouldCreateUser: false } })
-        if (error) throw error
-        setCodeTarget(identity.phone)
-        setCode('')
-        setLoginState('sent')
-        setLoginMessage('Kode dikirim lewat SMS. Masukkan kodenya di bawah.')
+        setLoginState('error')
+        setLoginMessage('Login pakai nomor HP belum aktif. Masuk pakai email dulu ya — kode dari email bisa dipakai tanpa password.')
       }
     } catch (error) {
+      if (identity?.email && /email not confirmed/i.test(error.message || '')) {
+        try {
+          const { error: resendError } = await supabase.auth.resend({ type: 'signup', email: identity.email, options: { emailRedirectTo: window.location.origin + '/' } })
+          if (resendError) throw resendError
+          setLoginPassword('')
+          setEmailCodeFor(identity.email)
+          setEmailCodePurpose('signup')
+          setEmailCode('')
+          setResendWait(60)
+          setLoginState('sent')
+          setLoginMessage('Email kamu belum dikonfirmasi. Kode konfirmasi baru sudah dikirim ke email — masukkan di bawah.')
+          writePendingCode(window.localStorage, { email: identity.email, purpose: 'signup', sentAt: Date.now() })
+          return
+        } catch (resendError) {
+          setLoginState('error')
+          setLoginMessage(authErrorMessage(resendError.message))
+          return
+        }
+      }
       setLoginState('error')
       setLoginMessage(authErrorMessage(error.message))
     }
+  }
+
+  async function sendLoginEmail(email) {
+    const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin + '/', shouldCreateUser: false } })
+    if (error) throw error
   }
 
   async function sendEmailLink() {
@@ -414,10 +474,59 @@ function App() {
     setLoginState('loading')
     setLoginMessage('')
     try {
-      const { error } = await supabase.auth.signInWithOtp({ email: identity.email, options: { emailRedirectTo: window.location.origin + '/', shouldCreateUser: false } })
-      if (error) throw error
+      await sendLoginEmail(identity.email)
+      setEmailCodeFor(identity.email)
+      setEmailCodePurpose('login')
+      setEmailCode('')
+      setResendWait(60)
       setLoginState('sent')
-      setLoginMessage('Tautan masuk sudah dikirim ke email. Buka tautannya, kamu akan masuk otomatis.')
+      setLoginMessage('Kode sudah dikirim ke email — masukkan di bawah, atau klik tautannya buat langsung masuk.')
+      writePendingCode(window.localStorage, { email: identity.email, purpose: 'login', sentAt: Date.now() })
+    } catch (error) {
+      setLoginState('error')
+      setLoginMessage(authErrorMessage(error.message))
+    }
+  }
+
+  async function resendEmailCode() {
+    if (!supabase || !emailCodeFor || loginState === 'loading' || resendWait > 0) return
+    setLoginState('loading')
+    setLoginMessage('')
+    try {
+      if (emailCodePurpose === 'signup') {
+        const { error } = await supabase.auth.resend({ type: 'signup', email: emailCodeFor, options: { emailRedirectTo: window.location.origin + '/' } })
+        if (error) throw error
+      } else {
+        await sendLoginEmail(emailCodeFor)
+      }
+      setResendWait(60)
+      setLoginState('sent')
+      setLoginMessage('Kode baru sudah dikirim ke email. Cek kotak masuk (dan folder spam).')
+      writePendingCode(window.localStorage, { email: emailCodeFor, purpose: emailCodePurpose, sentAt: Date.now() })
+    } catch (error) {
+      setLoginState('error')
+      setLoginMessage(authErrorMessage(error.message))
+    }
+  }
+
+  async function verifyEmailCode(event) {
+    event.preventDefault()
+    if (!supabase || loginState === 'loading' || !/^\d{6,10}$/.test(emailCode)) return
+    setLoginState('loading')
+    setLoginMessage('')
+    try {
+      const type = emailCodePurpose === 'signup' ? 'signup' : 'email'
+      const { error } = await supabase.auth.verifyOtp({ email: emailCodeFor, token: emailCode, type })
+      if (error) throw error
+      writeSessionStart(window.localStorage, Date.now())
+      clearPendingCode(window.localStorage)
+      setEmailCode('')
+      setEmailCodeFor('')
+      setEmailCodePurpose('')
+      setResendWait(0)
+      setLoginState('idle')
+      showToast('ok', 'Berhasil masuk', 'Kamu sudah masuk. Selamat datang di Melonbyte!')
+      window.location.hash = '#akun'
     } catch (error) {
       setLoginState('error')
       setLoginMessage(authErrorMessage(error.message))
@@ -450,9 +559,23 @@ function App() {
         window.location.hash = '#akun'
         setLoginState('idle')
         setLoginMessage('Akun dibuat. Kamu langsung masuk.')
-      } else {
+      } else if (Array.isArray(data?.user?.identities) && data.user.identities.length === 0) {
+        await sendLoginEmail(email)
+        setEmailCodeFor(email)
+        setEmailCodePurpose('login')
+        setEmailCode('')
+        setResendWait(60)
         setLoginState('sent')
-        setLoginMessage('Akun dibuat. Cek email sekali untuk konfirmasi, lalu masuk pakai email + password.')
+        setLoginMessage('Email ini sudah terdaftar — kamu langsung masuk ke akun itu. Kode sudah dikirim ke email, masukkan di bawah.')
+        writePendingCode(window.localStorage, { email, purpose: 'login', sentAt: Date.now() })
+      } else {
+        setEmailCodeFor(email)
+        setEmailCodePurpose('signup')
+        setEmailCode('')
+        setResendWait(60)
+        setLoginState('sent')
+        setLoginMessage('Akun dibuat. Kode sudah dikirim ke email — masukkan di bawah, atau klik tautan konfirmasinya.')
+        writePendingCode(window.localStorage, { email, purpose: 'signup', sentAt: Date.now() })
       }
     } catch (error) {
       setLoginState('error')
@@ -469,12 +592,81 @@ function App() {
       const { requested_phone, username } = parseRegistration(session.user.email || '', registerPhone, registerUsername)
       const { error } = await supabase.auth.updateUser({ data: { ...session.user.user_metadata, username, requested_phone, name: profileName.trim() } })
       if (error) throw error
-      setPhoneMessage(session.user.phone_confirmed_at ? 'Profil tersimpan.' : 'Profil tersimpan. Verifikasi nomor HP agar bisa dipakai masuk.')
+      setPhoneMessage('Profil tersimpan.')
       setProfileState('ready')
     } catch (error) {
       setProfileState('error')
       setPhoneMessage(error.message || 'Gagal menyimpan data akun.')
     }
+  }
+
+  async function requestTwoStepChange() {
+    if (!supabase || !session || !session.user.email || twoStepState === 'loading') return
+    const next = twoStepOn !== true
+    setTwoStepState('loading')
+    setTwoStepMessage('')
+    try {
+      await sendLoginEmail(session.user.email)
+      setTwoStepNext(next)
+      setTwoStepCode('')
+      setResendWait(60)
+      setTwoStepState('sent')
+      setTwoStepMessage(`Kode sudah dikirim ke ${session.user.email}. Masukkan kodenya untuk mengonfirmasi ${next ? 'mengaktifkan' : 'mematikan'} verifikasi 2 langkah.`)
+    } catch (error) {
+      setTwoStepState('error')
+      setTwoStepMessage(authErrorMessage(error.message))
+    }
+  }
+
+  async function resendTwoStepCode() {
+    if (!supabase || !session || !session.user.email || twoStepNext === null || twoStepState === 'loading' || resendWait > 0) return
+    setTwoStepState('loading')
+    setTwoStepMessage('')
+    try {
+      await sendLoginEmail(session.user.email)
+      setResendWait(60)
+      setTwoStepState('sent')
+      setTwoStepMessage('Kode baru sudah dikirim ke email. Cek kotak masuk (dan folder spam).')
+    } catch (error) {
+      setTwoStepState('error')
+      setTwoStepMessage(authErrorMessage(error.message))
+    }
+  }
+
+  async function verifyTwoStepCode(event) {
+    event.preventDefault()
+    if (!supabase || !session || !session.user.email || twoStepNext === null || twoStepState === 'loading') return
+    if (!/^\d{6,10}$/.test(twoStepCode)) {
+      setTwoStepState('error')
+      setTwoStepMessage('Kode harus 6–10 digit angka. Cek email terbaru dari Melonbyte.')
+      return
+    }
+    setTwoStepState('loading')
+    setTwoStepMessage('')
+    try {
+      const { error: verifyError } = await supabase.auth.verifyOtp({ email: session.user.email, token: twoStepCode, type: 'email' })
+      if (verifyError) throw verifyError
+      const { error } = await supabase.auth.updateUser({ data: { ...session.user.user_metadata, two_step: twoStepNext } })
+      if (error) throw error
+      const enabling = twoStepNext === true
+      writeSessionStart(window.localStorage, Date.now())
+      setTwoStepNext(null)
+      setTwoStepCode('')
+      setResendWait(0)
+      setTwoStepState('ready')
+      setTwoStepMessage(enabling ? 'Verifikasi 2 langkah aktif. Login berikutnya bakal minta kode dari email.' : 'Verifikasi 2 langkah dimatikan. Login cukup pakai email + password.')
+    } catch (error) {
+      setTwoStepState('error')
+      setTwoStepMessage(authErrorMessage(error.message))
+    }
+  }
+
+  function cancelTwoStepChange() {
+    setTwoStepNext(null)
+    setTwoStepCode('')
+    setResendWait(0)
+    setTwoStepState('idle')
+    setTwoStepMessage('')
   }
 
   async function savePassword(event) {
@@ -516,8 +708,10 @@ function App() {
     if (!supabase || signOutState === 'loading') return
     setSignOutState('loading')
     setSession(null)
-    setCodeTarget('')
-    setCode('')
+    setTwoStepNext(null)
+    setTwoStepCode('')
+    setTwoStepState('idle')
+    setTwoStepMessage('')
     setLoginState('idle')
     setLoginMessage('')
     setPhoneMessage('')
@@ -543,8 +737,10 @@ function App() {
   async function cutSession() {
     if (!supabase) return
     setSession(null)
-    setCodeTarget('')
-    setCode('')
+    setTwoStepNext(null)
+    setTwoStepCode('')
+    setTwoStepState('idle')
+    setTwoStepMessage('')
     setLoginState('idle')
     setLoginMessage('Sesi berakhir karena sudah berjalan 24 jam. Masuk lagi ya.')
     try { await supabase.auth.signOut({ scope: 'local' }) } catch { /* jaringan bisa gagal; pembersihan lokal di bawah tetap jalan */ }
@@ -557,62 +753,6 @@ function App() {
     } catch { /* localStorage bisa diblokir */ }
     clearSessionStart(window.localStorage)
     showToast('info', 'Sesi berakhir', 'Sesi dibatasi 24 jam. Masuk lagi untuk melanjutkan.')
-  }
-
-  async function sendPhoneCode() {
-    if (!supabase || !session || phoneState === 'loading') return
-    setPhoneState('loading')
-    setPhoneMessage('')
-    try {
-      const phone = parseContact(session.user.user_metadata?.requested_phone || '').phone
-      if (!phone) throw new Error('Nomor HP pendaftaran tidak valid.')
-      const { error } = await supabase.auth.updateUser({ phone })
-      if (error) throw error
-      setPhoneToVerify(phone)
-      setPhoneMessage('Kode SMS dikirim. Nomor belum aktif untuk login sampai kode diverifikasi.')
-      setPhoneState('sent')
-    } catch (error) {
-      setPhoneState('error')
-      setPhoneMessage(error.message || 'Gagal mengirim kode SMS.')
-    }
-  }
-
-  async function confirmPhone(event) {
-    event.preventDefault()
-    if (!supabase || !session || phoneState === 'loading' || !/^\d{6}$/.test(phoneCode)) return
-    setPhoneState('loading')
-    setPhoneMessage('')
-    try {
-      const { error } = await supabase.auth.verifyOtp({ phone: phoneToVerify, token: phoneCode, type: 'phone_change' })
-      if (error) throw error
-      setPhoneToVerify('')
-      setPhoneCode('')
-      setPhoneState('ready')
-      setPhoneMessage('Nomor HP terverifikasi. Kamu sekarang bisa masuk memakai nomor itu.')
-    } catch (error) {
-      setPhoneState('error')
-      setPhoneMessage(error.message || 'Kode SMS tidak valid.')
-    }
-  }
-
-  async function verifyPhone(event) {
-    event.preventDefault()
-    if (!supabase || loginState === 'loading' || !/^\d{6}$/.test(code)) return
-    setLoginState('loading')
-    setLoginMessage('')
-    try {
-      const { error } = await supabase.auth.verifyOtp({ phone: codeTarget, token: code, type: 'sms' })
-      if (error) throw error
-      writeSessionStart(window.localStorage, Date.now())
-      showToast('ok', 'Berhasil masuk', `Nomor ${codeTarget} terverifikasi. Kamu sudah masuk.`)
-      window.location.hash = '#akun'
-      setCode('')
-      setCodeTarget('')
-      setLoginState('idle')
-    } catch (error) {
-      setLoginState('error')
-      setLoginMessage(error.message || 'Kode tidak valid. Coba lagi.')
-    }
   }
 
   function showToast(tone, title, body) {
@@ -775,7 +915,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   const typeTabs = products.some((item) => catalogTypeOf(item) === OTHER_CATALOG_TYPE) ? [...CATALOG_TYPES, OTHER_CATALOG_TYPE] : CATALOG_TYPES
   const activeBrands = [...new Set(products.filter((item) => catalogTypeOf(item).id === activeType.id).map((item) => item.game).filter(Boolean))]
   const searchCatalogs = catalogSearch.trim() ? games.filter((name) => products.some((item) => item.game === name && matchesCatalog(item, catalogSearch))) : []
-  const accountName = session?.user.user_metadata?.username || session?.user.email?.split('@')[0] || 'Akun'
+  const accountName = session?.user.user_metadata?.name || session?.user.user_metadata?.full_name || session?.user.user_metadata?.username || session?.user.email?.split('@')[0] || 'Akun'
   const accountInitial = String(accountName).trim().charAt(0).toLocaleUpperCase('id-ID') || 'A'
   const filtered = products.filter((item) => item.game === game)
   const selected = products.find((item) => item.id === checkoutId) || null
@@ -986,13 +1126,16 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
           </> : <h1>{view === 'register' && !session ? 'Daftar akun' : 'Akun saya'}</h1>}
           {view !== 'admin' && <>
           <section className="account-section" aria-labelledby="account-title">
-            <div className={session ? 'account-layout account-wide' : 'account-layout'}>
-              <div>
-                <h2 id="account-title">{session ? 'Profil akun' : view === 'register' ? 'Biar pesananmu gampang dicek.' : 'Masuk ke akun'}</h2>
-                <p>{session ? 'Pesanan yang kamu buat tersimpan di akun ini.' : view === 'register' ? 'Daftar pakai email, password, nomor HP, dan username.' : 'Masuk pakai email + password atau nomor HP.'}</p>
-                {!session && <p>{view === 'register' ? <>Sudah punya akun? <a href="#akun">Masuk</a></> : <>Belum punya akun? <a href="#daftar">Daftar di sini</a></>}</p>}
-              </div>
-              <div className="order-panel">
+            <div className={session ? 'account-layout account-wide' : 'account-layout account-auth'}>
+              {session && <div>
+                <h2 id="account-title">Profil akun</h2>
+                <p>Pesanan yang kamu buat tersimpan di akun ini.</p>
+              </div>}
+              <div className={session ? 'order-panel' : 'order-panel auth-panel'}>
+                {!session && <>
+                  <h2 id="account-title">{view === 'register' ? 'Biar pesananmu gampang dicek.' : 'Masuk ke akun'}</h2>
+                  <p className="auth-lead">{view === 'register' ? 'Daftar pakai email, password, nomor HP, dan username.' : 'Masuk pakai email + password, atau kode dari email.'}</p>
+                </>}
                 {!supabase ? <p role={authConfigError ? 'alert' : 'status'}>{authConfigError ? 'Konfigurasi login salah. Gunakan publishable/anon key Supabase; secret/service_role tidak boleh dipakai browser.' : 'Akun belum aktif. Pemilik toko perlu menambahkan konfigurasi Supabase.'}</p> : session ? <>
                   {session.user.email ? <><div className="profile-cols">
                     <div className="profile-col">
@@ -1004,12 +1147,8 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                         <div className="profile-field"><label htmlFor="profile-phone">Nomor HP</label><input id="profile-phone" type="tel" autoComplete="off" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." /></div>
                         <button type="submit" className="secondary-button" disabled={profileState === 'loading'}>{profileState === 'loading' ? 'Menyimpan...' : 'Ubah profil'}</button>
                       </form>
-                      {session.user.phone_confirmed_at ? <p role="status">Nomor HP terverifikasi: {session.user.phone}</p> : session.user.user_metadata?.requested_phone ? <div className="phone-setup">
-                        <p>Nomor HP tersimpan, belum terverifikasi.</p>
-                        <button type="button" className="secondary-button" onClick={sendPhoneCode} disabled={phoneState === 'loading'}>{phoneState === 'loading' ? 'Mengirim...' : 'Kirim kode verifikasi SMS'}</button>
-                        {phoneToVerify && <form className="code-form" onSubmit={confirmPhone}><label htmlFor="phone-change-code">Kode SMS</label><div className="order-input"><input id="phone-change-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required value={phoneCode} onChange={(event) => setPhoneCode(event.target.value)} placeholder="6 digit kode" /><button type="submit" disabled={phoneState === 'loading'}>Verifikasi</button></div></form>}
-                      </div> : null}
-                      {phoneMessage && <p role={phoneState === 'error' || profileState === 'error' ? 'alert' : 'status'}>{phoneMessage}</p>}
+                      {session.user.phone_confirmed_at ? <p role="status">Nomor HP terverifikasi: {session.user.phone}</p> : session.user.user_metadata?.requested_phone ? <p role="status">Verifikasi nomor HP lewat SMS belum aktif, jadi nomor ini belum bisa dipakai untuk masuk.</p> : null}
+                      {phoneMessage && <p role={profileState === 'error' ? 'alert' : 'status'}>{phoneMessage}</p>}
                     </div>
                     <div className="profile-col">
                       <form className="profile-form password-form" onSubmit={savePassword}>
@@ -1021,41 +1160,59 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                         <button type="submit" className="secondary-button" disabled={passwordState === 'loading'}>{passwordState === 'loading' ? 'Menyimpan...' : 'Ubah kata sandi'}</button>
                       </form>
                       {passwordMessage && <p role={passwordState === 'error' ? 'alert' : 'status'}>{passwordMessage}</p>}
+                      <div className="two-step-zone">
+                        <p className="form-title">Verifikasi 2 langkah</p>
+                        <p className="form-note">Kalau aktif, login pakai kata sandi bakal diminta kode dari email. Login Google langsung masuk karena udah diverifikasi Google.</p>
+                        {twoStepNext === null ? <button type="button" className="secondary-button" onClick={requestTwoStepChange} disabled={twoStepState === 'loading'} aria-pressed={twoStepOn}>{twoStepState === 'loading' ? 'Mengirim kode...' : twoStepOn ? 'Matikan verifikasi 2 langkah' : 'Nyalakan verifikasi 2 langkah'}</button> : <form className="code-form" onSubmit={verifyTwoStepCode}>
+                          <label htmlFor="two-step-code">Kode konfirmasi dari email</label>
+                          <div className="order-input"><input id="two-step-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6,10}" maxLength="10" required value={twoStepCode} onChange={(event) => setTwoStepCode(event.target.value.replace(/\D/g, ''))} placeholder="kode dari email" /><button type="submit" disabled={twoStepState === 'loading'}>Konfirmasi</button></div>
+                          <div className="code-actions">
+                            <button type="button" className="link-button" onClick={resendTwoStepCode} disabled={twoStepState === 'loading' || resendWait > 0}>{resendWait > 0 ? `Kirim ulang kode (${resendWait}s)` : 'Kirim ulang kode'}</button>
+                            <button type="button" className="link-button" onClick={cancelTwoStepChange} disabled={twoStepState === 'loading'}>Batal</button>
+                          </div>
+                        </form>}
+                        {twoStepMessage && <p role={twoStepState === 'error' ? 'alert' : 'status'}>{twoStepMessage}</p>}
+                      </div>
                     </div>
                   </div><div className="signout-zone"><p className="signout-hint">Kamu bisa masuk lagi kapan saja dengan email dan kata sandi.</p>{signOutButton}</div></> : <><p>Masuk sebagai <strong>{session.user.phone}</strong></p>{signOutButton}</>}
                 </> : view === 'register' ? <>
                   <form className="profile-form" onSubmit={register}>
+                    <div className="auth-fields">
                     <div className="profile-field"><label htmlFor="register-email">Email</label><input id="register-email" type="email" autoComplete="off" required value={registerEmail} onChange={(event) => setRegisterEmail(event.target.value)} placeholder="email@contoh.com" /></div>
                     <div className="profile-field"><label htmlFor="register-password">Password</label><input id="register-password" type="password" autoComplete="new-password" minLength="6" required value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} placeholder="minimal 6 karakter" /></div>
                     <div className="profile-field"><label htmlFor="register-phone">Nomor HP</label><input id="register-phone" type="tel" autoComplete="off" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." /></div>
                     <div className="profile-field"><label htmlFor="register-username">Username</label><input id="register-username" type="text" autoComplete="off" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} placeholder="3–24 huruf, angka, atau _" /></div>
+                    </div>
                     <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Memproses...' : 'Daftar akun'}</button>
                   </form>
                   {loginMessage && <p role={loginState === 'error' ? 'alert' : 'status'}>{loginMessage}</p>}
+                  {emailCodeForm}
                   <div className="auth-divider">atau</div>
                   <button type="button" className="secondary-button google-button" onClick={signInGoogle} disabled={loginState === 'loading'}>Daftar dengan Google</button>
                 </> : <>
                   <form className="profile-form" onSubmit={signIn}>
                     <div className="profile-field">
-                      <label htmlFor="contact">Email atau nomor HP</label>
+                      <label htmlFor="contact">Email</label>
                       <div className="order-input">
-                        <input id="contact" type="text" autoComplete="off" value={contact} onChange={(event) => { setContact(event.target.value); setCodeTarget(''); setCode(''); setLoginMessage(''); setLoginState('idle') }} placeholder="email@contoh.com atau 08..." required />
-                        <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Memproses...' : contactIdentity.email ? 'Masuk' : contactIdentity.phone ? 'Kirim kode SMS' : 'Lanjut'}</button>
+                        <input id="contact" type="text" autoComplete="off" value={contact} onChange={(event) => { setContact(event.target.value); setLoginMessage(''); setLoginState('idle') }} placeholder="email@contoh.com" required />
+                        <button type="submit" disabled={loginState === 'loading'}>{loginState === 'loading' ? 'Memproses...' : contactIdentity.email ? 'Masuk' : 'Lanjut'}</button>
                       </div>
                     </div>
                     {contactIdentity.email && <div className="profile-field"><label htmlFor="login-password">Password</label><input id="login-password" type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="Password akunmu" /></div>}
                   </form>
-                  {contactIdentity.email && <button type="button" className="link-button" onClick={sendEmailLink} disabled={loginState === 'loading'}>Masuk tanpa password (kirim tautan ke email)</button>}
-                  {codeTarget && <form className="code-form" onSubmit={verifyPhone}>
-                    <label htmlFor="sms-code">Kode SMS untuk {codeTarget}</label>
-                    <div className="order-input"><input id="sms-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required value={code} onChange={(event) => setCode(event.target.value)} placeholder="6 digit kode" /><button type="submit" disabled={loginState === 'loading'}>Verifikasi</button></div>
-                  </form>}
+                  {contactIdentity.email && <button type="button" className="link-button" onClick={sendEmailLink} disabled={loginState === 'loading'}>Masuk tanpa password (kirim kode ke email)</button>}
+                  {emailCodeForm}
                   {loginMessage && <p role={loginState === 'error' ? 'alert' : 'status'}>{loginMessage}</p>}
                   <div className="auth-divider">atau</div>
                   <button type="button" className="secondary-button google-button" onClick={signInGoogle} disabled={loginState === 'loading'}>Masuk atau daftar dengan Google</button>
 
                 </>}
               </div>
+              {!session && <aside className="auth-aside">
+                <p className="form-title">{view === 'register' ? 'Sudah punya akun?' : 'Belum punya akun?'}</p>
+                <p className="form-note">{view === 'register' ? 'Masuk pakai email + password, atau kode dari email.' : 'Daftar pakai email, password, nomor HP, dan username.'}</p>
+                <a className="secondary-button" href={view === 'register' ? '#akun' : '#daftar'}>{view === 'register' ? 'Masuk' : 'Daftar akun'}</a>
+              </aside>}
             </div>
           </section>
           {session && <section className="order-section" aria-labelledby="order-title"><div className="order-layout"><div><h2 id="order-title">Riwayat pesanan</h2><p>Status pending berarti pesanan masih diproses. Jangan bayar ulang sebelum mengecek statusnya.</p></div><div className="order-panel">{ordersState === 'loading' ? <p role="status">Memuat pesanan...</p> : ordersState === 'error' ? <p role="alert">Gagal memuat pesanan. {ordersError} <button type="button" onClick={() => setOrdersRetry((value) => value + 1)}>Coba lagi</button></p> : orders.length === 0 ? <p role="status">Belum ada pesanan di akun ini. <a href="#katalog">Lihat katalog</a></p> : <ul className="order-list">{orders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.status}</span><small>#{order.id}</small></li>)}</ul>}</div></div></section>}

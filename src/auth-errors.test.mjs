@@ -8,6 +8,7 @@ test('common Supabase auth failures get short honest Indonesian messages', () =>
   assert.match(authErrorMessage('Password should be at least 6 characters'), /minimal 6 karakter/)
   assert.match(authErrorMessage('User already registered'), /sudah terdaftar/)
   assert.match(authErrorMessage('For security purposes, you can only request this after 47 seconds'), /Tunggu sebentar/)
+  assert.match(authErrorMessage('Token has expired or is invalid'), /kedaluwarsa/)
 })
 
 test('unknown failures fall back safely and never render empty text', () => {

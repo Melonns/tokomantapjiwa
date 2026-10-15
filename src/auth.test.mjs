@@ -17,7 +17,7 @@ test('storefront has one shared search input and no login explainer notes', () =
 
 test('Google and email callbacks leave URL fragment free for Supabase session', () => {
   const redirects = [...source.matchAll(/(?:emailRedirectTo|redirectTo):\s*(window\.location\.origin\s*\+\s*'[^']*')/g)]
-  assert.equal(redirects.length, 3)
+  assert.equal(redirects.length, 5)
   for (const [, expression] of redirects) {
     const redirect = Function('window', `return ${expression}`)({ location: { origin: 'http://localhost:5173' } })
     assert.equal(new URL(redirect).hash, '', 'Auth redirect must not contain app hash route')
@@ -37,7 +37,7 @@ test('logout clears the session locally even if the server call hangs or fails',
 test('email sign-in uses password login with an email-link fallback', () => {
   assert.match(source, /signInWithPassword\(\{ email: identity\.email, password: loginPassword \}\)/)
   assert.match(source, /async function sendEmailLink\(\)/)
-  assert.match(source, /Masuk tanpa password \(kirim tautan ke email\)/)
+  assert.match(source, /Masuk tanpa password \(kirim kode ke email\)/)
   assert.match(source, /updateUser\(\{ password: passwordDraft \}\)/)
   assert.match(source, /password: registerPassword/)
 })
@@ -59,4 +59,68 @@ test('back/forward cache restore releases the stuck Google button and reports a 
   assert.match(source, /addEventListener\('pageshow', handleHistoryRestore\)/)
   assert.match(source, /if \(!event\.persisted \|\| loginState !== 'loading'\) return/)
   assert.match(source, /removeEventListener\('pageshow', handleHistoryRestore\)/)
+})
+
+test('kode email bisa diverifikasi untuk daftar dan login, plus kirim ulang', () => {
+  assert.match(source, /verifyOtp\(\{ email: emailCodeFor, token: emailCode, type \}\)/)
+  assert.match(source, /const type = emailCodePurpose === 'signup' \? 'signup' : 'email'/)
+  assert.match(source, /async function resendEmailCode\(\)/)
+  assert.match(source, /supabase\.auth\.resend\(\{ type: 'signup', email: emailCodeFor/)
+  assert.match(source, /id="email-code"/)
+  assert.match(source, /autoComplete="one-time-code"/)
+})
+
+test('verifikasi 2 langkah dikonfirmasi pakai kode email saat nyala dan mati', () => {
+  assert.ok(source.includes('const twoStepOn = session?.user?.user_metadata?.two_step === true'))
+  assert.ok(source.includes('async function requestTwoStepChange()'))
+  assert.ok(source.includes('async function resendTwoStepCode()'))
+  assert.ok(source.includes('async function verifyTwoStepCode(event)'))
+  assert.ok(source.includes("verifyOtp({ email: session.user.email, token: twoStepCode, type: 'email' })"))
+  assert.ok(source.includes('updateUser({ data: { ...session.user.user_metadata, two_step: twoStepNext } })'))
+  assert.ok(source.includes('id="two-step-code"'))
+  assert.ok(source.includes('Verifikasi 2 langkah'))
+  assert.ok(source.includes('aria-pressed={twoStepOn}'))
+  assert.ok(source.includes('cancelTwoStepChange'))
+  assert.equal(source.includes('async function toggleTwoStep()'), false)
+  assert.equal(source.includes('setCodeTarget('), false)
+})
+
+test('nama dari akun Google dipakai di sapaan dan profil', () => {
+  assert.ok(source.includes('user_metadata?.name || session?.user.user_metadata?.full_name || session?.user.user_metadata?.username'))
+  assert.ok(source.includes("setProfileName(meta.name || meta.full_name || '')"))
+  assert.ok(source.includes('data.user?.user_metadata?.name || data.user?.user_metadata?.full_name'))
+})
+
+test('login nomor HP jujur belum aktif, bukan pura-pura mengirim SMS', () => {
+  assert.match(source, /Login pakai nomor HP belum aktif/)
+  assert.doesNotMatch(source, /signInWithOtp\(\{ phone:/)
+  assert.doesNotMatch(source, /verifyOtp\(\{ phone:/)
+  assert.doesNotMatch(source, /id="sms-code"/)
+  assert.doesNotMatch(source, /phone-change-code/)
+})
+
+test('kode email menerima 6 sampai 10 digit sesuai setelan Supabase', () => {
+  assert.equal([...source.matchAll(/pattern="\[0-9\]\{6,10\}"/g)].length, 2)
+  assert.equal([...source.matchAll(/maxLength="10"/g)].length, 2)
+  assert.equal(source.includes('maxLength="6"'), false)
+  assert.equal(source.includes('6 digit'), false)
+})
+
+test('draf kode bertahan setelah refresh atau koneksi putus di step kode', () => {
+  assert.ok(source.includes('readPendingCode(window.localStorage, Date.now())'))
+  assert.ok(source.includes('clearPendingCode(window.localStorage)'))
+  assert.equal([...source.matchAll(/writePendingCode\(window\.localStorage/g)].length, 5)
+})
+
+test('email yang sudah terdaftar langsung dikirimi kode masuk, bukan jalan buntu', () => {
+  assert.ok(source.includes('await sendLoginEmail(email)'))
+  assert.ok(source.includes('Email ini sudah terdaftar — kamu langsung masuk ke akun itu.'))
+  assert.equal(source.includes('Masuk aja, atau pakai'), false)
+})
+
+test('login dengan email belum dikonfirmasi langsung dikirimi kode konfirmasi baru', () => {
+  assert.ok(source.includes("if (identity?.email && /email not confirmed/i.test(error.message || ''))"))
+  assert.ok(source.includes("supabase.auth.resend({ type: 'signup', email: identity.email"))
+  assert.ok(source.includes('Email kamu belum dikonfirmasi. Kode konfirmasi baru sudah dikirim'))
+  assert.ok(source.includes("writePendingCode(window.localStorage, { email: identity.email, purpose: 'signup', sentAt: Date.now() })"))
 })
