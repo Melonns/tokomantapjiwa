@@ -17,7 +17,7 @@ test('storefront has one shared search input and no login explainer notes', () =
 
 test('Google and email callbacks leave URL fragment free for Supabase session', () => {
   const redirects = [...source.matchAll(/(?:emailRedirectTo|redirectTo):\s*(window\.location\.origin\s*\+\s*'[^']*')/g)]
-  assert.equal(redirects.length, 5)
+  assert.equal(redirects.length, 6)
   for (const [, expression] of redirects) {
     const redirect = Function('window', `return ${expression}`)({ location: { origin: 'http://localhost:5173' } })
     assert.equal(new URL(redirect).hash, '', 'Auth redirect must not contain app hash route')
@@ -91,12 +91,23 @@ test('nama dari akun Google dipakai di sapaan dan profil', () => {
   assert.ok(source.includes('data.user?.user_metadata?.name || data.user?.user_metadata?.full_name'))
 })
 
-test('login nomor HP jujur belum aktif, bukan pura-pura mengirim SMS', () => {
-  assert.match(source, /Login pakai nomor HP belum aktif/)
+test('login nomor HP lewat server tetap pakai kata sandi, verifikasi tetap lewat email', () => {
+  assert.match(source, /fetch\('\/api\/auth\/login', \{ method: 'POST'/)
+  assert.match(source, /JSON\.stringify\(\{ phone: identity\.phone, password: loginPassword \}\)/)
+  assert.match(source, /supabase\.auth\.setSession\(\{ access_token: data\.session\.access_token, refresh_token: data\.session\.refresh_token \}\)/)
+  assert.match(source, /needsConfirmation/)
   assert.doesNotMatch(source, /signInWithOtp\(\{ phone:/)
   assert.doesNotMatch(source, /verifyOtp\(\{ phone:/)
   assert.doesNotMatch(source, /id="sms-code"/)
   assert.doesNotMatch(source, /phone-change-code/)
+  assert.doesNotMatch(source, /Login pakai nomor HP belum aktif/)
+})
+
+test('kolom login menerima email atau nomor HP dan kata sandinya selalu tampil', () => {
+  assert.match(source, /Email atau nomor HP/)
+  assert.match(source, /<div className="profile-field"><label htmlFor="login-password">Password<\/label>/)
+  assert.equal(source.includes("contactIdentity.email || contactIdentity.phone ? 'Masuk' : 'Lanjut'"), false)
+  assert.equal(source.includes('(contactIdentity.email || contactIdentity.phone) && <div className="profile-field">'), false)
 })
 
 test('kode email menerima 6 sampai 10 digit sesuai setelan Supabase', () => {
@@ -109,7 +120,7 @@ test('kode email menerima 6 sampai 10 digit sesuai setelan Supabase', () => {
 test('draf kode bertahan setelah refresh atau koneksi putus di step kode', () => {
   assert.ok(source.includes('readPendingCode(window.localStorage, Date.now())'))
   assert.ok(source.includes('clearPendingCode(window.localStorage)'))
-  assert.equal([...source.matchAll(/writePendingCode\(window\.localStorage/g)].length, 5)
+  assert.equal([...source.matchAll(/writePendingCode\(window\.localStorage/g)].length, 6)
 })
 
 test('email yang sudah terdaftar langsung dikirimi kode masuk, bukan jalan buntu', () => {

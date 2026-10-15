@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS products (
   digi_sku text NOT NULL CHECK (length(digi_sku) BETWEEN 1 AND 80),
   -- ponytail: Format tujuan harus terdaftar di server (MOBILE LEGENDS: ml_concat, GENSHIN/HONKAI: uid_server, VALORANT: riot, lainnya: plain); verifikasi SKU/format sebelum aktif.
   customer_format text NOT NULL DEFAULT 'ml_concat' CHECK (customer_format IN ('ml_concat', 'plain', 'uid_server', 'riot')),
-  enabled boolean NOT NULL DEFAULT false
+  enabled boolean NOT NULL DEFAULT false,
+  -- ponytail: 'auto' = harga jual dihitung ulang dari modal + aturan kategori tiap sinkron katalog supplier; 'manual' = dikunci admin.
+  price_mode text NOT NULL DEFAULT 'auto' CHECK (price_mode IN ('auto', 'manual'))
 );
 CREATE INDEX IF NOT EXISTS products_enabled_idx ON products (game, id) WHERE enabled;
 
@@ -46,6 +48,11 @@ CREATE TABLE IF NOT EXISTS orders (
   zone_id text NOT NULL CHECK (zone_id ~ '^[A-Za-z0-9_-]{0,64}$'),
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review')),
   redirect_url text,
+  payment_channel text,
+  payment_detail jsonb,
+  payment_expires_at timestamptz,
+  discount integer NOT NULL DEFAULT 0 CHECK (discount >= 0),
+  voucher_code text,
   digiflazz_claimed_at timestamptz,
   digi_checked_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -55,6 +62,31 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
 
+
+-- Voucher grand opening. Kuota, masa berlaku, dan batas per akun dijaga di server; browser hanya menampilkan hasilnya.
+CREATE TABLE IF NOT EXISTS vouchers (
+  code text PRIMARY KEY CHECK (code ~ '^[A-Z0-9_-]{3,24}$'),
+  label text NOT NULL DEFAULT '',
+  kind text NOT NULL DEFAULT 'fixed' CHECK (kind IN ('fixed', 'percent')),
+  value integer NOT NULL CHECK (value BETWEEN 1 AND 10000000),
+  min_order integer NOT NULL DEFAULT 0 CHECK (min_order >= 0),
+  max_discount integer CHECK (max_discount IS NULL OR max_discount > 0),
+  quota integer CHECK (quota IS NULL OR quota > 0),
+  used integer NOT NULL DEFAULT 0 CHECK (used >= 0),
+  per_user integer NOT NULL DEFAULT 1 CHECK (per_user BETWEEN 1 AND 100),
+  new_buyers_only boolean NOT NULL DEFAULT false,
+  active boolean NOT NULL DEFAULT true,
+  ends_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS voucher_redemptions (
+  order_id uuid PRIMARY KEY,
+  code text NOT NULL REFERENCES vouchers(code) ON DELETE CASCADE,
+  owner_id uuid NOT NULL REFERENCES auth.users(id),
+  amount integer NOT NULL CHECK (amount > 0),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS voucher_redemptions_code_idx ON voucher_redemptions (code, owner_id);
 
 -- Cache global hasil cek nickname per (brand, User ID, Zone ID). Baris dianggap segar 30 hari oleh server; baris gagal tidak disimpan.
 CREATE TABLE IF NOT EXISTS account_checks (
@@ -92,3 +124,6 @@ REVOKE ALL ON products, orders, admin_users, supplier_products FROM anon, authen
 ALTER TABLE account_checks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE account_check_logs ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON account_checks, account_check_logs FROM anon, authenticated;
+ALTER TABLE vouchers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE voucher_redemptions ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON vouchers, voucher_redemptions FROM anon, authenticated;

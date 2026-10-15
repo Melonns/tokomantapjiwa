@@ -2,11 +2,13 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 
 export function validateCheckout(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('Data checkout tidak valid.');
-  const { productId, userId, zoneId } = body;
+  const { productId, userId, zoneId, paymentMethod, voucherCode } = body;
   if (typeof productId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(productId) ||
       typeof userId !== 'string' || !/^[a-zA-Z0-9 ._#-]{1,64}$/.test(userId)) throw Error('Produk, User ID, atau Zone ID tidak valid.');
   if (zoneId !== undefined && (typeof zoneId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(zoneId))) throw Error('Produk, User ID, atau Zone ID tidak valid.');
-  return { productId, userId, zoneId: zoneId ?? '' };
+  if (paymentMethod !== undefined && (typeof paymentMethod !== 'string' || !/^[a-z][a-z0-9_]{1,23}$/.test(paymentMethod))) throw Error('Metode pembayaran tidak valid.');
+  if (voucherCode !== undefined && (typeof voucherCode !== 'string' || !/^[A-Za-z0-9_-]{3,24}$/.test(voucherCode))) throw Error('Kode voucher tidak valid.');
+  return { productId, userId, zoneId: zoneId ?? '', paymentMethod, voucherCode: voucherCode ? voucherCode.toUpperCase() : undefined };
 }
 
 // ponytail: Format tujuan menentukan nomor tujuan yang dikirim ke Digiflazz; jangan menebak bentuk lain.

@@ -14,11 +14,12 @@ const withAuth = next => async (url, options) => url === 'https://sample.supabas
   : next(url, options);
 
 test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
-  assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234' }), { productId: 'ml-1', userId: '12345', zoneId: '1234' });
-  assert.deepEqual(validateCheckout({ productId: 'ff-1', userId: '12345' }), { productId: 'ff-1', userId: '12345', zoneId: '' });
-  assert.deepEqual(validateCheckout({ productId: 'val5', userId: 'Nama Kamu#1234' }), { productId: 'val5', userId: 'Nama Kamu#1234', zoneId: '' });
-  assert.deepEqual(validateCheckout({ productId: 'gi60', userId: '800123456', zoneId: 'os_asia' }), { productId: 'gi60', userId: '800123456', zoneId: 'os_asia' });
-  for (const body of [{ productId: 'x', userId: {}, zoneId: '1' }, { productId: 'x', userId: '123', zoneId: 'a b' }, { productId: 'x', userId: '1'.repeat(65), zoneId: '1' }, { productId: 'x/../', userId: '1', zoneId: '1' }, { productId: 'x', userId: '123', zoneId: '' }]) assert.throws(() => validateCheckout(body));
+  assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234' }), { productId: 'ml-1', userId: '12345', zoneId: '1234', paymentMethod: undefined });
+  assert.deepEqual(validateCheckout({ productId: 'ff-1', userId: '12345' }), { productId: 'ff-1', userId: '12345', zoneId: '', paymentMethod: undefined });
+  assert.deepEqual(validateCheckout({ productId: 'val5', userId: 'Nama Kamu#1234' }), { productId: 'val5', userId: 'Nama Kamu#1234', zoneId: '', paymentMethod: undefined });
+  assert.deepEqual(validateCheckout({ productId: 'gi60', userId: '800123456', zoneId: 'os_asia' }), { productId: 'gi60', userId: '800123456', zoneId: 'os_asia', paymentMethod: undefined });
+  assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234', paymentMethod: 'qris' }), { productId: 'ml-1', userId: '12345', zoneId: '1234', paymentMethod: 'qris' });
+  for (const body of [{ productId: 'x', userId: {}, zoneId: '1' }, { productId: 'x', userId: '123', zoneId: 'a b' }, { productId: 'x', userId: '1'.repeat(65), zoneId: '1' }, { productId: 'x/../', userId: '1', zoneId: '1' }, { productId: 'x', userId: '123', zoneId: '' }, { productId: 'x', userId: '123', paymentMethod: 'QRIS' }, { productId: 'x', userId: '123', paymentMethod: 'x'.repeat(25) }, { productId: 'x', userId: '123', paymentMethod: 7 }]) assert.throws(() => validateCheckout(body));
 });
 
 test('customer number follows the destination format of the product', () => {
@@ -101,26 +102,110 @@ test('invalid checkout returns useful 400 JSON without touching DB', async () =>
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('checkout uses server price and returns expected frontend contract', async () => {
-  let amount, inserts = 0;
+test('checkout uses server price and returns the invoice payment contract', async () => {
+  let amount, inserts = 0, chargeUrl = '', stored;
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
     if (sql.startsWith('INSERT INTO orders')) { inserts++; assert.equal(params[3], 25000); return { rows: [] }; }
-    if (sql.startsWith('UPDATE orders SET redirect_url')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET payment_channel')) { stored = params; return { rows: [] }; }
     throw Error('unexpected SQL');
   } };
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
+    chargeUrl = url;
     amount = JSON.parse(options.body).transaction_details.gross_amount;
-    return { ok: true, json: async () => ({ redirect_url: 'https://app.sandbox.midtrans.com/snap/v2/vtweb/token' }) };
+    return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
   }) });
   const server = createServer(handler).listen(0, '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', price: 1 }) });
     assert.equal(response.status, 201);
-    assert.deepEqual(Object.keys(await response.json()).sort(), ['orderId', 'redirectUrl']);
+    const body = await response.json();
+    assert.deepEqual(Object.keys(body).sort(), ['orderId', 'paymentChannel', 'paymentDetail', 'paymentExpiresAt']);
+    assert.equal(body.paymentChannel, 'qris');
+    assert.deepEqual(body.paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' });
+    assert.equal(body.paymentExpiresAt, new Date('2026-10-15T12:35:07+07:00').toISOString());
+    assert.equal(chargeUrl, 'https://api.sandbox.midtrans.com/v2/charge');
     assert.equal(inserts, 1);
     assert.equal(amount, 25000);
+    assert.equal(stored[1], 'qris');
+    assert.equal(stored[3].toISOString(), new Date('2026-10-15T12:35:07+07:00').toISOString());
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('picked payment method charges that channel through Core API and unknown ones are rejected', async () => {
+  let chargeBody = 'not-called';
+  let stored = 'not-called';
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 120000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET payment_channel')) { stored = params; return { rows: [] }; }
+    throw Error('unexpected SQL');
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
+    chargeBody = JSON.parse(options.body);
+    assert.equal(url, 'https://api.sandbox.midtrans.com/v2/charge');
+    if (chargeBody.payment_type === 'gopay') return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/gopay/x/qr-code' }, { name: 'deeplink-redirect', url: 'gojek://gopay/merchanttransfer?tref=x' }] }) };
+    return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-16 12:15:57', va_numbers: [{ bank: 'bca', va_number: '8830038369608185' }] }) };
+  }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const ok = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bca_va' }) });
+    assert.equal(ok.status, 201);
+    assert.equal(chargeBody.payment_type, 'bank_transfer');
+    assert.equal(chargeBody.bank, 'bca');
+    assert.equal(chargeBody.transaction_details.gross_amount, 120000);
+    assert.match(chargeBody.transaction_details.order_id, /^[0-9a-f-]{36}$/);
+    assert.equal(stored[1], 'bca_va');
+    assert.deepEqual(stored[2], { bank: 'bca', vaNumber: '8830038369608185' });
+    assert.deepEqual((await ok.json()).paymentDetail, { bank: 'bca', vaNumber: '8830038369608185' });
+    const wallet = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'gopay' }) });
+    assert.equal(wallet.status, 201);
+    assert.equal(chargeBody.payment_type, 'gopay');
+    assert.match(chargeBody.gopay.callback_url, /^http:\/\/localhost:5173\/#struk\/[0-9a-f-]{36}$/);
+    assert.deepEqual((await wallet.json()).paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/gopay/x/qr-code', deeplink: 'gojek://gopay/merchanttransfer?tref=x' });
+    const bad = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bitcoin' }) });
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error, /tidak dikenal/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('VA checkout is refused below the flat-fee minimum', async () => {
+  let charged = false;
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    throw Error('unexpected SQL');
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => { charged = true; return { ok: true, status: 200, json: async () => ({}) } }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bca_va' }) });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /mulai Rp 100\.000/);
+    assert.equal(charged, false);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('a rejected charge closes the pending order instead of leaving it dangling', async () => {
+  const updates = [];
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 120000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET status')) { updates.push(params); return { rows: [] }; }
+    throw Error('unexpected SQL');
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => { const err = Error('Payment channel is not activated'); err.upstreamStatus = 402; throw err; }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bca_va' }) });
+    assert.equal(response.status, 502);
+    assert.match((await response.json()).error, /belum dapat dibuat/);
+    assert.equal(updates.length, 1);
+    assert.match(updates[0][0], /^[0-9a-f-]{36}$/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
@@ -129,10 +214,10 @@ test('plain format checkout sends the user id alone as customer number', async (
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ff12', name: 'Free Fire 12 Diamond', price: 20000, digi_sku: 'FF12', customer_format: 'plain' }] };
     if (sql.startsWith('INSERT INTO orders')) { customer = params[5]; zone = params[7]; return { rows: [] }; }
-    if (sql.startsWith('UPDATE orders SET redirect_url')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
     throw Error('unexpected SQL');
   } };
-  const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => ({ ok: true, json: async () => ({ redirect_url: 'https://app.sandbox.midtrans.com/snap/v2/vtweb/token' }) })) });
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => ({ ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) })) });
   const server = createServer(handler).listen(0, '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
@@ -266,7 +351,7 @@ test('supplier costs stay behind the admin role and the panel reads them from th
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: isAdmin ? [{ user_id: ownerId }] : [] };
     if (sql.startsWith('SELECT sku, name, game, category, variant, price, synced_at FROM supplier_products')) return { rows: mirror };
-    if (sql.startsWith('SELECT id, name, game, price, enabled')) return { rows: [{ id: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', price: 22000, enabled: true }, { id: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', price: 5000, enabled: true }] };
+    if (sql.startsWith('SELECT id, name, game, price, enabled')) return { rows: [{ id: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', price: 22000, enabled: true, price_mode: 'manual' }, { id: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', price: 5000, enabled: true, price_mode: 'auto' }] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(0, '127.0.0.1');
@@ -280,11 +365,11 @@ test('supplier costs stay behind the admin role and the panel reads them from th
     assert.equal(response.status, 200);
     const { products, catalogFetchedAt, catalogStale } = await response.json();
     assert.deepEqual(products, [
-      { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', variant: 'Indonesia', cost: 3057, supported: true, price: 22000, enabled: true },
-      { sku: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', category: 'Games', variant: 'Umum', cost: 1605, supported: true, price: null, enabled: false },
-      { sku: 'ax10', name: 'AXIS 10.000', game: 'AXIS', category: 'Pulsa', variant: 'Umum', cost: 10000, supported: true, price: null, enabled: false },
-      { sku: 'stm50', name: 'Steam Wallet 50.000', game: 'STEAM', category: 'Voucher', variant: 'Umum', cost: 50000, supported: false, price: null, enabled: false },
-      { sku: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', category: null, variant: null, cost: null, supported: true, missing: true, price: 5000, enabled: true },
+      { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', variant: 'Indonesia', cost: 3057, supported: true, price: 22000, enabled: true, priceMode: 'manual' },
+      { sku: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', category: 'Games', variant: 'Umum', cost: 1605, supported: true, price: null, enabled: false, priceMode: 'auto' },
+      { sku: 'ax10', name: 'AXIS 10.000', game: 'AXIS', category: 'Pulsa', variant: 'Umum', cost: 10000, supported: true, price: null, enabled: false, priceMode: 'auto' },
+      { sku: 'stm50', name: 'Steam Wallet 50.000', game: 'STEAM', category: 'Voucher', variant: 'Umum', cost: 50000, supported: false, price: null, enabled: false, priceMode: 'auto' },
+      { sku: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', category: null, variant: null, cost: null, supported: true, missing: true, price: 5000, enabled: true, priceMode: 'auto' },
     ]);
     // inti perubahan: membuka panel tidak menyentuh Digiflazz sama sekali.
     assert.equal(supplierCalls, 0);
@@ -300,6 +385,11 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: [{ user_id: ownerId }] };
     statements.push({ sql, params });
     if (sql.startsWith('INSERT INTO supplier_products') || sql.startsWith('DELETE FROM supplier_products')) return { rows: [] };
+    if (sql.startsWith('SELECT p.id, p.price')) return { rows: [
+      { id: 'ml10', price: 20000, category: 'Games', cost: 28343 },
+      { id: 'ff12', price: 1800, category: 'Games', cost: 1605 },
+    ] };
+    if (sql.startsWith('UPDATE products SET price = $2')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(0, '127.0.0.1');
@@ -317,6 +407,13 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     assert.equal(insert.params.length, 1 + 3 * 6);
     const cleanup = statements.find(statement => statement.sql.startsWith('DELETE FROM supplier_products'));
     assert.deepEqual(cleanup.params, [insert.params[0]]);
+    // ponytail: aturan harga jalan sendiri tiap sinkron - ml10 (modal 28343) naik ke 31000, ff12 tetap 1800.
+    assert.equal(body.autoPriced, 1);
+    assert.deepEqual(body.priceChanges, [{ sku: 'ml10', from: 20000, to: 31000 }]);
+    const repriced = statements.filter(statement => statement.sql.startsWith('UPDATE products SET price = $2'));
+    assert.deepEqual(repriced.map(statement => statement.params), [['ml10', 31000]]);
+    const autoSelect = statements.find(statement => statement.sql.startsWith('SELECT p.id, p.price'));
+    assert.match(autoSelect.sql, /WHERE p\.price_mode = 'auto'/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
@@ -330,8 +427,8 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: isAdmin ? [{ user_id: ownerId }] : [] };
     if (sql.startsWith('SELECT name, game, category, variant, price FROM supplier_products')) return { rows: mirror.filter(row => row.sku === params[0]) };
-    if (sql.startsWith('INSERT INTO products')) { inserts++; last = params; return { rows: [{ id: params[0], name: params[1], game: params[2], price: params[3], enabled: params[4] }] }; }
-    if (sql.startsWith('UPDATE products')) return { rows: [{ id: params[0], name: 'Produk lama', game: 'MOBILE LEGENDS', price: params[1], enabled: false }] };
+    if (sql.startsWith('INSERT INTO products')) { inserts++; last = params; return { rows: [{ id: params[0], name: params[1], game: params[2], price: params[3], enabled: params[4], price_mode: params[6] }] }; }
+    if (sql.startsWith('UPDATE products')) return { rows: [{ id: params[0], name: 'Produk lama', game: 'MOBILE LEGENDS', price: params[1], enabled: false, price_mode: params[2] }] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(0, '127.0.0.1');
@@ -344,9 +441,10 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
     assert.equal((await put('stm50', { price: 55000, enabled: true })).status, 422);
     const ok = await put('ml10', { price: 22000, enabled: true });
     assert.equal(ok.status, 200);
-    assert.deepEqual((await ok.json()).product, { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', variant: 'Indonesia', cost: 3057, supported: true, missing: false, price: 22000, enabled: true });
+    assert.deepEqual((await ok.json()).product, { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', variant: 'Indonesia', cost: 3057, supported: true, missing: false, price: 22000, enabled: true, priceMode: 'auto' });
     assert.equal(last[3], 22000);
     assert.equal(last[5], 'ml_concat');
+    assert.equal(last[6], 'auto');
     assert.equal(supplierCalls, 0);
     const draft = await put('ff12', { price: 3000, enabled: false });
     assert.equal(draft.status, 200);
@@ -355,12 +453,18 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
     const live = await put('ff12', { price: 3000, enabled: true });
     assert.equal(live.status, 200);
     assert.equal(last[5], 'plain');
-    assert.deepEqual((await live.json()).product, { sku: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', category: 'Games', variant: 'Umum', cost: 1605, supported: true, missing: false, price: 3000, enabled: true });
+    assert.deepEqual((await live.json()).product, { sku: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', category: 'Games', variant: 'Umum', cost: 1605, supported: true, missing: false, price: 3000, enabled: true, priceMode: 'auto' });
     assert.equal(inserts, 3);
     assert.equal((await put('ghost', { price: 1000, enabled: true })).status, 409);
     const stale = await put('done1', { price: 4000, enabled: false });
     assert.equal(stale.status, 200);
-    assert.deepEqual((await stale.json()).product, { sku: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', category: null, variant: null, cost: null, supported: true, missing: true, price: 4000, enabled: false });
+    assert.deepEqual((await stale.json()).product, { sku: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', category: null, variant: null, cost: null, supported: true, missing: true, price: 4000, enabled: false, priceMode: 'auto' });
+    // ponytail: mode manual = admin kunci harga sendiri, sinkron berikutnya tidak boleh menimpanya.
+    const manual = await put('ml10', { price: 22000, enabled: true, priceMode: 'manual' });
+    assert.equal(manual.status, 200);
+    assert.equal((await manual.json()).product.priceMode, 'manual');
+    assert.equal(last[6], 'manual');
+    assert.equal((await put('ml10', { price: 22000, enabled: true, priceMode: 'murah' })).status, 400);
     isAdmin = false;
     assert.equal((await put('ml10', { price: 22000, enabled: true })).status, 403);
     assert.equal(supplierCalls, 0);
@@ -585,7 +689,7 @@ test('panel katalog mengirim semua baris supplier aktif tanpa dipotong', async (
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: [{ user_id: ownerId }] };
     if (sql.startsWith('SELECT sku, name, game, category, variant, price, synced_at FROM supplier_products')) return { rows };
-    if (sql.startsWith('SELECT id, name, game, price, enabled FROM products')) return { rows: [] };
+    if (sql.startsWith('SELECT id, name, game, price, enabled')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { throw Error('unexpected external request: ' + url); }) })).listen(0, '127.0.0.1');
@@ -596,5 +700,196 @@ test('panel katalog mengirim semua baris supplier aktif tanpa dipotong', async (
     const { products } = await response.json();
     assert.equal(products.length, 230);
     assert.equal(products.every(item => item.supported), true);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('login nomor HP menukar nomor jadi sesi tanpa membocorkan email', async () => {
+  let tokenCall;
+  const pool = { async query(sql, params) {
+    assert.match(sql, /FROM auth\.users/);
+    assert.deepEqual(params, ['+6281234567890']);
+    return { rows: [{ email: 'aku@contoh.com' }] };
+  } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: async (url, options) => {
+    tokenCall = { url, options };
+    return { ok: true, status: 200, json: async () => ({ access_token: 'access-fixture', refresh_token: 'refresh-fixture', user: { id: ownerId } }) };
+  } })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6281234567890', password: 'rahasia6' }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { session: { access_token: 'access-fixture', refresh_token: 'refresh-fixture' } });
+    assert.equal(tokenCall.url, 'https://sample.supabase.co/auth/v1/token?grant_type=password');
+    assert.equal(tokenCall.options.headers.apikey, 'public-key');
+    const sent = JSON.parse(tokenCall.options.body);
+    assert.equal(sent.email, 'aku@contoh.com');
+    assert.equal(sent.password, 'rahasia6');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('login nomor HP dengan kata sandi salah atau nomor tak dikenal selalu 401 tanpa bocoran', async () => {
+  let external = 0;
+  const pool = { async query() { return { rows: [{ email: 'aku@contoh.com' }] }; } };
+  const wrong = createServer(createHandler({ pool, env, fetchImpl: async () => { external++; return { ok: false, status: 400, json: async () => ({ error_code: 'invalid_credentials', error_description: 'Invalid login credentials' }) }; } })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => wrong.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${wrong.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6281234567890', password: 'salah-sekali' }) });
+    assert.equal(response.status, 401);
+    const body = await response.json();
+    assert.match(body.error, /salah/i);
+    assert.equal('email' in body, false);
+    assert.equal(external, 1);
+  } finally { await new Promise(resolve => wrong.close(resolve)); }
+  const unknown = createServer(createHandler({ pool: { async query() { return { rows: [] }; } }, env, fetchImpl: async () => { external++; throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => unknown.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${unknown.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6289999999999', password: 'rahasia6' }) });
+    assert.equal(response.status, 401);
+    assert.equal(external, 1);
+  } finally { await new Promise(resolve => unknown.close(resolve)); }
+});
+
+test('email belum dikonfirmasi saat login nomor HP dijawab dengan kode konfirmasi', async () => {
+  const pool = { async query() { return { rows: [{ email: 'aku@contoh.com' }] }; } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error_code: 'email_not_confirmed', msg: 'Email not confirmed' }) }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6281234567890', password: 'rahasia6' }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { needsConfirmation: true, email: 'aku@contoh.com' });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('login nomor HP menolak input tidak valid tanpa menyentuh database', async () => {
+  let touched = 0;
+  const server = createServer(createHandler({ pool: { query() { touched++; throw Error('db touched'); } }, env, fetchImpl: async () => { touched++; throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    for (const body of [{ phone: '0812', password: 'rahasia6' }, { phone: '+6281234567890' }, { phone: '+6281234567890', password: '' }]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      assert.equal(response.status, 400);
+    }
+    assert.equal(touched, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('receipt read pulls Midtrans status when the webhook never arrived', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let status = 'pending';
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status, productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] };
+    if (sql.includes('SET status = CASE')) { if (status === 'pending') status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes('digiflazz_claimed_at = now()')) { status = 'fulfillment_pending'; return { rows: [{ id, digi_sku: 'ml10', customer_no: '123100', price: 25000 }] }; }
+    if (sql.includes('SET status = $2')) { status = 'fulfilled'; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const seen = [];
+  const fetchImpl = withAuth(async url => {
+    seen.push(url);
+    if (url === `https://api.sandbox.midtrans.com/v2/${id}/status`) return { ok: true, status: 200, json: async () => ({ order_id: id, transaction_status: 'settlement', gross_amount: '25000.00' }) };
+    if (url === 'https://api.digiflazz.com/v1/transaction') return { ok: true, status: 200, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Sukses', rc: '00' } }) };
+    throw Error('unexpected external request: ' + url);
+  });
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).order.status, 'fulfilled');
+    assert.deepEqual(seen, [`https://api.sandbox.midtrans.com/v2/${id}/status`, 'https://api.digiflazz.com/v1/transaction']);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('receipt read never flips an order on pending and closes expired ones', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let queries = 0, status = 'pending', midtransStatus = 'pending';
+  const pool = { async query(sql) {
+    queries++;
+    if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status, productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] };
+    if (sql.includes("status = 'payment_failed'")) { status = 'payment_failed'; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const fetchImpl = withAuth(async url => {
+    if (url.endsWith('/status')) return { ok: true, status: 200, json: async () => ({ order_id: id, transaction_status: midtransStatus, gross_amount: '25000.00' }) };
+    throw Error('unexpected external request: ' + url);
+  });
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/orders/${id}`;
+    assert.equal((await (await fetch(url, { headers: authHeaders })).json()).order.status, 'pending');
+    assert.equal(queries, 1);
+    midtransStatus = 'expire';
+    assert.equal((await (await fetch(url, { headers: authHeaders })).json()).order.status, 'payment_failed');
+    assert.equal(queries, 4);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('receipt read re-drives a paid order whose fulfillment never ran', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let status = 'payment_paid';
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status, productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] };
+    if (sql.includes('digiflazz_claimed_at = now()')) { status = 'fulfillment_pending'; return { rows: [{ id, digi_sku: 'ml10', customer_no: '123100', price: 25000 }] }; }
+    if (sql.includes('SET status = $2')) { status = 'fulfilled'; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const seen = [];
+  const fetchImpl = withAuth(async url => {
+    seen.push(url);
+    if (url === 'https://api.digiflazz.com/v1/transaction') return { ok: true, status: 200, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Sukses', rc: '00' } }) };
+    throw Error('unexpected external request: ' + url);
+  });
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
+    assert.equal((await response.json()).order.status, 'fulfilled');
+    assert.deepEqual(seen, ['https://api.digiflazz.com/v1/transaction']);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('receipt read re-checks Digiflazz while a fulfillment is still pending', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let status = 'fulfillment_pending';
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status, productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] };
+    if (sql.includes('digi_checked_at = now()')) return { rows: [{ id, digi_sku: 'ml10', customer_no: '123100', price: 25000 }] };
+    if (sql.includes('SET status = $2')) { status = 'fulfilled'; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const seen = [];
+  const fetchImpl = withAuth(async url => {
+    seen.push(url);
+    if (url === 'https://api.digiflazz.com/v1/transaction') return { ok: true, status: 200, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Sukses', rc: '00' } }) };
+    throw Error('unexpected external request: ' + url);
+  });
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
+    assert.equal((await response.json()).order.status, 'fulfilled');
+    assert.deepEqual(seen, ['https://api.digiflazz.com/v1/transaction']);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('receipt read leaves Digiflazz alone while the re-check throttle holds', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let queries = 0;
+  const pool = { async query(sql) {
+    queries++;
+    if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status: 'fulfillment_pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] };
+    if (sql.includes('digi_checked_at = now()')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const seen = [];
+  const fetchImpl = withAuth(async url => { seen.push(url); throw Error('unexpected external request: ' + url); });
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
+    assert.equal((await response.json()).order.status, 'fulfillment_pending');
+    assert.deepEqual(seen, []);
+    assert.equal(queries, 2);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

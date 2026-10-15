@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { VA_METHOD_IDS, VA_MIN_ORDER } from './pricing.mjs';
 
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
 const css = await readFile(new URL('./store.css', import.meta.url), 'utf8');
@@ -23,21 +24,43 @@ test('kotak nominal memuat kartu produk dan menandai pilihan aktif', () => {
   assert.match(source, /Belum ada item produk yang dipilih\./);
 });
 
-test('jumlah pembelian memakai stepper terbatas dan total ringkasan ikut berubah', () => {
+test('jumlah pembelian memakai stepper terbatas dan ringkasan menagih satu item', () => {
   assert.match(source, /const MAX_ITEM_QTY = 10/);
   assert.match(source, /function changeQuantity\(delta\)/);
   assert.match(source, /function setQuantityValue\(raw\)/);
-  assert.match(source, /rupiah\(selected\.price \* itemQty\)/);
-  assert.match(source, /\{itemQty\} item/);
+  assert.match(source, /<span>Jumlah<\/span><strong>1 item<\/strong>/);
+  assert.match(source, /<span>Total<\/span><strong>\{rupiah\(selected\.price\)\}<\/strong>/);
+  assert.match(source, /Jumlah banyak belum aktif, jadi satu pesanan berisi satu item\./);
+  // ponytail: pembeli harus tahu total di checkout sama dengan harga di rak - lawan trik 'murah di depan, biaya di belakang'.
+  assert.match(source, /Sudah termasuk biaya pembayaran — tidak ada tambahan di langkah berikutnya\./);
   assert.match(source, /aria-label="Kurangi jumlah"/);
   assert.match(source, /aria-label="Tambah jumlah"/);
 });
 
-test('metode pembayaran dan kode promo tampil sebagai pratinjau yang jelas', () => {
+test('metode pembayaran yang dipilih ikut terkirim ke checkout, promo masih pratinjau', () => {
   assert.match(source, /const PAYMENT_METHODS = \[/);
   assert.match(source, /role="radiogroup" aria-label="Metode pembayaran"/);
-  assert.match(source, /step-tag">Pratinjau</);
+  assert.match(source, /zoneId: zoneId\.trim\(\), paymentMethod: activePaymentMethod\(selected\.price\) \}/);
+  assert.match(source, /QR atau nomor Virtual Account tampil di halaman invoice setelah pesanan dibuat/);
+  assert.match(source, /const VA_BANKS = \{ bca: 'BCA', bni: 'BNI', bri: 'BRI', permata: 'Permata' \}/);
+  for (const id of ['qris', 'bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill', 'gopay', 'shopeepay']) {
+    assert.ok(source.includes(`id: '${id}'`), `kanal ${id} hilang dari PAYMENT_METHODS`);
+  }
+  assert.equal(source.includes('Metode final masih dipilih'), false);
   assert.match(source, /Kode promo belum aktif/);
+});
+
+test('pesanan dibuat lewat modal konfirmasi, bukan langsung dari form', () => {
+  assert.match(source, /function openConfirm\(event\)/);
+  assert.match(source, /onSubmit=\{openConfirm\}/);
+  assert.match(source, /role="dialog" aria-modal="true" aria-labelledby="confirm-title"/);
+  assert.match(source, /Periksa sekali lagi\. Pesanan baru dibuat setelah kamu menekan Pesan sekarang\./);
+  assert.match(source, /Pesan sekarang/);
+  assert.match(source, /className="confirm-terms"/);
+  assert.match(source, /disabled=\{!termsOk \|\| checkoutState === 'loading'\}/);
+  assert.match(source, /window\.location\.hash = `#struk\/\$\{encodeURIComponent\(data\.orderId\)\}`/);
+  assert.equal(source.includes('window.location.assign('), false);
+  assert.equal(source.includes('snap/v1/transactions'), false);
 });
 
 test('detail kontak terisi otomatis untuk member dan bisa diisi tamu', () => {
@@ -53,4 +76,25 @@ test('halaman beli mendukung format uid_server (pilih server) dan riot (Riot ID)
   assert.match(source, /orderFormat === 'riot'/);
   assert.match(source, /Nama#1234/);
   assert.match(source, /Riot ID/);
+});
+
+test('id kanal bayar di klien sama dengan id kanal di server', async () => {
+  const server = await readFile(new URL('../server/app.mjs', import.meta.url), 'utf8');
+  const start = server.indexOf('const PAYMENT_METHODS = {');
+  assert.ok(start > 0, 'PAYMENT_METHODS server tidak ditemukan');
+  const block = server.slice(start, server.indexOf('};', start));
+  const serverIds = [...block.matchAll(/^ {2}([a-z_]+):/gm)].map((match) => match[1]);
+  const clientIds = [...source.matchAll(/id: '([a-z_]+)', group/g)].map((match) => match[1]);
+  assert.equal(serverIds.length, 8);
+  assert.deepEqual(clientIds, serverIds);
+  const serverMin = Number(server.match(/const VA_MIN_ORDER = (\d+)/)[1]);
+  assert.equal(serverMin, VA_MIN_ORDER);
+  for (const id of VA_METHOD_IDS) assert.ok(server.includes(`'${id}'`), `${id} tidak ada di server`);
+});
+test('kanal VA disembunyikan di pesanan kecil dan dipaksa aman saat checkout', () => {
+  assert.match(source, /function activePaymentMethod\(price\)/);
+  assert.match(source, /availablePaymentMethods\(PAYMENT_METHODS, selected\?\.price\)\.map\(\(method, index, options\)/);
+  assert.match(source, /Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai \{rupiah\(VA_MIN_ORDER\)\}/);
+  assert.match(source, /paymentMethod: activePaymentMethod\(selected\.price\) \}/);
+  assert.match(css, /\.pay-note\{color:var\(--muted\)/);
 });

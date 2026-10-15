@@ -135,3 +135,75 @@
 .auth-aside .secondary-button{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;margin-top:8px}
 @media(max-width:830px){.account-auth{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:620px){.auth-fields{grid-template-columns:minmax(0,1fr)}}
+/* ponytail: halaman invoice + link riwayat pesanan */
+.receipt-status{flex:none;font-size:.82rem;font-weight:700;border:1px solid var(--line);border-radius:999px;padding:4px 12px;color:var(--muted)}
+.receipt-status.status-pending{border-color:#d8b45c;color:#e8c877}
+.receipt-status.status-fulfilled{border-color:var(--lime);color:var(--lime)}
+.receipt-rows{display:grid;gap:12px;margin:18px 0}
+.receipt-rows div{display:flex;justify-content:space-between;gap:16px}
+.receipt-rows dt{color:var(--muted)}
+.receipt-rows dd{margin:0;text-align:right;overflow-wrap:anywhere}
+.receipt-links{display:flex;flex-wrap:wrap;gap:8px 18px;margin:16px 0 0}
+.receipt-links a{color:var(--lime);text-decoration:underline;text-underline-offset:3px}
+.order-list a{display:flex;flex-direction:column;gap:5px;width:100%;color:inherit;text-decoration:none}
+.order-list a:hover strong,.order-list a:focus-visible strong{color:var(--lime)}
+/* ponytail: invoice full 1 halaman (QR/VA tampil di sini) + modal verifikasi sebelum pesanan dibuat */
+.invoice-page{padding-block:44px 84px}
+.invoice-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:14px 20px;padding-bottom:22px;border-bottom:1px solid var(--line);margin-bottom:26px}
+.invoice-head h1{font-size:clamp(1.9rem,3vw,2.6rem);margin:8px 0 0}
+.invoice-code{color:var(--muted);font-size:.66em;letter-spacing:0}
+.back-button{display:inline-flex;align-items:center;min-height:44px;color:var(--muted);font-size:.9rem;font-weight:700}
+.back-button:hover{color:var(--lime)}
+.invoice-banner{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 22px;border:1px solid #819d76;border-left-width:4px;border-radius:6px;background:#101b13;padding:clamp(18px,2.4vw,26px);margin-bottom:18px}
+.invoice-banner h2{font-size:clamp(1.4rem,2.2vw,2rem);margin-bottom:8px}
+.invoice-banner p{margin:0;color:var(--muted);line-height:1.55}
+.invoice-banner.banner-pending{border-left-color:#d8b45c}
+.invoice-banner.banner-fulfilled{border-left-color:var(--lime)}
+.invoice-banner.banner-payment_failed,.invoice-banner.banner-fulfillment_failed{border-left-color:var(--danger)}
+.invoice-timer{flex:none;font-weight:800;color:var(--lime);font-variant-numeric:tabular-nums}
+.invoice-pay,.invoice-progress,.invoice-details{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:clamp(20px,2.6vw,30px);margin-bottom:18px}
+.invoice-pay h2,.invoice-progress h2,.invoice-details h2{font-size:clamp(1.15rem,1.7vw,1.5rem);margin-bottom:18px}
+.pay-qr{display:flex;flex-wrap:wrap;align-items:center;gap:clamp(16px,2.4vw,30px)}
+.pay-qr img{width:min(240px,60vw);height:auto;background:#fff;border-radius:6px;padding:8px}
+.pay-qr p{margin:0 0 10px;line-height:1.6;color:var(--muted)}
+.pay-qr p strong,.pay-va p strong{color:var(--text)}
+.pay-va p{margin:0 0 12px;line-height:1.6;color:var(--muted)}
+.pay-number{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 12px;font-size:clamp(1.1rem,1.9vw,1.5rem);font-weight:800;overflow-wrap:anywhere}
+.copy-button{border:1px solid #849e80;background:transparent;color:var(--text);border-radius:5px;min-height:40px;padding:8px 14px;font-weight:700;font-size:.85rem}
+.copy-button:hover{border-color:var(--lime);color:var(--lime)}
+.pay-legacy p{margin:0 0 14px;color:var(--muted)}
+.progress-steps{display:grid;gap:0;margin:0;padding:0;list-style:none}
+.progress-step{display:grid;grid-template-columns:26px minmax(0,1fr);gap:14px;align-items:start;padding:12px 0;border-top:1px solid #26362a}
+.progress-step:first-child{border-top:0}
+.progress-marker{width:24px;height:24px;border-radius:50%;border:1px solid #6d8668;display:grid;place-items:center;font-size:.8rem;font-weight:800;color:var(--bg)}
+.progress-step strong{display:block;font-size:1rem}
+.progress-step small{color:var(--muted);line-height:1.5}
+.progress-step.is-done .progress-marker{background:var(--lime);border-color:var(--lime)}
+.progress-step.is-active .progress-marker{border-color:var(--lime);color:var(--lime)}
+.progress-step.is-active strong{color:var(--lime)}
+.progress-step.is-failed .progress-marker{border-color:var(--danger);color:var(--danger)}
+.progress-step.is-idle strong{color:var(--muted)}
+.invoice-details .receipt-rows{margin:0}
+.confirm-backdrop{position:fixed;inset:0;z-index:40;background:rgba(5,9,6,.72);display:grid;place-items:center;padding:18px;overflow-y:auto}
+.confirm-modal{width:min(520px,100%);background:#101b13;border:1px solid #819d76;border-radius:8px;padding:clamp(20px,3vw,28px);box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.confirm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.confirm-head h2{font-size:1.5rem;margin:0}
+.confirm-close{border:0;background:transparent;color:var(--muted);font-size:1.6rem;line-height:1;min-height:44px;min-width:44px;border-radius:5px}
+.confirm-close:hover{color:var(--lime)}
+.confirm-modal>p{color:var(--muted);line-height:1.55;margin:10px 0 18px}
+.confirm-rows{display:grid;gap:12px;margin:0 0 18px;padding:16px 0;border-block:1px dashed var(--line)}
+.confirm-rows div{display:flex;justify-content:space-between;gap:16px}
+.confirm-rows dt{color:var(--muted)}
+.confirm-rows dd{margin:0;text-align:right;font-weight:700;overflow-wrap:anywhere}
+.confirm-terms{display:flex;gap:10px;align-items:flex-start;font-size:.9rem;line-height:1.5;color:var(--muted)}
+.confirm-terms input{margin-top:3px;width:18px;height:18px;flex:none;accent-color:var(--lime)}
+.confirm-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px;margin-top:18px}
+.pay-group{margin:18px 0 8px;font-size:.78rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.pay-options .pay-group:first-child{margin-top:0}
+@media(max-width:620px){.invoice-head{flex-direction:column;align-items:flex-start}.pay-qr{flex-direction:column;align-items:stretch}.pay-qr img{align-self:center}.confirm-actions .checkout-button,.confirm-actions .secondary-button{width:100%}}
+.price-warning.price-health-rugi{color:var(--danger)}.price-warning.price-health-tipis{color:#f2b566}.price-warning.price-health-aman{color:var(--lime)}.price-suggest-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0}.price-suggest-row .secondary-button{min-height:36px;padding:6px 12px;font-size:.83rem}.price-suggest-note{color:var(--muted);font-size:.8rem}.pay-note{color:var(--muted);font-size:.85rem;line-height:1.5;margin:10px 0 0}
+.price-mode{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:.82rem;cursor:pointer;user-select:none}
+.price-mode input{width:16px;height:16px;accent-color:var(--lime)}
+.csv-import{position:relative;overflow:hidden;display:inline-flex;align-items:center;cursor:pointer}
+.csv-import input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.summary-inclusive{color:var(--lime);font-size:.82rem;line-height:1.45;margin:8px 0 0}

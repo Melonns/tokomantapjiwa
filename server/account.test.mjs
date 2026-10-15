@@ -176,7 +176,7 @@ test('admin reconciliation keeps existing Digiflazz ref_id in test mode', async 
 });
 
 test('checkout stores verified owner UUID, never client-supplied owner', async () => {
-  let inserts = 0, snapCalls = 0;
+  let inserts = 0, chargeCalls = 0;
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
     if (sql.startsWith('INSERT INTO orders')) {
@@ -186,18 +186,18 @@ test('checkout stores verified owner UUID, never client-supplied owner', async (
       inserts++;
       return { rows: [] };
     }
-    if (sql.startsWith('UPDATE orders SET redirect_url')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
     throw Error('Unexpected SQL');
   } };
   const handler = createHandler({ pool, env, fetchImpl: async (url, options) => {
     if (url === 'https://sample.supabase.co/auth/v1/user') return authFetch()(url, options);
-    snapCalls++;
-    return { ok: true, status: 200, json: async () => ({ redirect_url: 'https://app.sandbox.midtrans.com/snap/v2/vtweb/token' }) };
+    chargeCalls++;
+    return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
   } });
   await serve(handler, async base => {
     const response = await fetch(base + '/api/checkout', { method: 'POST', headers: { ...authorization, 'content-type': 'application/json' }, body: JSON.stringify({ productId: 'ml10', userId: '123', zoneId: '100', ownerId: other }) });
     assert.equal(response.status, 201);
   });
   assert.equal(inserts, 1);
-  assert.equal(snapCalls, 1);
+  assert.equal(chargeCalls, 1);
 });

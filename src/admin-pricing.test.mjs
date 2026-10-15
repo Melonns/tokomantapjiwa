@@ -79,11 +79,43 @@ test('panel harga menyimpan katalog di server dan bisa menyinkron ulang sendiri'
 test('panel harga bisa mengisi draft dari margin persen per brand', () => {
   assert.match(source, /const \[marginDrafts, setMarginDrafts\] = useState\(\{\}\)/);
   assert.match(source, /applyBrandMargin/);
-  assert.match(source, /Math\.ceil\(\(cost \* \(1 \+ pct \/ 100\)\) \/ 100\) \* 100/);
+  assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category, pct\)/);
   assert.match(source, /className="price-margin"/);
   assert.match(source, /aria-label=\{`Margin harga \$\{brand\.name\} \(%\)`\}/);
-  assert.match(source, /Modal × \(1 \+ %\), dibulatkan ke atas\./);
-  assert.match(source, /Math\.ceil\(\(cost \* \(1 \+ pct \/ 100\)\) \/ 100\) \* 100/);
+  assert.match(source, /Modal × \(1 \+ %\), sudah termasuk fee QRIS, dibulatkan ke atas\./);
   assert.match(css, /\.price-margin\{display:flex/);
   assert.match(css, /\.price-margin-field input\{[^}]*min-height:44px/);
+});
+
+test('panel harga menandai margin rugi/tipis dan menawarkan harga saran', () => {
+  assert.match(source, /const health = priceHealth\(draft\.price, item\.cost, item\.category\)/);
+  assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category\)/);
+  assert.match(source, /price-health-\$\{health\.level\}/);
+  assert.match(source, /Rugi \$\{rupiah\(Math\.abs\(health\.netRp\)\)\} setelah fee QRIS\./);
+  assert.match(source, /Margin aman: sisa \$\{rupiah\(health\.netRp\)\} \(\$\{health\.marginPct\}%\)\./);
+  assert.match(source, /Belum cukup buat fee VA\./);
+  assert.match(source, /Pakai saran \{rupiah\(saran\)\}/);
+  assert.match(source, /target margin \{marginBand\(item\.category, Number\(item\.cost\) \|\| 0\)\.pct\}%/);
+  assert.match(css, /\.price-warning\.price-health-rugi\{color:var\(--danger\)\}/);
+  assert.match(css, /\.price-suggest-row\{display:flex/);
+});
+
+test('harga otomatis: mode per SKU, hitung ulang di server, dan CSV buat Excel', () => {
+  assert.match(server, /repriceAutoProducts/);
+  assert.match(server, /WHERE p\.price_mode = 'auto'/);
+  assert.match(server, /autoPriced/);
+  assert.match(server, /price_mode = EXCLUDED\.price_mode/);
+  assert.match(source, /buildCatalogCsv/);
+  assert.match(source, /parseCatalogCsv/);
+  assert.match(source, /Ekspor CSV/);
+  assert.match(source, /Impor CSV/);
+  assert.match(source, /Kunci manual/);
+  assert.match(source, /harga otomatis disesuaikan/);
+  assert.match(css, /\.price-mode\{/);
+  assert.match(css, /\.csv-import\{/);
+});
+
+test('harga otomatis: ekspor CSV tidak membocorkan modal ke storefront', () => {
+  assert.match(source, /text\/csv;charset=utf-8/);
+  assert.equal(source.includes('supplierPreview'), false);
 });
