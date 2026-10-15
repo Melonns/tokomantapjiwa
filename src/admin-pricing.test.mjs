@@ -119,3 +119,10 @@ test('harga otomatis: ekspor CSV tidak membocorkan modal ke storefront', () => {
   assert.match(source, /text\/csv;charset=utf-8/);
   assert.equal(source.includes('supplierPreview'), false);
 });
+
+test('panel admin punya halaman voucher dengan form dan tombol nyala/mati', () => {
+  assert.match(source, /adminPage === 'vouchers' && <section className="order-section admin-section" aria-labelledby="voucher-title">/);
+  assert.match(source, /Voucher pembeli baru tidak bisa dipakai akun yang sudah pernah beli\./);
+  assert.match(source, /request\('\/api\/admin\/vouchers', \{ method: 'POST'/);
+  assert.match(source, /\{item\.active \? 'Matikan' : 'Nyalakan'\}/);
+});

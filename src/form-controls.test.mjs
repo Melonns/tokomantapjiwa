@@ -75,7 +75,9 @@ test('checkout meminta Zone ID hanya untuk produk ml_concat dan pilih server unt
   const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
   assert.match(source, /\{orderFormat === 'ml_concat' && <label>Zone ID/)
   assert.match(source, /\{orderFormat === 'uid_server' && <label>Server <select/)
-  assert.match(source, /selected\.format === 'plain' \|\| selected\.format === 'riot' \? \{ productId: selected\.id, userId: userId\.trim\(\), paymentMethod: activePaymentMethod\(selected\.price\) \} : \{ productId: selected\.id, userId: userId\.trim\(\), zoneId: zoneId\.trim\(\), paymentMethod: activePaymentMethod\(selected\.price\) \}/)
+  assert.match(source, /const payable = selected\.price - \(voucherUse \? voucherUse\.discount : 0\)/);
+  assert.match(source, /paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code \}/);
+  assert.match(source, /const code = promoCode\.trim\(\)\.toUpperCase\(\)/);
 })
 
 test('zona 2 langkah: baris aksi rapat dan tombol nonaktif jelas', () => {

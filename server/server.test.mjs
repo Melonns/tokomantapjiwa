@@ -172,6 +172,56 @@ test('picked payment method charges that channel through Core API and unknown on
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak', async () => {
+  const charged = [];
+  let orderParams, redemptions = 0, myUses = 0, myBuys = 0;
+  const voucher = { code: 'TEMAN1K', label: 'Teman dekat', kind: 'fixed', value: 1000, min_order: 10000, max_discount: null, quota: 50, used: 0, per_user: 1, new_buyers_only: true, active: true, ends_at: null };
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT code, label, kind')) return { rows: [voucher] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM voucher_redemptions')) return { rows: [{ count: myUses }] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM orders')) return { rows: [{ count: myBuys }] };
+    if (sql.startsWith('UPDATE vouchers SET used = used + 1')) return { rows: [{ used: voucher.used + 1 }] };
+    if (sql.startsWith('INSERT INTO voucher_redemptions')) { redemptions++; return { rows: [] }; }
+    if (sql.startsWith('INSERT INTO orders')) { orderParams = params; return { rows: [] }; }
+    if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
+    charged.push(JSON.parse(options.body).transaction_details.gross_amount);
+    return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
+  }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const checkout = (extra) => fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', ...extra }) });
+    const response = await checkout({ voucherCode: 'teman1k' });
+    assert.equal(response.status, 201);
+    assert.equal(orderParams[3], 24000);
+    assert.equal(orderParams[9], 1000);
+    assert.equal(orderParams[10], 'TEMAN1K');
+    assert.deepEqual(charged, [24000]);
+    assert.equal(redemptions, 1);
+    voucher.min_order = 30000;
+    assert.equal((await checkout({ voucherCode: 'TEMAN1K' })).status, 400);
+    voucher.min_order = 10000;
+    voucher.quota = 1;
+    voucher.used = 1;
+    const habis = await checkout({ voucherCode: 'TEMAN1K' });
+    assert.equal(habis.status, 400);
+    assert.match(JSON.stringify(await habis.json()), /Kuota voucher sudah habis/);
+    voucher.used = 0;
+    myUses = 1;
+    assert.equal((await checkout({ voucherCode: 'TEMAN1K' })).status, 400);
+    myUses = 0;
+    myBuys = 1;
+    assert.equal((await checkout({ voucherCode: 'TEMAN1K' })).status, 400);
+    assert.equal(charged.length, 1);
+    assert.equal(redemptions, 1);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('VA checkout is refused below the flat-fee minimum', async () => {
   let charged = false;
   const pool = { async query(sql) {

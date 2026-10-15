@@ -88,6 +88,7 @@ function routeFromHash() {
   const hash = window.location.hash
   if (hash === '#daftar') return { view: 'register', game: null, checkoutId: '' }
   if (hash === '#akun') return { view: 'account', game: null, checkoutId: '' }
+  if (hash === '#admin/voucher') return { view: 'admin', adminPage: 'vouchers', game: null, checkoutId: '' }
   if (hash === '#admin' || hash === '#admin/produk') return { view: 'admin', adminPage: hash === '#admin/produk' ? 'products' : 'transactions', game: null, checkoutId: '' }
   if (hash.startsWith('#game/')) return { view: 'game', game: decodeHash(hash.slice(6)), checkoutId: '' }
   if (hash.startsWith('#beli/')) return { view: 'checkout', game: null, checkoutId: decodeHash(hash.slice(6)) }
@@ -145,6 +146,12 @@ function App() {
   const [category, setCategory] = useState('game')
   const [view, setView] = useState(() => routeFromHash().view)
   const [adminPage, setAdminPage] = useState(() => routeFromHash().adminPage || 'transactions')
+  const [voucher, setVoucher] = useState(null)
+  const [voucherBusy, setVoucherBusy] = useState(false)
+  const [voucherNotice, setVoucherNotice] = useState('')
+  const [adminVouchers, setAdminVouchers] = useState([])
+  const [voucherDraft, setVoucherDraft] = useState({ code: '', value: '1000', minOrder: '10000', quota: '50', perUser: '1', newBuyersOnly: false, days: '30' })
+  const [voucherAdminNotice, setVoucherAdminNotice] = useState('')
   const [checkoutId, setCheckoutId] = useState(() => routeFromHash().checkoutId)
 
   const [catalogSearch, setCatalogSearch] = useState('')
@@ -427,6 +434,7 @@ function App() {
     let active = true
     setAdminState('loading')
     setAdminError('')
+    authHeaders().then((headers) => request('/api/admin/vouchers', { headers })).then((data) => setAdminVouchers(data.vouchers || [])).catch(() => {})
     authHeaders().then((headers) => request('/api/admin/orders', { headers })).then((data) => {
       if (active) { setAdminOrders(Array.isArray(data.orders) ? data.orders : []); setAdminState('ready') }
     }).catch((error) => { if (active) { setAdminError(error.message); setAdminState('error') } })
@@ -953,6 +961,56 @@ function App() {
     setConfirmOpen(true)
   }
 
+  // ponytail: potongan voucher cuma berlaku untuk produk yang sedang dipilih; kalau pembeli ganti produk, potongannya otomatis dilepas.
+  function activeVoucher() {
+    return voucher && selected && voucher.productId === selected.id ? voucher : null
+  }
+  function voucherCut() {
+    const picked = activeVoucher()
+    return picked ? picked.discount : 0
+  }
+  // ponytail: angka potongan diminta ke server, bukan dihitung di browser, supaya layar dan tagihan tidak pernah beda.
+  async function applyVoucher() {
+    if (!selected || voucherBusy) return
+    const code = promoCode.trim().toUpperCase()
+    if (!code) return
+    setVoucherBusy(true)
+    setVoucherNotice('')
+    try {
+      const data = await request('/api/voucher', { method: 'POST', headers: await authHeaders(), body: JSON.stringify({ code, productId: selected.id }) })
+      setVoucher({ ...data.voucher, productId: selected.id })
+      setPromoCode(data.voucher.code)
+    } catch (error) {
+      setVoucher(null)
+      setVoucherNotice(error.message)
+    } finally {
+      setVoucherBusy(false)
+    }
+  }
+  async function createVoucher(event) {
+    event.preventDefault()
+    if (voucherBusy) return
+    setVoucherBusy(true)
+    setVoucherAdminNotice('')
+    try {
+      const data = await request('/api/admin/vouchers', { method: 'POST', headers: await authHeaders(), body: JSON.stringify({ code: voucherDraft.code.trim().toUpperCase(), kind: 'fixed', value: Number(voucherDraft.value), minOrder: Number(voucherDraft.minOrder), quota: voucherDraft.quota === '' ? null : Number(voucherDraft.quota), perUser: Number(voucherDraft.perUser), newBuyersOnly: voucherDraft.newBuyersOnly, days: Number(voucherDraft.days) }) })
+      setAdminVouchers(data.vouchers || [])
+      setVoucherAdminNotice(`Voucher ${data.code} tersimpan.`)
+    } catch (error) {
+      setVoucherAdminNotice(error.message)
+    } finally {
+      setVoucherBusy(false)
+    }
+  }
+  async function toggleVoucher(item) {
+    try {
+      const data = await request(`/api/admin/vouchers/${encodeURIComponent(item.code)}`, { method: 'PATCH', headers: await authHeaders(), body: JSON.stringify({ active: !item.active }) })
+      setAdminVouchers(data.vouchers || [])
+    } catch (error) {
+      setVoucherAdminNotice(error.message)
+    }
+  }
+
   // ponytail: pesanan dibuat di sini (setelah konfirmasi), lalu halaman invoice yang menampilkan QR/VA.
   async function checkout() {
     if (!selected || !checkoutAvailable || checkoutState === 'loading' || !termsOk) return
@@ -960,10 +1018,12 @@ function App() {
     setCheckoutError('')
     try {
       if (!supabase || !session) throw new Error('Masuk ke akun dulu sebelum membuat pesanan.')
+      const voucherUse = activeVoucher()
+      const payable = selected.price - (voucherUse ? voucherUse.discount : 0)
       const data = await request('/api/checkout', {
         method: 'POST',
         headers: await authHeaders(),
-        body: JSON.stringify(selected.format === 'plain' || selected.format === 'riot' ? { productId: selected.id, userId: userId.trim(), paymentMethod: activePaymentMethod(selected.price) } : { productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim(), paymentMethod: activePaymentMethod(selected.price) }),
+        body: JSON.stringify(selected.format === 'plain' || selected.format === 'riot' ? { productId: selected.id, userId: userId.trim(), paymentMethod: activePaymentMethod(payable), voucherCode: voucherUse?.code } : { productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim(), paymentMethod: activePaymentMethod(payable), voucherCode: voucherUse?.code }),
       })
       if (!data.orderId) throw new Error('Pesanan tidak terbentuk. Coba lagi sebentar lagi.')
       setConfirmOpen(false)
@@ -1306,13 +1366,15 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">4</span><h3>Metode pembayaran</h3></div>
-                  <div className="pay-options" role="radiogroup" aria-label="Metode pembayaran">{availablePaymentMethods(PAYMENT_METHODS, selected?.price).map((method, index, options) => <Fragment key={method.id}>{index === 0 || options[index - 1].group !== method.group ? <p className="pay-group">{method.group}</p> : null}<label className={paymentMethod === method.id ? 'pay-option active' : 'pay-option'}><input type="radio" name="payment" value={method.id} checked={paymentMethod === method.id} onChange={() => setPaymentMethod(method.id)} autoComplete="off" /><span><strong>{method.label}</strong><small>{method.note}</small></span></label></Fragment>)}</div>{availablePaymentMethods(PAYMENT_METHODS, selected?.price).length < PAYMENT_METHODS.length && <p className="pay-note">Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai {rupiah(VA_MIN_ORDER)}.</p>}
+                  <div className="pay-options" role="radiogroup" aria-label="Metode pembayaran">{availablePaymentMethods(PAYMENT_METHODS, selected ? selected.price - voucherCut() : 0).map((method, index, options) => <Fragment key={method.id}>{index === 0 || options[index - 1].group !== method.group ? <p className="pay-group">{method.group}</p> : null}<label className={paymentMethod === method.id ? 'pay-option active' : 'pay-option'}><input type="radio" name="payment" value={method.id} checked={paymentMethod === method.id} onChange={() => setPaymentMethod(method.id)} autoComplete="off" /><span><strong>{method.label}</strong><small>{method.note}</small></span></label></Fragment>)}</div>{availablePaymentMethods(PAYMENT_METHODS, selected ? selected.price - voucherCut() : 0).length < PAYMENT_METHODS.length && <p className="pay-note">Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai {rupiah(VA_MIN_ORDER)}.</p>}
                   <p className="field-hint">QR atau nomor Virtual Account tampil di halaman invoice setelah pesanan dibuat. Bayarnya di halaman itu, tanpa pindah ke situs lain.</p>
                 </li>
                 <li className="order-step">
-                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">5</span><h3>Kode promo</h3><span className="step-tag">Pratinjau</span></div>
-                  <label>Kode promo <input value={promoCode} onChange={(event) => setPromoCode(event.target.value)} maxLength="24" placeholder="Contoh: MANGGA10" autoComplete="off" /></label>
-                  <p className="field-hint">Kode promo belum aktif — kolom ini disiapkan untuk promo mendatang.</p>
+                  <div className="order-step-head"><span className="step-badge" aria-hidden="true">5</span><h3>Kode promo</h3>{voucherCut() > 0 && <span className="step-tag">Terpakai</span>}</div>
+                  <label>Kode promo <input id="voucher-code" value={promoCode} onChange={(event) => { setPromoCode(event.target.value.toUpperCase()); setVoucher(null); setVoucherNotice('') }} maxLength="24" placeholder="Punya kode dari teman? Tulis di sini" autoComplete="off" /></label>
+                  <button type="button" className="secondary-button" onClick={applyVoucher} disabled={voucherBusy || !promoCode.trim()}>{voucherBusy ? 'Memeriksa...' : 'Pakai'}</button>
+                  {voucherNotice && <p className="voucher-notice" role="alert">{voucherNotice}</p>}
+                  {voucherCut() > 0 ? <p className="field-hint">Potongan {voucher.code} −{rupiah(voucherCut())} sudah masuk ke total.</p> : <p className="field-hint">Potongannya langsung kelihatan di ringkasan, sebelum kamu bayar.</p>}
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">6</span><h3>Detail kontak</h3></div>
@@ -1338,8 +1400,10 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                   <div><dt>Produk</dt><dd>{selected?.name}</dd></div>
                   <div><dt>{orderFormat === 'riot' ? 'Riot ID' : orderType.targetLabel}</dt><dd>{userId}{orderFormat === 'ml_concat' && zoneId ? ` (${zoneId})` : ''}</dd></div>
                   {selected?.checkable && <div><dt>Nickname</dt><dd>{checkResult ? checkResult.nickname : 'belum dicek'}</dd></div>}
-                  <div><dt>Metode pembayaran</dt><dd>{PAYMENT_METHODS.find((method) => method.id === activePaymentMethod(selected?.price))?.label}</dd></div>
-                  <div><dt>Total</dt><dd><strong>{rupiah(selected?.price || 0)}</strong></dd></div>
+                  <div><dt>Metode pembayaran</dt><dd>{PAYMENT_METHODS.find((method) => method.id === activePaymentMethod(selected ? selected.price - voucherCut() : 0))?.label}</dd></div>
+                  {voucherCut() > 0 && <div><dt>Harga</dt><dd>{rupiah(selected?.price || 0)}</dd></div>}
+                  {voucherCut() > 0 && <div><dt>Potongan {voucher.code}</dt><dd>−{rupiah(voucherCut())}</dd></div>}
+                  <div><dt>Total</dt><dd><strong>{rupiah((selected?.price || 0) - voucherCut())}</strong></dd></div>
                 </dl>
                 <label className="confirm-terms"><input type="checkbox" checked={termsOk} onChange={(event) => setTermsOk(event.target.checked)} autoComplete="off" /> Data di atas sudah benar dan pesanan boleh diproses otomatis.</label>
                 {checkoutError && <p className="form-error" role="alert">{checkoutError}</p>}
@@ -1349,7 +1413,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 </div>
               </div>
             </div>}
-            <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga</span><strong>{rupiah(selected.price)}</strong></div><div className="summary-total"><span>Jumlah</span><strong>1 item</strong></div><div className="summary-total"><span>Total</span><strong>{rupiah(selected.price)}</strong></div><p className="summary-inclusive">Sudah termasuk biaya pembayaran — tidak ada tambahan di langkah berikutnya.</p><p>Jumlah banyak belum aktif, jadi satu pesanan berisi satu item.</p></> : <p>Belum ada item produk yang dipilih.</p>}</aside>
+            <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga</span><strong>{rupiah(selected.price)}</strong></div><div className="summary-total"><span>Jumlah</span><strong>1 item</strong></div>{voucherCut() > 0 && <div className="summary-total summary-cut"><span>Potongan {voucher.code}</span><strong>−{rupiah(voucherCut())}</strong></div>}<div className="summary-total"><span>Total</span><strong>{rupiah(selected.price - voucherCut())}</strong></div><p className="summary-inclusive">Sudah termasuk biaya pembayaran — tidak ada tambahan di langkah berikutnya.</p><p>Jumlah banyak belum aktif, jadi satu pesanan berisi satu item.</p></> : <p>Belum ada item produk yang dipilih.</p>}</aside>
           </div>}
         </section> : view === 'receipt' ? <div className="invoice-page wrap" id="struk">
           <div className="invoice-head">
@@ -1388,6 +1452,8 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 <div><dt>Produk</dt><dd>{receipt.productName}</dd></div>
                 <div><dt>User ID</dt><dd>{receipt.userId}{receipt.zoneId ? ` (${receipt.zoneId})` : ''}</dd></div>
                 <div><dt>Metode pembayaran</dt><dd>{PAYMENT_METHODS.find((method) => method.id === receipt.paymentChannel)?.label || 'Belum dipilih'}</dd></div>
+                {Number(receipt.discount) > 0 && <div><dt>Harga</dt><dd>{rupiah(Number(receipt.price) + Number(receipt.discount))}</dd></div>}
+                {Number(receipt.discount) > 0 && <div><dt>Potongan{receipt.voucherCode ? ` ${receipt.voucherCode}` : ''}</dt><dd>−{rupiah(receipt.discount)}</dd></div>}
                 <div><dt>Total</dt><dd><strong>{rupiah(receipt.price)}</strong></dd></div>
                 <div><dt>ID pesanan</dt><dd>#{receipt.id}</dd></div>
               </dl>
@@ -1399,7 +1465,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             <div className="admin-heading"><div><h1>Panel admin</h1><p>Kelola pesanan toko dan harga produk.</p></div><a className="secondary-button" href="#katalog">Lihat toko</a></div>
             {canManage && <nav className="admin-nav" aria-label="Navigasi admin">
               <a href="#admin" aria-current={adminPage === 'transactions' ? 'page' : undefined}>Transaksi</a>
-              <a href="#admin/produk" aria-current={adminPage === 'products' ? 'page' : undefined}>Produk &amp; harga</a>
+              <a href="#admin/produk" aria-current={adminPage === 'products' ? 'page' : undefined}>Produk &amp; harga</a><a href="#admin/voucher" aria-current={adminPage === 'vouchers' ? 'page' : undefined}>Voucher</a>
             </nav>}
             {!session ? <div className="notice" role="status"><p>Masuk dengan akun admin untuk mengelola toko.</p><a className="secondary-button" href="#akun">Masuk</a></div> : roleState === 'ready' && !canManage ? <div className="notice" role="status"><p>Halaman ini khusus admin toko.</p><a className="secondary-button" href="#akun">Kembali ke akun</a></div> : null}
           </> : <h1>{view === 'register' && !session ? 'Daftar akun' : 'Akun saya'}</h1>}
@@ -1498,6 +1564,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
           </>}
           {view === 'admin' && session && roleState === 'loading' && <p role="status">Memeriksa akses akun...</p>}
           {view === 'admin' && session && roleState === 'error' && <p role="alert">Akses pengelola belum bisa diperiksa. {roleError} <button type="button" onClick={() => setRoleRetry((value) => value + 1)}>Coba lagi</button></p>}
+          {view === 'admin' && canManage && adminPage === 'vouchers' && <section className="order-section admin-section" aria-labelledby="voucher-title"><div className="section-heading"><div><h2 id="voucher-title">Voucher</h2></div><p>Kuota, masa berlaku, dan batas per akun dijaga server. Voucher pembeli baru tidak bisa dipakai akun yang sudah pernah beli.</p></div><div className="voucher-admin"><form className="voucher-form" onSubmit={createVoucher}><label>Kode<input type="text" autoComplete="off" placeholder="TEMAN1K" value={voucherDraft.code} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, code: event.target.value.toUpperCase() }))} /></label><label>Potongan (Rp)<input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.value} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, value: event.target.value }))} /></label><label>Minimum belanja (Rp)<input type="number" inputMode="numeric" min="0" autoComplete="off" value={voucherDraft.minOrder} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, minOrder: event.target.value }))} /></label><label>Kuota<input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.quota} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, quota: event.target.value }))} /></label><label>Batas per akun<input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.perUser} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, perUser: event.target.value }))} /></label><label>Berlaku (hari)<input type="number" inputMode="numeric" min="1" max="365" autoComplete="off" value={voucherDraft.days} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, days: event.target.value }))} /></label><label className="voucher-new"><input type="checkbox" autoComplete="off" checked={voucherDraft.newBuyersOnly} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, newBuyersOnly: event.target.checked }))} />Khusus pembeli baru</label><button type="submit" disabled={voucherBusy}>{voucherBusy ? 'Menyimpan...' : 'Simpan voucher'}</button></form>{voucherAdminNotice && <p className="catalog-sync-notice" role="status">{voucherAdminNotice}</p>}<ul className="voucher-list">{adminVouchers.length === 0 ? <li>Belum ada voucher.</li> : adminVouchers.map((item) => <li key={item.code}><strong>{item.code}</strong><span>{rupiah(item.value)} · min {rupiah(item.minOrder)} · dipakai {item.used}/{item.quota ?? '∞'}</span><small>{item.newBuyersOnly ? 'khusus pembeli baru · ' : ''}{item.active ? 'aktif' : 'nonaktif'}{item.endsAt ? ` · sampai ${new Date(item.endsAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })}` : ''}</small><button type="button" className="secondary-button" onClick={() => toggleVoucher(item)}>{item.active ? 'Matikan' : 'Nyalakan'}</button></li>)}</ul></div></section>}
           {view === 'admin' && canManage && adminPage === 'transactions' && <section className="order-section admin-section" aria-labelledby="admin-title"><div className="order-layout"><div><h2 id="admin-title">Transaksi</h2><p>Pesanan terbaru toko, dari seluruh pembeli.</p></div><div className="order-panel">{adminState === 'loading' ? <p role="status">Memuat pesanan toko...</p> : adminState === 'error' ? <p role="alert">Gagal memuat pesanan toko. {adminError} <button type="button" onClick={() => setAdminRetry((value) => value + 1)}>Coba lagi</button></p> : adminOrders.length === 0 ? <p role="status">Belum ada pesanan toko.</p> : <ul className="order-list">{adminOrders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.status}</span><small>#{order.id}</small></li>)}</ul>}</div></div></section>}
           {view === 'admin' && canManage && adminPage === 'products' && <section className="order-section admin-section" aria-labelledby="pricing-title"><div className="section-heading"><div><h2 id="pricing-title">Harga jual</h2></div><p>Harga supplier adalah modal, tidak tampil ke pembeli. Simpan harga jual sebelum menampilkan produk.</p></div><div className="catalog-sync"><span className="catalog-sync-state">{adminCatalogFetchedAt ? `Katalog supplier · sinkron ${new Date(adminCatalogFetchedAt).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Katalog supplier belum disinkron.'}</span><button type="button" className="secondary-button" onClick={syncCatalog} disabled={catalogSyncing}>{catalogSyncing ? 'Menyinkron...' : 'Perbarui katalog'}</button></div>{catalogSyncNotice && <p className="catalog-sync-notice" role="status">{catalogSyncNotice}</p>}{adminCatalogState === 'loading' ? <p role="status">Memuat katalog supplier...</p> : adminCatalogState === 'error' ? <p role="alert">Katalog supplier belum bisa dimuat. {adminCatalogError} <button type="button" onClick={() => setAdminCatalogRetry((value) => value + 1)}>Coba lagi</button></p> : adminCatalog.length === 0 ? <p role="status">Katalog supplier kosong — tekan Perbarui katalog.</p> : <><div className="pricing-toolbar"><input type="text" aria-label="Cari produk supplier" placeholder="Cari nama, kode, atau brand" autoComplete="off" value={catalogQuery} onChange={(event) => { setCatalogQuery(event.target.value) }} /><div className="category-filter" role="group" aria-label="Saring produk"><button type="button" className={catalogFilter === 'semua' ? 'active' : ''} aria-pressed={catalogFilter === 'semua'} onClick={() => { setCatalogFilter('semua') }}>Semua</button><button type="button" className={catalogFilter === 'tampil' ? 'active' : ''} aria-pressed={catalogFilter === 'tampil'} onClick={() => { setCatalogFilter('tampil') }}>Tampil</button><button type="button" className={catalogFilter === 'draf' ? 'active' : ''} aria-pressed={catalogFilter === 'draf'} onClick={() => { setCatalogFilter('draf') }}>Draf</button></div></div><div className="pricing-meta"><div className="pricing-meta-actions">{adminCatalogStale && <span className="pricing-stale" role="status">Katalog sudah lama tidak disinkron.</span>}{batchNotice && <span role="status">{batchNotice}</span>}<label className="pricing-unsupported"><input type="checkbox" checked={catalogShowUnsupported} onChange={(event) => { setCatalogShowUnsupported(event.target.checked) }} />Tampilkan yang belum didukung checkout</label><button type="button" className="secondary-button" onClick={exportCatalogCsv}>Ekspor CSV</button><label className="secondary-button csv-import">Impor CSV<input type="file" accept=".csv,text/csv" autoComplete="off" onChange={importCatalogCsv} /></label>{pricingDirty > 0 && <button type="button" className="secondary-button" onClick={saveAllChanges} disabled={Boolean(catalogBusy)}>Simpan semua ({pricingDirty})</button>}</div></div>{pricingItems.length === 0 ? <p className="pricing-empty" role="status">Tidak ada produk yang cocok. Ubah kata kunci atau saringan.</p> : <><div className="price-groups">{pricingGroups.map((category) => { const categoryShown = category.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <section key={category.name} className="price-group"><label className="switch price-category-switch" title={`Nyala/matikan semua produk kategori ${category.name}`}><input type="checkbox" role="switch" checked={categoryShown === category.items.length} ref={(el) => { if (el) el.indeterminate = categoryShown > 0 && categoryShown < category.items.length }} aria-label={`Tampilkan semua produk kategori ${category.name}`} onChange={(event) => toggleGroup(category.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label><details className="price-category" open={Boolean(catalogQuery.trim())}><summary className="price-cat-head"><h3 className="price-cat-title">{category.name}<small className="price-group-count">{category.items.length} produk · {categoryShown} tampil</small></h3></summary>{category.brands.map((brand) => { const brandShown = brand.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <div key={brand.name} className="price-brand"><label className="switch price-brand-switch" title={`Nyala/matikan semua produk ${brand.name}`}><input type="checkbox" role="switch" checked={brandShown === brand.items.length} ref={(el) => { if (el) el.indeterminate = brandShown > 0 && brandShown < brand.items.length }} aria-label={`Tampilkan semua produk ${brand.name}`} onChange={(event) => toggleGroup(brand.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label><details className="price-brand-details" open={Boolean(catalogQuery.trim())}><summary className="price-brand-head"><span className="price-brand-cover"><GameCover name={brand.name} /></span><h4 className="price-brand-title">{brand.name}<small className="price-group-count">{brand.items.length} produk · {brandShown} tampil</small></h4></summary><div className="price-margin"><label className="price-margin-field"><span>Margin</span><input type="number" inputMode="decimal" min="0" max="500" step="0.5" placeholder="8" autoComplete="off" aria-label={`Margin harga ${brand.name} (%)`} value={marginDrafts[brand.name] || ''} onChange={(event) => setMarginDrafts((drafts) => ({ ...drafts, [brand.name]: event.target.value }))} /><span>%</span></label><button type="button" className="secondary-button" onClick={() => applyBrandMargin(brand)} disabled={Boolean(catalogBusy)}>Terapkan</button><span className="price-margin-hint">Modal × (1 + %), sudah termasuk fee QRIS, dibulatkan ke atas.</span></div><ul className="price-grid">{brand.items.map((item) => { const draft = catalogDrafts[item.sku] || { price: '', enabled: false, priceMode: 'auto' }; const health = priceHealth(draft.price, item.cost, item.category); const saran = suggestPrice(item.cost, item.category); return <li key={item.sku} className="price-card"><div className="price-head"><strong>{item.name || item.sku}</strong><small>{item.game || item.sku}{item.variant ? ` · ${item.variant}` : ''}{item.category ? ` · ${item.category}` : ''}</small></div><div className="price-row"><span className="price-cost">{item.cost == null ? 'Tidak ada di katalog supplier aktif.' : `Modal ${rupiah(item.cost)}`}</span><label className="price-toggle"><input type="checkbox" checked={draft.enabled} disabled={!item.supported} aria-label={`Tampil di katalog: ${item.name || item.sku}`} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, enabled: event.target.checked } }))} />Tampil</label></div><div className="price-row price-actions"><input type="number" inputMode="numeric" min="1" step="1" placeholder="Harga jual (Rp)" autoComplete="off" aria-label={`Harga jual ${item.name || item.sku}`} value={draft.price} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: event.target.value } }))} onKeyDown={(event) => { if (event.key === 'Enter') saveSellingPrice(item.sku) }} /><button type="button" className="secondary-button" onClick={() => saveSellingPrice(item.sku)} disabled={Boolean(catalogBusy)}>{catalogBusy === item.sku ? 'Menyimpan...' : 'Simpan'}</button><label className="price-mode" title="Otomatis: harga ikut aturan modal + fee tiap sinkron katalog. Manual: harga dikunci."><input type="checkbox" autoComplete="off" aria-label={`Kunci harga manual: ${item.name || item.sku}`} checked={draft.priceMode === 'manual'} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, priceMode: event.target.checked ? 'manual' : 'auto' } }))} />Kunci manual</label></div>{!item.supported && <p className="price-hint">Belum didukung checkout, jadi belum bisa tampil.</p>}{item.cost != null && health && <p className={`price-warning price-health-${health.level}`} role="status">{health.level === 'rugi' ? `Rugi ${rupiah(Math.abs(health.netRp))} setelah fee QRIS.` : health.level === 'tipis' ? `Margin tipis: sisa ${rupiah(health.netRp)} (${health.marginPct}%).` : `Margin aman: sisa ${rupiah(health.netRp)} (${health.marginPct}%).`}{health.level !== 'rugi' && !health.vaSafe ? ' Belum cukup buat fee VA.' : ''}</p>}{item.cost != null && saran != null && <p className="price-suggest-row"><button type="button" className="secondary-button" onClick={() => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: String(saran) } }))}>Pakai saran {rupiah(saran)}</button><span className="price-suggest-note">target margin {marginBand(item.category, Number(item.cost) || 0).pct}%</span></p>}{catalogNotice.sku === item.sku && <p className="price-hint" role={catalogNotice.error ? 'alert' : 'status'}>{catalogNotice.text}</p>}</li>; })}</ul></details></div>; })}</details></section>; })}</div></>}</>}</section>}
         </div>}

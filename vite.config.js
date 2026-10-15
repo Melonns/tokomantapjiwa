@@ -14,5 +14,5 @@ export default defineConfig({
             }
         },
     }],
-    server: { proxy: { '/api': 'http://localhost:3001' } },
+    server: { allowedHosts: ['.trycloudflare.com'], proxy: { '/api': 'http://localhost:3001' } },
 })

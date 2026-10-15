@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
 import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
-import { suggestPrice } from '../src/pricing.mjs';
+import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
 // ponytail: Format tujuan per brand. Brand di luar daftar ini hanya bisa disimpan sebagai draf harga
@@ -223,7 +223,7 @@ async function reconcilePending(pool, fetchImpl, env, order) {
       if (['settlement', 'capture'].includes(notice)) await applyPaid(pool, fetchImpl, env, order.id, Number(status.gross_amount));
       else if (['expire', 'deny', 'cancel'].includes(notice)) {
         await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND price = $2 AND status = 'pending'", [order.id, Number(status.gross_amount)]);
-        await releaseVoucher(pool, order.id);
+        if (order.voucherCode) await releaseVoucher(pool, order.id);
       }
       else return order;
       console.error('[reconcile] midtrans:', order.id, notice, 'diterapkan');

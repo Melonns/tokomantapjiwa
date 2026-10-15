@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { availablePaymentMethods, marginBand, priceHealth, QRIS_FEE_PCT, suggestPrice, VA_FEE_RP, VA_METHOD_IDS, VA_MIN_ORDER } from './pricing.mjs';
+import { availablePaymentMethods, marginBand, priceHealth, QRIS_FEE_PCT, suggestPrice, VA_FEE_RP, VA_METHOD_IDS, VA_MIN_ORDER, voucherDiscount } from './pricing.mjs';
 
 test('saran harga mengikuti modal + fee QRIS dan dibulatkan ke atas', () => {
   // Angka nyata dari katalog supplier: 10% di nominal kecil, turun di nominal besar.

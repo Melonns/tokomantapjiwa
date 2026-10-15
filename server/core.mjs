@@ -8,7 +8,10 @@ export function validateCheckout(body) {
   if (zoneId !== undefined && (typeof zoneId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(zoneId))) throw Error('Produk, User ID, atau Zone ID tidak valid.');
   if (paymentMethod !== undefined && (typeof paymentMethod !== 'string' || !/^[a-z][a-z0-9_]{1,23}$/.test(paymentMethod))) throw Error('Metode pembayaran tidak valid.');
   if (voucherCode !== undefined && (typeof voucherCode !== 'string' || !/^[A-Za-z0-9_-]{3,24}$/.test(voucherCode))) throw Error('Kode voucher tidak valid.');
-  return { productId, userId, zoneId: zoneId ?? '', paymentMethod, voucherCode: voucherCode ? voucherCode.toUpperCase() : undefined };
+  const input = { productId, userId, zoneId: zoneId ?? '', paymentMethod };
+  // ponytail: kunci voucherCode hanya muncul kalau pembeli memang memakai voucher, supaya kontrak lama tidak berubah.
+  if (voucherCode) input.voucherCode = voucherCode.toUpperCase();
+  return input;
 }
 
 // ponytail: Format tujuan menentukan nomor tujuan yang dikirim ke Digiflazz; jangan menebak bentuk lain.

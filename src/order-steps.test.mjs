@@ -29,7 +29,9 @@ test('jumlah pembelian memakai stepper terbatas dan ringkasan menagih satu item'
   assert.match(source, /function changeQuantity\(delta\)/);
   assert.match(source, /function setQuantityValue\(raw\)/);
   assert.match(source, /<span>Jumlah<\/span><strong>1 item<\/strong>/);
-  assert.match(source, /<span>Total<\/span><strong>\{rupiah\(selected\.price\)\}<\/strong>/);
+  assert.match(source, /<span>Total<\/span><strong>\{rupiah\(selected\.price - voucherCut\(\)\)\}<\/strong>/);
+  assert.match(source, /id="voucher-code"/);
+  assert.match(source, /Potongan \{voucher\.code\}/);
   assert.match(source, /Jumlah banyak belum aktif, jadi satu pesanan berisi satu item\./);
   // ponytail: pembeli harus tahu total di checkout sama dengan harga di rak - lawan trik 'murah di depan, biaya di belakang'.
   assert.match(source, /Sudah termasuk biaya pembayaran — tidak ada tambahan di langkah berikutnya\./);
@@ -37,17 +39,17 @@ test('jumlah pembelian memakai stepper terbatas dan ringkasan menagih satu item'
   assert.match(source, /aria-label="Tambah jumlah"/);
 });
 
-test('metode pembayaran yang dipilih ikut terkirim ke checkout, promo masih pratinjau', () => {
+test('metode pembayaran yang dipilih ikut terkirim ke checkout, kode promo aktif', () => {
   assert.match(source, /const PAYMENT_METHODS = \[/);
   assert.match(source, /role="radiogroup" aria-label="Metode pembayaran"/);
-  assert.match(source, /zoneId: zoneId\.trim\(\), paymentMethod: activePaymentMethod\(selected\.price\) \}/);
+  assert.match(source, /zoneId: zoneId\.trim\(\), paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code \}/);
   assert.match(source, /QR atau nomor Virtual Account tampil di halaman invoice setelah pesanan dibuat/);
   assert.match(source, /const VA_BANKS = \{ bca: 'BCA', bni: 'BNI', bri: 'BRI', permata: 'Permata' \}/);
   for (const id of ['qris', 'bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill', 'gopay', 'shopeepay']) {
     assert.ok(source.includes(`id: '${id}'`), `kanal ${id} hilang dari PAYMENT_METHODS`);
   }
   assert.equal(source.includes('Metode final masih dipilih'), false);
-  assert.match(source, /Kode promo belum aktif/);
+  assert.match(source, /Punya kode dari teman\? Tulis di sini/);
 });
 
 test('pesanan dibuat lewat modal konfirmasi, bukan langsung dari form', () => {
@@ -55,6 +57,8 @@ test('pesanan dibuat lewat modal konfirmasi, bukan langsung dari form', () => {
   assert.match(source, /onSubmit=\{openConfirm\}/);
   assert.match(source, /role="dialog" aria-modal="true" aria-labelledby="confirm-title"/);
   assert.match(source, /Periksa sekali lagi\. Pesanan baru dibuat setelah kamu menekan Pesan sekarang\./);
+  assert.match(source, /<dt>Potongan \{voucher\.code\}<\/dt><dd>\u2212\{rupiah\(voucherCut\(\)\)\}<\/dd>/);
+  assert.match(source, /<dt>Total<\/dt><dd><strong>\{rupiah\(\(selected\?\.price \|\| 0\) - voucherCut\(\)\)\}<\/strong><\/dd>/);
   assert.match(source, /Pesan sekarang/);
   assert.match(source, /className="confirm-terms"/);
   assert.match(source, /disabled=\{!termsOk \|\| checkoutState === 'loading'\}/);
@@ -93,8 +97,14 @@ test('id kanal bayar di klien sama dengan id kanal di server', async () => {
 });
 test('kanal VA disembunyikan di pesanan kecil dan dipaksa aman saat checkout', () => {
   assert.match(source, /function activePaymentMethod\(price\)/);
-  assert.match(source, /availablePaymentMethods\(PAYMENT_METHODS, selected\?\.price\)\.map\(\(method, index, options\)/);
+  assert.match(source, /availablePaymentMethods\(PAYMENT_METHODS, selected \? selected\.price - voucherCut\(\) : 0\)\.map\(\(method, index, options\)/);
   assert.match(source, /Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai \{rupiah\(VA_MIN_ORDER\)\}/);
-  assert.match(source, /paymentMethod: activePaymentMethod\(selected\.price\) \}/);
+  assert.match(source, /paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code \}/);
   assert.match(css, /\.pay-note\{color:var\(--muted\)/);
+});
+test('struk menampilkan harga asli, potongan, dan total yang ditagih', () => {
+  assert.match(source, /Harga<\/dt><dd>\{rupiah\(Number\(receipt\.price\) \+ Number\(receipt\.discount\)\)\}<\/dd>/);
+  assert.match(source, /Potongan\{receipt\.voucherCode/);
+  assert.match(source, /\u2212\{rupiah\(receipt\.discount\)\}/);
+  assert.match(source, /<dt>Total<\/dt><dd><strong>\{rupiah\(receipt\.price\)\}<\/strong><\/dd>/);
 });

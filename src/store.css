@@ -207,3 +207,13 @@
 .csv-import{position:relative;overflow:hidden;display:inline-flex;align-items:center;cursor:pointer}
 .csv-import input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .summary-inclusive{color:var(--lime);font-size:.82rem;line-height:1.45;margin:8px 0 0}
+
+/* ponytail: kotak voucher di checkout dan panel voucher admin. */
+.voucher-notice { margin: 8px 0 0; font-size: 13px; color: #b42318; }
+.summary-total.summary-cut strong { color: #067647; }
+.voucher-admin { display: grid; gap: 16px; }
+.voucher-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+.voucher-form label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; }
+.voucher-form .voucher-new { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.voucher-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.voucher-list li { display: grid; gap: 2px; justify-items: start; padding: 10px 12px; border: 1px solid #e4e7ec; border-radius: 10px; }
