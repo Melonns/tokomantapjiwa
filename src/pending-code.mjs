@@ -1,4 +1,4 @@
-// ponytail: Draf "lagi nunggu kode" disimpan di localStorage; refresh atau koneksi putus di step kode nggak memaksa isi form dari awal.
+// ponytail: Draf "menunggu kode" disimpan di localStorage; refresh atau koneksi terputus pada langkah kode tidak memaksa pengisian formulir dari awal.
 export const PENDING_CODE_KEY = 'melonbyte-pending-code'
 export const PENDING_CODE_TTL_MS = 60 * 60 * 1000
 export const PENDING_CODE_RESEND_SECONDS = 60

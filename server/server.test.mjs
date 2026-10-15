@@ -16,7 +16,7 @@ const withAuth = next => async (url, options) => url === 'https://sample.supabas
 test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
   assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234' }), { productId: 'ml-1', userId: '12345', zoneId: '1234', paymentMethod: undefined });
   assert.deepEqual(validateCheckout({ productId: 'ff-1', userId: '12345' }), { productId: 'ff-1', userId: '12345', zoneId: '', paymentMethod: undefined });
-  assert.deepEqual(validateCheckout({ productId: 'val5', userId: 'Nama Kamu#1234' }), { productId: 'val5', userId: 'Nama Kamu#1234', zoneId: '', paymentMethod: undefined });
+  assert.deepEqual(validateCheckout({ productId: 'val5', userId: 'NamaAnda#1234' }), { productId: 'val5', userId: 'NamaAnda#1234', zoneId: '', paymentMethod: undefined });
   assert.deepEqual(validateCheckout({ productId: 'gi60', userId: '800123456', zoneId: 'os_asia' }), { productId: 'gi60', userId: '800123456', zoneId: 'os_asia', paymentMethod: undefined });
   assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234', paymentMethod: 'qris' }), { productId: 'ml-1', userId: '12345', zoneId: '1234', paymentMethod: 'qris' });
   for (const body of [{ productId: 'x', userId: {}, zoneId: '1' }, { productId: 'x', userId: '123', zoneId: 'a b' }, { productId: 'x', userId: '1'.repeat(65), zoneId: '1' }, { productId: 'x/../', userId: '1', zoneId: '1' }, { productId: 'x', userId: '123', zoneId: '' }, { productId: 'x', userId: '123', paymentMethod: 'QRIS' }, { productId: 'x', userId: '123', paymentMethod: 'x'.repeat(25) }, { productId: 'x', userId: '123', paymentMethod: 7 }]) assert.throws(() => validateCheckout(body));
@@ -29,7 +29,7 @@ test('customer number follows the destination format of the product', () => {
   assert.throws(() => customerNo('voucher', { userId: '123', zoneId: '100' }), /belum didukung/);
   assert.equal(customerNo('uid_server', { userId: '800123456', zoneId: 'os_asia' }), '800123456|os_asia');
   assert.throws(() => customerNo('uid_server', { userId: '800123456', zoneId: '' }), /Server wajib/);
-  assert.equal(customerNo('riot', { userId: 'Nama Kamu#1234', zoneId: '' }), 'Nama Kamu#1234');
+  assert.equal(customerNo('riot', { userId: 'NamaAnda#1234', zoneId: '' }), 'NamaAnda#1234');
 });
 
 test('signed settlement validates amount and rejects forged capture', () => {
@@ -384,7 +384,7 @@ test('sinkron katalog yang dibatasi Digiflazz memakai pesan tunggu, bukan error 
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/supplier-products/sync`, { method: 'POST', headers: authHeaders });
     assert.equal(response.status, 502);
-    assert.match((await response.json()).error, /membatasi cek katalog/);
+    assert.match((await response.json()).error, /membatasi pemeriksaan katalog/);
     assert.equal(writes, 0);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
@@ -457,7 +457,7 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     assert.equal(insert.params.length, 1 + 3 * 6);
     const cleanup = statements.find(statement => statement.sql.startsWith('DELETE FROM supplier_products'));
     assert.deepEqual(cleanup.params, [insert.params[0]]);
-    // ponytail: aturan harga jalan sendiri tiap sinkron - ml10 (modal 28343) naik ke 31000, ff12 tetap 1800.
+    // ponytail: aturan harga berjalan sendiri pada setiap sinkron: ml10 (modal 28343) naik ke 31000, ff12 tetap 1800.
     assert.equal(body.autoPriced, 1);
     assert.deepEqual(body.priceChanges, [{ sku: 'ml10', from: 20000, to: 31000 }]);
     const repriced = statements.filter(statement => statement.sql.startsWith('UPDATE products SET price = $2'));
@@ -521,7 +521,7 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('produk menandai dukungan cek per brand dan status cek mengikuti konfigurasi server', async () => {
+test('produk menandai dukungan pemeriksaan per brand dan status pemeriksaan mengikuti konfigurasi server', async () => {
   const rows = [
     { id: 'ml10', name: '10 Diamonds', game: 'MOBILE LEGENDS', price: 25000, format: 'ml_concat', category: 'Games' },
     { id: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', price: 20000, format: 'plain', category: 'Games' },
@@ -546,7 +546,7 @@ test('produk menandai dukungan cek per brand dan status cek mengikuti konfiguras
 
 const checkEnv = { ...env, CHECK_API_URL: 'https://check.example/v1/account', CHECK_API_KEY: 'check-key' };
 
-test('cek nickname memakai layanan sesuai brand produk, menyimpan hasil, dan mencatat pemakaian', async () => {
+test('pemeriksaan nickname memakai layanan sesuai brand produk, menyimpan hasil, dan mencatat pemakaian', async () => {
   const statements = [];
   let provider = null;
   const pool = { async query(sql, params) {
@@ -603,7 +603,7 @@ test('hasil tersimpan yang masih segar menjawab tanpa provider dan tanpa tulis u
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('brand Free Fire memakai layanan cek Free Fire tanpa Zone ID; force melewati simpanan', async () => {
+test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa melewati data tersimpan', async () => {
   const bodies = [];
   const statements = [];
   const pool = { async query(sql) {
@@ -642,7 +642,7 @@ test('kuota harian habis ditolak sebelum provider dipanggil', async () => {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
     assert.equal(response.status, 429);
-    assert.match((await response.json()).error, /Batas cek nickname harian/);
+    assert.match((await response.json()).error, /Batas pemeriksaan nickname harian/);
     assert.equal(providerCalls, 0);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
@@ -676,7 +676,7 @@ test('ID tidak ketemu dan provider mati tidak disimpan', async () => {
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('brand tanpa layanan cek ditolak jelas (422)', async () => {
+test('brand tanpa layanan pemeriksaan ditolak dengan pesan jelas (422)', async () => {
   const pool = { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ax10', game: 'AXIS', customer_format: 'plain' }] }; throw Error('unexpected SQL: ' + sql); } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) });
   const server = createServer(handler).listen(0, '127.0.0.1');
@@ -688,7 +688,7 @@ test('brand tanpa layanan cek ditolak jelas (422)', async () => {
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('cek nickname menolak tanpa sesi terverifikasi dan saat provider belum diset', async () => {
+test('pemeriksaan nickname menolak tanpa sesi terverifikasi dan saat provider belum diset', async () => {
   const unauthorized = createServer(createHandler({ pool: { query() { throw Error('db touched'); } }, env: checkEnv, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) })).listen(0, '127.0.0.1');
   try {
     await new Promise(resolve => unauthorized.once('listening', resolve));

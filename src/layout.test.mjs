@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 const css = await readFile(new URL('./store.css', import.meta.url), 'utf8');
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
 
-test('header menempel di atas supaya kolom search tetap terjangkau saat digulir', () => {
+test('header menempel di atas agar kolom pencarian tetap terjangkau saat digulir', () => {
   assert.match(css, /\.site-header\{[^}]*position:sticky[^}]*top:0[^}]*\}/);
   assert.match(css, /\.site-header\{[^}]*background:var\(--bg\)[^}]*\}/);
 });

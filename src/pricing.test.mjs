@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { availablePaymentMethods, marginBand, priceHealth, QRIS_FEE_PCT, suggestPrice, VA_FEE_RP, VA_METHOD_IDS, VA_MIN_ORDER, voucherDiscount } from './pricing.mjs';
 
-test('saran harga mengikuti modal + fee QRIS dan dibulatkan ke atas', () => {
+test('saran harga mengikuti modal + biaya QRIS dan dibulatkan ke atas', () => {
   // Angka nyata dari katalog supplier: 10% di nominal kecil, turun di nominal besar.
   assert.equal(suggestPrice(1605, 'Games'), 1800);
   assert.equal(suggestPrice(28343, 'Games'), 31000);
@@ -29,7 +29,7 @@ test('margin turun saat modal naik, kategori tak dikenal dapat default', () => {
   assert.equal(marginBand('E-Money', 200000).pct, 1.5);
 });
 
-test('sisa bersih dihitung setelah fee QRIS', () => {
+test('sisa bersih dihitung setelah biaya QRIS', () => {
   const aman = priceHealth(1800, 1605, 'Games');
   assert.equal(aman.level, 'aman');
   assert.equal(aman.netRp, 182);

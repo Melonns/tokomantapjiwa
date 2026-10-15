@@ -37,7 +37,7 @@ test('logout clears the session locally even if the server call hangs or fails',
 test('email sign-in uses password login with an email-link fallback', () => {
   assert.match(source, /signInWithPassword\(\{ email: identity\.email, password: loginPassword \}\)/)
   assert.match(source, /async function sendEmailLink\(\)/)
-  assert.match(source, /Masuk tanpa password \(kirim kode ke email\)/)
+  assert.match(source, /Masuk tanpa kata sandi \(kirim kode ke email\)/)
   assert.match(source, /updateUser\(\{ password: passwordDraft \}\)/)
   assert.match(source, /password: registerPassword/)
 })
@@ -70,7 +70,7 @@ test('kode email bisa diverifikasi untuk daftar dan login, plus kirim ulang', ()
   assert.match(source, /autoComplete="one-time-code"/)
 })
 
-test('verifikasi 2 langkah dikonfirmasi pakai kode email saat nyala dan mati', () => {
+test('verifikasi 2 langkah dikonfirmasi dengan kode email saat aktif dan nonaktif', () => {
   assert.ok(source.includes('const twoStepOn = session?.user?.user_metadata?.two_step === true'))
   assert.ok(source.includes('async function requestTwoStepChange()'))
   assert.ok(source.includes('async function resendTwoStepCode()'))
@@ -85,13 +85,13 @@ test('verifikasi 2 langkah dikonfirmasi pakai kode email saat nyala dan mati', (
   assert.equal(source.includes('setCodeTarget('), false)
 })
 
-test('nama dari akun Google dipakai di sapaan dan profil', () => {
+test('nama dari akun Google digunakan pada sapaan dan profil', () => {
   assert.ok(source.includes('user_metadata?.name || session?.user.user_metadata?.full_name || session?.user.user_metadata?.username'))
   assert.ok(source.includes("setProfileName(meta.name || meta.full_name || '')"))
   assert.ok(source.includes('data.user?.user_metadata?.name || data.user?.user_metadata?.full_name'))
 })
 
-test('login nomor HP lewat server tetap pakai kata sandi, verifikasi tetap lewat email', () => {
+test('login nomor HP melalui server tetap memakai kata sandi, verifikasi tetap melalui email', () => {
   assert.match(source, /fetch\('\/api\/auth\/login', \{ method: 'POST'/)
   assert.match(source, /JSON\.stringify\(\{ phone: identity\.phone, password: loginPassword \}\)/)
   assert.match(source, /supabase\.auth\.setSession\(\{ access_token: data\.session\.access_token, refresh_token: data\.session\.refresh_token \}\)/)
@@ -105,7 +105,7 @@ test('login nomor HP lewat server tetap pakai kata sandi, verifikasi tetap lewat
 
 test('kolom login menerima email atau nomor HP dan kata sandinya selalu tampil', () => {
   assert.match(source, /Email atau nomor HP/)
-  assert.match(source, /<div className="profile-field"><label htmlFor="login-password">Password<\/label>/)
+  assert.match(source, /<div className="profile-field"><label htmlFor="login-password">Kata sandi<\/label>/)
   assert.equal(source.includes("contactIdentity.email || contactIdentity.phone ? 'Masuk' : 'Lanjut'"), false)
   assert.equal(source.includes('(contactIdentity.email || contactIdentity.phone) && <div className="profile-field">'), false)
 })
@@ -125,13 +125,13 @@ test('draf kode bertahan setelah refresh atau koneksi putus di step kode', () =>
 
 test('email yang sudah terdaftar langsung dikirimi kode masuk, bukan jalan buntu', () => {
   assert.ok(source.includes('await sendLoginEmail(email)'))
-  assert.ok(source.includes('Email ini sudah terdaftar — kamu langsung masuk ke akun itu.'))
+  assert.ok(source.includes('Email ini sudah terdaftar. Anda langsung masuk ke akun tersebut.'))
   assert.equal(source.includes('Masuk aja, atau pakai'), false)
 })
 
 test('login dengan email belum dikonfirmasi langsung dikirimi kode konfirmasi baru', () => {
   assert.ok(source.includes("if (identity?.email && /email not confirmed/i.test(error.message || ''))"))
   assert.ok(source.includes("supabase.auth.resend({ type: 'signup', email: identity.email"))
-  assert.ok(source.includes('Email kamu belum dikonfirmasi. Kode konfirmasi baru sudah dikirim'))
+  assert.ok(source.includes('Email Anda belum dikonfirmasi. Kode konfirmasi baru telah dikirim'))
   assert.ok(source.includes("writePendingCode(window.localStorage, { email: identity.email, purpose: 'signup', sentAt: Date.now() })"))
 })

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 // ponytail: Digiflazz membatasi frekuensi pull price-list (rc 83), jadi server menariknya hanya saat sinkron,
-// menyimpannya di tabel supplier_products, dan panel admin membaca DB — bukan memanggil API tiap dibuka.
+// menyimpannya di tabel supplier_products, dan panel admin membaca basis data, bukan memanggil API setiap kali dibuka.
 // Batas panjang ini harus sama dengan CHECK tabel supplier_products: satu baris aneh tidak boleh menggagalkan seluruh sinkron.
 const LIMITS = { name: 160, game: 80, category: 80, variant: 80 };
 

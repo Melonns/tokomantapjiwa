@@ -29,5 +29,5 @@ test('kotak tujuan memakai salinan per tipe layanan', () => {
   assert.match(source, /<label>\{orderFormat === 'riot' \? 'Riot ID' : orderType\.targetLabel\} <input/)
   assert.match(source, /placeholder=\{orderFormat === 'riot' \? 'Nama#1234' : orderType\.targetPlaceholder\}/)
   assert.match(source, /\{orderFormat === 'ml_concat' && <p className="field-hint">Pastikan User ID dan Zone ID sesuai akun game tujuan\.<\/p>\}/)
-  assert.match(source, /\{orderFormat === 'plain' \? orderType\.targetHint : orderFormat === 'ml_concat' \? 'User ID dan Zone ID numerik\. Jangan masukkan password game\.'/)
+  assert.match(source, /\{orderFormat === 'plain' \? orderType\.targetHint : orderFormat === 'ml_concat' \? 'User ID dan Zone ID berupa angka\. Jangan memasukkan kata sandi game\.'/)
 })

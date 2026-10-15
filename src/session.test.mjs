@@ -25,7 +25,7 @@ test('waktu mulai memakai last_sign_in_at bila catatan lokal belum ada', () => {
   assert.equal(seedSessionStart(fakeStorage(), { last_sign_in_at: new Date(now + 60000).toISOString() }, now), now);
 });
 
-test('App.jsx memotong sesi 24 jam: cek saat restore, timer berkala, dan logout scope local', async () => {
+test('App.jsx memotong sesi 24 jam: pemeriksaan saat restore, timer berkala, dan logout scope local', async () => {
   const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
   assert.match(source, /sessionExpired\(startedAt, Date\.now\(\)\)/);
   assert.match(source, /setInterval\(verifySessionAge, 60000\)/);

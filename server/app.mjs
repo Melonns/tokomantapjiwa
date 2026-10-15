@@ -1,11 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
 import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
+import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
-// ponytail: Format tujuan per brand. Brand di luar daftar ini hanya bisa disimpan sebagai draf harga
+// ponytail: Format tujuan per brand. Brand di luar daftar ini hanya dapat disimpan sebagai draf harga
 // sampai format tujuannya dipastikan. Telco/e-money/PLN/TV = input polos (nomor tujuan apa adanya).
 // Genshin/Honkai memakai uid_server (UID|server; token server mengikuti petunjuk seller "[UID]|[Server]"); Valorant memakai Riot ID bertag apa adanya (riot).
 const customerFormats = {
@@ -22,7 +23,7 @@ const formatFor = game => customerFormats[String(game || '').toUpperCase()] || n
 const error = (status, message) => Object.assign(new Error(message), { status });
 const ready = env => Boolean(env.DATABASE_URL && env.MIDTRANS_SERVER_KEY && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((env.MIDTRANS_ENV === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (env.MIDTRANS_ENV === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
 const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
-// ponytail: Kanal bayar spesifik lewat Core API /v2/charge — halaman invoice kita sendiri yang menampilkan QR/VA-nya, bukan redirect Snap.
+// ponytail: Kanal pembayaran spesifik memakai Core API /v2/charge. Halaman invoice ini sendiri yang menampilkan QR/VA, bukan pengalihan ke Snap.
 // Semua id di bawah sudah diverifikasi 200 di /v2/charge sandbox; samakan dengan PAYMENT_METHODS di src/App.jsx dan kanal aktif di dashboard Midtrans.
 // ponytail: fee VA/Mandiri flat (Rp 4.000 + PPN) cuma masuk akal di pesanan besar - kanal ini ditolak di bawah ambang.
 const VA_MIN_ORDER = 100000;
@@ -121,7 +122,7 @@ async function authenticatedOwner(req, fetchImpl, env) {
   let user;
   try { user = await response.json(); } catch { throw error(502, 'Respons autentikasi tidak valid.'); }
   if (!user || typeof user.id !== 'string' || !idPattern.test(user.id)) throw error(401, 'Sesi tidak valid.');
-  if (!user.email_confirmed_at && !user.phone_confirmed_at) throw error(403, 'Verifikasi email atau nomor HP akun dulu.');
+  if (!user.email_confirmed_at && !user.phone_confirmed_at) throw error(403, 'Verifikasi email atau nomor HP akun Anda terlebih dahulu.');
   return user.id;
 }
 
@@ -150,20 +151,25 @@ async function submitDigi(pool, fetchImpl, env, row) {
       else if (data.status === 'Gagal' && data.rc === '02') status = 'fulfillment_failed';
       else if (data.status === 'Pending') status = 'fulfillment_pending';
     }
-    await pool.query("UPDATE orders SET status = $2, updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending'", [row.id, status]);
+    const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
+    const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
+    const { rows: done } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending' RETURNING id, status", [row.id, status, sn, note]);
+    if (done[0]?.status === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', row.id);
+    else if (done[0]?.status === 'fulfillment_failed') notifyOrder(pool, fetchImpl, env, 'failed', row.id);
   } catch (err) {
     console.error('Digiflazz request unresolved; reconcile ref_id manually:', row.id, err?.upstreamStatus ? `HTTP ${err.upstreamStatus}` : '', err.message);
     await pool.query("UPDATE orders SET status = 'manual_review', updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending'", [row.id]);
   }
 }
 
-// ponytail: Transisi "sudah dibayar" dipakai notifikasi webhook dan rekonsiliasi tarik-status; claim atomik mencegah submit Digi ganda.
+// ponytail: Transisi "sudah dibayar" digunakan oleh notifikasi webhook dan rekonsiliasi tarik-status; claim atomik mencegah submit Digi ganda.
 async function claimAndFulfill(pool, fetchImpl, env, orderId) {
   // Atomic claim across processes; never auto-resubmit after a network timeout/crash.
   const claim = await pool.query(`UPDATE orders SET status = 'fulfillment_pending', digiflazz_claimed_at = now(), updated_at = now()
     WHERE id = $1 AND status = 'payment_paid' AND digiflazz_claimed_at IS NULL
     RETURNING id, digi_sku, customer_no, price`, [orderId]);
   if (!claim.rows[0]) return false;
+  notifyOrder(pool, fetchImpl, env, 'paid', orderId);
   await submitDigi(pool, fetchImpl, env, claim.rows[0]);
   return true;
 }
@@ -178,13 +184,13 @@ async function voucherFor(pool, code, ownerId, total) {
   if (voucher.quota != null && voucher.used >= voucher.quota) return { error: 'Kuota voucher sudah habis.' };
   if (total < voucher.min_order) return { error: `Voucher berlaku mulai belanja Rp ${new Intl.NumberFormat('id-ID').format(voucher.min_order)}.` };
   const { rows: mine } = await pool.query('SELECT count(*)::int AS count FROM voucher_redemptions WHERE code = $1 AND owner_id = $2', [voucher.code, ownerId]);
-  if (mine[0].count >= voucher.per_user) return { error: 'Voucher ini sudah kamu pakai.' };
+  if (mine[0].count >= voucher.per_user) return { error: 'Anda sudah memakai voucher ini.' };
   if (voucher.new_buyers_only) {
     const { rows: buys } = await pool.query("SELECT count(*)::int AS count FROM orders WHERE owner_id = $1 AND status IN ('payment_paid','fulfillment_pending','fulfilled')", [ownerId]);
     if (buys[0].count > 0) return { error: 'Voucher ini khusus pembeli baru.' };
   }
   const discount = voucherDiscount(voucher, total);
-  if (discount <= 0) return { error: 'Voucher tidak bisa dipakai untuk pesanan ini.' };
+  if (discount <= 0) return { error: 'Voucher tidak dapat digunakan untuk pesanan ini.' };
   return { voucher, discount };
 }
 async function redeemVoucher(pool, voucher, orderId, ownerId, discount) {
@@ -193,7 +199,7 @@ async function redeemVoucher(pool, voucher, orderId, ownerId, discount) {
   await pool.query('INSERT INTO voucher_redemptions (order_id, code, owner_id, amount) VALUES ($1,$2,$3,$4) ON CONFLICT (order_id) DO NOTHING', [orderId, voucher.code, ownerId, discount]);
   return true;
 }
-// ponytail: pesanan yang gagal/kedaluwarsa mengembalikan kuota supaya pembeli tidak kehilangan vouchernya karena error di sisi kita.
+// ponytail: pesanan yang gagal atau kedaluwarsa mengembalikan kuota agar pembeli tidak kehilangan vouchernya karena kesalahan di sisi kami.
 async function releaseVoucher(pool, orderId) {
   const { rows } = await pool.query('DELETE FROM voucher_redemptions WHERE order_id = $1 RETURNING code', [orderId]);
   if (!rows[0]) return false;
@@ -210,7 +216,7 @@ async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
 }
 
 // ponytail: Jaring pengaman saat notifikasi Midtrans tak sampai (tunnel mati, server sempat down): status ditarik langsung dari Midtrans
-// tiap kali struk pesanan pending dibuka/di-poll. Best-effort — error apa pun dikembalikan sebagai status tersimpan agar struk tetap tampil.
+// tiap kali struk pesanan pending dibuka/di-poll. Best-effort: error apa pun dikembalikan sebagai status tersimpan agar struk tetap tampil.
 async function reconcilePending(pool, fetchImpl, env, order) {
   if (!['pending', 'payment_paid', 'fulfillment_pending'].includes(order.status) || !ready(env)) return order;
   try {
@@ -238,9 +244,9 @@ async function reconcilePending(pool, fetchImpl, env, order) {
         RETURNING id, digi_sku, customer_no, price`, [order.id]);
       if (!rows[0]) return order;
       await submitDigi(pool, fetchImpl, env, rows[0]);
-      console.error('[reconcile] fulfillment:', order.id, 'dicek ulang ke Digiflazz');
+      console.error('[reconcile] fulfillment:', order.id, 'diperiksa ulang ke Digiflazz');
     }
-    const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, user_id AS "userId", zone_id AS "zoneId", ${PAYMENT_DETAIL_COLUMNS} FROM orders WHERE id = $1`, [order.id]);
+    const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", ${PAYMENT_DETAIL_COLUMNS} FROM orders WHERE id = $1`, [order.id]);
     return rows[0] || order;
   } catch (err) {
     console.error('[reconcile] midtrans gagal:', order.id, err?.message || String(err));
@@ -250,7 +256,7 @@ async function reconcilePending(pool, fetchImpl, env, order) {
 
 // ponytail: pull Digiflazz hanya saat sinkron diminta; INSERT + DELETE memakai tanda synced_at yang sama supaya pembacaan konsisten.
 // ponytail: harga produk mode 'auto' dihitung ulang dari modal + aturan kategori tiap katalog supplier disinkronkan,
-// jadi admin tidak perlu mengetik harga satu-satu; baris 'manual' tidak pernah disentuh.
+// sehingga admin tidak perlu mengetik harga satu per satu; baris 'manual' tidak pernah disentuh.
 async function repriceAutoProducts(pool) {
   const { rows } = await pool.query(`SELECT p.id, p.price, s.category, s.price AS cost FROM products p JOIN supplier_products s ON s.sku = p.digi_sku WHERE p.price_mode = 'auto'`);
   const changes = [];
@@ -283,9 +289,49 @@ async function supplierList(env, fetchImpl) {
   if (!env.DIGIFLAZZ_USERNAME || !env.DIGIFLAZZ_API_KEY) throw error(503, 'Katalog supplier belum dikonfigurasi di server.');
   try { return await fetchSupplierCatalog(fetchImpl, env); } catch (err) {
     // ponytail: rc 83 = Digiflazz membatasi cek pricelist; pesannya dibedakan supaya admin tahu harus menunggu, bukan server rusak.
-    if (err?.rc === '83') throw error(502, 'Digiflazz membatasi cek katalog (beberapa kali dalam beberapa menit). Coba lagi nanti.');
-    throw error(502, 'Katalog supplier belum bisa dimuat. Coba lagi nanti.');
+    if (err?.rc === '83') throw error(502, 'Digiflazz membatasi pemeriksaan katalog (beberapa kali dalam beberapa menit). Coba lagi nanti.');
+    throw error(502, 'Katalog supplier belum dapat dimuat. Coba lagi nanti.');
   }
+}
+
+// ponytail: webhook Digiflazz ditandatangani HMAC-SHA1 atas body mentah, sehingga body dibaca sebagai teks terlebih dahulu, bukan JSON.
+async function readRaw(req, limit = 16384) {
+  if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) throw error(415, 'Gunakan JSON.');
+  let text = '';
+  for await (const chunk of req) {
+    text += chunk;
+    if (text.length > limit) throw error(413, 'Data terlalu besar.');
+  }
+  return text;
+}
+
+// ponytail: status ketika dana sudah masuk tetapi item belum terkirim; satu-satunya status yang boleh direfund.
+const REFUNDABLE_STATUSES = ['payment_paid', 'fulfillment_pending', 'fulfillment_failed', 'manual_review'];
+const refundableSql = `(${REFUNDABLE_STATUSES.map((status) => `'${status}'`).join(', ')})`;
+
+// ponytail: notifikasi email best-effort - dikirim setelah perubahan status tersimpan; gagal kirim tidak pernah menahan atau menggagalkan pesanan.
+function notifyOrder(pool, fetchImpl, env, event, orderId) {
+  if (!mailReady(env)) return;
+  void (async () => {
+    try {
+      const { rows } = await pool.query(`SELECT o.id, o.status, o.product_name AS "productName", o.price, o.discount, o.voucher_code AS "voucherCode", o.user_id AS "userId", o.zone_id AS "zoneId", o.fulfillment_sn AS "sn", o.refund_note AS "refundNote", (SELECT email FROM auth.users WHERE id = o.owner_id) AS email FROM orders o WHERE o.id = $1`, [orderId]);
+      const order = rows[0];
+      const message = order?.email ? orderEmail(event, order, env) : null;
+      if (!message) return;
+      const result = await sendOrderEmail(fetchImpl, env, order.email, message);
+      if (!result.ok) console.error('[mail]', event, orderId, result.error || 'gagal terkirim');
+    } catch (err) {
+      console.error('[mail]', event, orderId, err?.message || String(err));
+    }
+  })();
+}
+
+// ponytail: nomor WhatsApp support opsional - kosong berarti tombol WA tidak ditampilkan, email tetap ada.
+function whatsappLink(input) {
+  const digits = String(input || '').replace(/\D/g, '');
+  if (!digits) return null;
+  const normalized = digits.startsWith('0') ? `62${digits.slice(1)}` : digits.startsWith('62') ? digits : `62${digits}`;
+  return normalized.length >= 9 && normalized.length <= 15 ? `https://wa.me/${normalized}` : null;
 }
 
 export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
@@ -293,8 +339,14 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
       if (req.method === 'GET' && path === '/api/products') {
-        const { rows } = await pool.query('SELECT p.id, p.name, p.game, p.price, p.customer_format AS "format", COALESCE(s.category, \'\') AS category FROM products p LEFT JOIN supplier_products s ON s.sku = p.id WHERE p.enabled = true ORDER BY p.game, p.id');
-        return send(res, 200, { products: rows.map(p => ({ ...p, id: String(p.id), category: String(p.category || ''), checkable: Boolean(checkableGame(p.game)) })), checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env) });
+        const { rows } = await pool.query('SELECT p.id, p.name, p.game, p.price, p.customer_format AS "format", p.gangguan, COALESCE(s.category, \'\') AS category FROM products p LEFT JOIN supplier_products s ON s.sku = p.id WHERE p.enabled = true ORDER BY p.game, p.id');
+        return send(res, 200, { products: rows.map(({ gangguan, ...p }) => ({ ...p, id: String(p.id), category: String(p.category || ''), checkable: Boolean(checkableGame(p.game)), ...(gangguan === true ? { gangguan: true } : {}) })), checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env) });
+      }
+      // ponytail: kontak dukungan dibaca dari env agar dapat diganti tanpa menyentuh kode.
+      if (req.method === 'GET' && path === '/api/contact') {
+        const whatsapp = whatsappLink(env.SUPPORT_WHATSAPP);
+        const email = String(env.SUPPORT_EMAIL || 'halo@melonbyte.id').trim();
+        return send(res, 200, { email, whatsapp, whatsappLabel: whatsapp ? `+${whatsapp.split('/').pop()}` : null });
       }
       if (req.method === 'GET' && path === '/api/me') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
@@ -355,13 +407,13 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const { rows } = item
           ? await pool.query(`INSERT INTO products (id, name, game, price, digi_sku, customer_format, enabled, price_mode) VALUES ($1, $2, $3, $4, $1, $6, $5, $7)
             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, game = EXCLUDED.game, price = EXCLUDED.price, digi_sku = EXCLUDED.digi_sku, enabled = EXCLUDED.enabled, price_mode = EXCLUDED.price_mode
-            RETURNING id, name, game, price, enabled, price_mode`, [sku, item.name, item.game, price, enabled, formatFor(item.game), mode])
-          : await pool.query('UPDATE products SET price = $2, enabled = false, price_mode = $3 WHERE id = $1 RETURNING id, name, game, price, enabled, price_mode', [sku, price, mode]);
+            RETURNING id, name, game, price, enabled, price_mode, gangguan`, [sku, item.name, item.game, price, enabled, formatFor(item.game), mode])
+          : await pool.query('UPDATE products SET price = $2, enabled = false, price_mode = $3 WHERE id = $1 RETURNING id, name, game, price, enabled, price_mode, gangguan', [sku, price, mode]);
         if (!rows[0]) throw error(404, 'Produk tidak ditemukan.');
         return send(res, 200, { product: {
           sku: rows[0].id, name: rows[0].name, game: rows[0].game, category: item?.category ?? null, variant: item?.variant ?? null, cost: item?.price ?? null,
           supported: Boolean(formatFor(item ? item.game : rows[0].game)),
-          missing: !item, price: rows[0].price, enabled: rows[0].enabled, priceMode: rows[0].price_mode === 'manual' ? 'manual' : 'auto',
+          missing: !item, price: rows[0].price, enabled: rows[0].enabled, priceMode: rows[0].price_mode === 'manual' ? 'manual' : 'auto', ...(rows[0].gangguan === true ? { gangguan: true } : {}),
         } });
       }
       if (path === '/api/admin/vouchers' || path.startsWith('/api/admin/vouchers/')) {
@@ -383,8 +435,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           const perUser = Number(body?.perUser ?? 1);
           const days = Number(body?.days ?? 30);
           const cap = kind === 'percent' ? 90 : 1000000;
-          if (!/^[A-Z0-9_-]{3,24}$/.test(code)) throw error(400, 'Kode voucher 3-24 karakter, huruf/angka/-/_ saja.');
-          if (!Number.isSafeInteger(value) || value < 1 || value > cap) throw error(400, kind === 'percent' ? 'Persen potongan harus 1-90.' : 'Nominal potongan tidak valid.');
+          if (!/^[A-Z0-9_-]{3,24}$/.test(code)) throw error(400, 'Kode voucher 3-24 karakter, hanya huruf, angka, tanda hubung, dan garis bawah.');
+          if (!Number.isSafeInteger(value) || value < 1 || value > cap) throw error(400, kind === 'percent' ? 'Persentase potongan harus 1-90.' : 'Nominal potongan tidak valid.');
           if (!Number.isSafeInteger(minOrder) || minOrder < 0 || minOrder > 100000000) throw error(400, 'Minimum belanja tidak valid.');
           if (maxDiscount != null && (!Number.isSafeInteger(maxDiscount) || maxDiscount < 1)) throw error(400, 'Plafon potongan tidak valid.');
           if (quota != null && (!Number.isSafeInteger(quota) || quota < 1 || quota > 100000)) throw error(400, 'Kuota tidak valid.');
@@ -415,8 +467,9 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
         const code = String(body?.code || '').trim().toUpperCase();
         if (!/^[A-Z0-9_-]{3,24}$/.test(code)) throw error(400, 'Kode voucher tidak valid.');
-        const { rows } = await pool.query('SELECT id, name, price FROM products WHERE id = $1 AND enabled = true', [body?.productId]);
+        const { rows } = await pool.query('SELECT id, name, price, gangguan FROM products WHERE id = $1 AND enabled = true', [body?.productId]);
         if (!rows[0]) throw error(404, 'Produk tidak tersedia.');
+        if (rows[0].gangguan === true) throw error(409, 'Produk ini sedang mengalami gangguan. Pilih nominal lain atau coba kembali beberapa saat lagi.');
         const picked = await voucherFor(pool, code, ownerId, rows[0].price);
         if (!picked) throw error(400, 'Kode voucher tidak valid.');
         if (picked.error) throw error(400, picked.error);
@@ -427,9 +480,10 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         let input;
         try { input = validateCheckout(await readJson(req)); } catch (err) { throw err.status ? err : error(400, err.message); }
         if (!checkoutReady(env)) throw error(503, 'Checkout belum siap.');
-        const { rows } = await pool.query('SELECT id, name, price, digi_sku, customer_format FROM products WHERE id = $1 AND enabled = true', [input.productId]);
+        const { rows } = await pool.query('SELECT id, name, price, digi_sku, customer_format, gangguan FROM products WHERE id = $1 AND enabled = true', [input.productId]);
         const product = rows[0];
         if (!product) throw error(404, 'Produk tidak tersedia.');
+        if (product.gangguan === true) throw error(409, 'Produk ini sedang mengalami gangguan. Pilih nominal lain atau coba kembali beberapa saat lagi.');
         if (!Object.values(customerFormats).includes(product.customer_format)) throw error(422, 'Format tujuan belum didukung.');
         const picked = input.voucherCode ? await voucherFor(pool, input.voucherCode, ownerId, product.price) : null;
         if (picked?.error) throw error(400, picked.error);
@@ -444,10 +498,10 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null]);
-        if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) throw error(400, 'Kuota voucher baru saja habis. Coba lagi tanpa voucher.');
+        if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) throw error(400, 'Kuota voucher baru saja habis. Coba kembali tanpa voucher.');
         const storeUrl = (env.STORE_URL || req.headers.origin || 'http://localhost:5173').replace(/\/+$/, '');
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas (4xx) menutup pesanan;
-        // kegagalan ambigu (5xx/timeout) dibiarkan pending untuk rekonsiliasi dan order_id tidak pernah dipakai ulang.
+        // kegagalan ambigu (5xx/timeout) dibiarkan pending untuk rekonsiliasi dan order_id tidak pernah digunakan ulang.
         let charge;
         try {
           charge = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/charge`, {
@@ -464,9 +518,10 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (!detail) throw error(502, 'Respons pembayaran tidak valid.');
         const expiresAt = expiryDate(charge?.expiry_time);
         await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = $3, payment_expires_at = $4, updated_at = now() WHERE id = $1', [id, methodId, detail, expiresAt]);
+        notifyOrder(pool, fetchImpl, env, 'created', id);
         return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null });
       }
-      // ponytail: cek nickname = layanan cek per brand (ML pakai cek ML, FF pakai cek FF); hasil disimpan supaya tidak bayar berulang.
+      // ponytail: periksa nickname adalah layanan pemeriksaan per brand (ML memakai cek ML, FF memakai cek FF); hasil disimpan agar tidak membayar berulang.
       if (req.method === 'POST' && path === '/api/check-account') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         let body, input;
@@ -475,8 +530,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const product = rows[0];
         if (!product) throw error(404, 'Produk tidak tersedia.');
         const checkGame = checkableGame(product.game);
-        if (!checkGame) throw error(422, 'Cek nickname belum tersedia untuk layanan ini.');
-        if (!checkReady(env)) throw error(503, 'Cek nickname belum aktif di server ini.');
+        if (!checkGame) throw error(422, 'Fitur periksa nickname belum tersedia untuk layanan ini.');
+        if (!checkReady(env)) throw error(503, 'Fitur periksa nickname belum aktif di server ini.');
         try { buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         const brand = String(product.game || '').toUpperCase();
         if (body?.force !== true) {
@@ -484,16 +539,16 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           if (cached.rows[0]) return send(res, 200, { check: { nickname: cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
         }
         const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
-        if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas cek nickname harian tercapai. Coba lagi besok.');
+        if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
         let payload;
         try {
           const provider = checkRequest(env, checkGame, input);
           const response = await fetchImpl(provider.url, provider.options);
-          if (!response.ok) throw error(502, 'Cek nickname sedang tidak tersedia. Coba lagi nanti.');
+          if (!response.ok) throw error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
           payload = await response.json();
-        } catch (err) { throw err.status ? err : error(502, 'Cek nickname sedang tidak tersedia. Coba lagi nanti.'); }
+        } catch (err) { throw err.status ? err : error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.'); }
         const result = checkResult(payload);
-        if (!result) throw error(404, 'Akun tidak ditemukan. Periksa lagi User ID dan Zone ID.');
+        if (!result) throw error(404, 'Akun tidak ditemukan. Periksa kembali User ID dan Zone ID.');
         await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [brand, input.userId, input.zoneId, result.nickname, result.region]);
         await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
         return send(res, 200, { check: { nickname: result.nickname, region: result.region, cached: false, checkedAt: new Date().toISOString() } });
@@ -507,7 +562,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         const id = path.slice('/api/orders/'.length);
         if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
-        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", ${PAYMENT_DETAIL_COLUMNS} FROM orders WHERE owner_id = $1 AND id = $2`, [ownerId, id]);
+        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", fulfillment_note AS "fulfillmentNote", refund_note AS "refundNote", refunded_at AS "refundedAt", ${PAYMENT_DETAIL_COLUMNS} FROM orders WHERE owner_id = $1 AND id = $2`, [ownerId, id]);
         if (!rows[0]) throw error(404, 'Pesanan tidak ditemukan.');
         return send(res, 200, { order: await reconcilePending(pool, fetchImpl, env, rows[0]) });
       }
@@ -530,9 +585,91 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           WHERE id = $1 AND status = 'fulfillment_pending' AND digiflazz_claimed_at < now() - interval '5 minutes'
             AND (digi_checked_at IS NULL OR digi_checked_at < now() - interval '5 minutes')
           RETURNING id, digi_sku, customer_no, price`, [id]);
-        if (!rows[0]) throw error(409, 'Belum waktunya cek atau status tidak sesuai.');
+        if (!rows[0]) throw error(409, 'Belum waktunya diperiksa atau status tidak sesuai.');
         await submitDigi(pool, fetchImpl, env, rows[0]);
         return send(res, 200, { checked: true });
+      }
+      // ponytail: tanda gangguan per produk; satu-satunya cara menonaktifkan satu nominal tanpa mengubah harga atau status tampil.
+      if (req.method === 'POST' && /^\/api\/admin\/products\/[^/]+\/outage$/.test(path)) {
+        const sku = path.split('/')[4];
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        let body;
+        try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
+        if (typeof body?.gangguan !== 'boolean') throw error(400, 'Status gangguan tidak valid.');
+        const { rows } = await pool.query('UPDATE products SET gangguan = $2 WHERE id = $1 RETURNING id, gangguan', [sku, body.gangguan]);
+        if (!rows[0]) throw error(404, 'Produk tidak ada di katalog toko.');
+        return send(res, 200, { product: { sku: rows[0].id, gangguan: rows[0].gangguan === true } });
+      }
+      // ponytail: webhook Digiflazz (HMAC-SHA1 di header X-Hub-Signature) menutup celah status "Pending" saat balasan sinkron belum final.
+      if (req.method === 'POST' && path === '/api/webhooks/digiflazz') {
+        if (!env.DIGIFLAZZ_WEBHOOK_SECRET) throw error(503, 'Webhook Digiflazz belum dikonfigurasi.');
+        const raw = await readRaw(req);
+        const provided = String(req.headers['x-hub-signature'] || '').replace(/^sha1=/i, '').trim().toLowerCase();
+        const expected = createHmac('sha1', env.DIGIFLAZZ_WEBHOOK_SECRET).update(raw, 'utf8').digest('hex');
+        const valid = /^[a-f\d]{40}$/.test(provided) && timingSafeEqual(Buffer.from(provided, 'hex'), Buffer.from(expected, 'hex'));
+        if (!valid) {
+          console.error('[webhook] digiflazz: tanda tangan tidak sah');
+          throw error(401, 'Tanda tangan tidak sah.');
+        }
+        let notice;
+        try { notice = JSON.parse(raw); } catch { throw error(400, 'JSON tidak valid.'); }
+        const data = notice?.data;
+        const refId = String(data?.ref_id || '');
+        if (!idPattern.test(refId)) throw error(404, 'Pesanan tidak ditemukan.');
+        const status = String(data?.status || '');
+        if (status === 'Pending') {
+          await pool.query("UPDATE orders SET updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending'", [refId]);
+          return send(res, 200, { received: true });
+        }
+        const next = status === 'Sukses' && String(data?.rc) === '00' ? 'fulfilled' : status === 'Gagal' && String(data?.rc) === '02' ? 'fulfillment_failed' : 'manual_review';
+        const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
+        const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
+        const { rows } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND status IN ('fulfillment_pending', 'manual_review') RETURNING id, status", [refId, next, sn, note]);
+        if (!rows[0]) return send(res, 200, { received: true });
+        if (next === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', refId);
+        else if (next === 'fulfillment_failed') notifyOrder(pool, fetchImpl, env, 'failed', refId);
+        return send(res, 200, { received: true });
+      }
+      // ponytail: refund hanya untuk pesanan yang sudah dibayar tetapi itemnya belum terkirim; 'manual' menandai dana yang dikembalikan di luar sistem.
+      if (req.method === 'GET' && path === '/api/admin/refunds') {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, user_id AS "userId", zone_id AS "zoneId", fulfillment_note AS "fulfillmentNote", refunded_at AS "refundedAt", refund_note AS "refundNote", created_at AS "createdAt" FROM orders WHERE status IN ${refundableSql} ORDER BY updated_at ASC, id ASC LIMIT 100`);
+        const { rows: refunded } = await pool.query("SELECT id, product_name AS \"productName\", price, refunded_at AS \"refundedAt\", refund_note AS \"refundNote\" FROM orders WHERE status = 'refunded' ORDER BY refunded_at DESC NULLS LAST, id DESC LIMIT 20");
+        return send(res, 200, { orders: rows, refunded });
+      }
+      if (req.method === 'POST' && /^\/api\/admin\/orders\/[^/]+\/refund$/.test(path)) {
+        const id = path.split('/')[4];
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
+        let body;
+        try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
+        const manual = body?.manual === true;
+        const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 200) : '';
+        if (manual && note.length < 3) throw error(400, 'Isi catatan refund manual (contoh: transfer bank BCA).');
+        const { rows } = await pool.query('SELECT id, status, price FROM orders WHERE id = $1', [id]);
+        const order = rows[0];
+        if (!order) throw error(404, 'Pesanan tidak ditemukan.');
+        if (order.status === 'refunded') throw error(409, 'Pesanan ini sudah direfund.');
+        if (!REFUNDABLE_STATUSES.includes(order.status)) throw error(409, 'Status pesanan ini tidak dapat direfund.');
+        if (!manual) {
+          if (!env.MIDTRANS_SERVER_KEY) throw error(503, 'Refund otomatis belum dikonfigurasi. Gunakan penandaan manual.');
+          try {
+            const refund = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/${order.id}/refund`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` },
+              body: JSON.stringify({ refund_key: `${order.id}-refund`, amount: Number(order.price), reason: 'Pesanan tidak dapat dipenuhi' })
+            });
+            if (String(refund?.status_code || '') !== '200') throw error(502, 'Midtrans menolak refund ini.');
+          } catch (err) {
+            console.error('[refund] midtrans gagal:', order.id, err?.upstreamStatus ? `HTTP ${err.upstreamStatus}` : '', err?.message || String(err));
+            throw error(502, 'Midtrans menolak refund ini. Periksa dashboard Midtrans, atau gunakan penandaan manual dengan catatan.');
+          }
+        }
+        const { rows: done } = await pool.query(`UPDATE orders SET status = 'refunded', refunded_at = now(), refund_note = $2, updated_at = now() WHERE id = $1 AND status IN ${refundableSql} RETURNING id`, [id, manual ? `Manual: ${note}` : 'Refund otomatis melalui Midtrans']);
+        if (!done[0]) throw error(409, 'Status pesanan berubah; muat ulang halaman.');
+        await releaseVoucher(pool, id);
+        notifyOrder(pool, fetchImpl, env, 'refunded', id);
+        return send(res, 200, { refunded: true, manual });
       }
       // ponytail: login nomor HP menukar nomor jadi sesi lewat metadata akun; email hanya keluar setelah kata sandi terbukti benar.
       if (req.method === 'POST' && path === '/api/auth/login') {

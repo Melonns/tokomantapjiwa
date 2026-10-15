@@ -33,7 +33,7 @@ test('tombol simpan memberi popup sukses, bukan cuma pesan inline', () => {
 
 test('aksi yang sudah punya popup tidak kehilangan popupnya', () => {
   const keep = [
-    ['signOutAccount', 'Kamu sudah keluar'],
+    ['signOutAccount', 'Anda telah keluar'],
     ['cutSession', 'Sesi berakhir'],
   ]
   for (const [fn, text] of keep) {

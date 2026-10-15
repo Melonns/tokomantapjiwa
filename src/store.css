@@ -217,3 +217,12 @@
 .voucher-form .voucher-new { display: flex; align-items: center; gap: 6px; font-weight: 500; }
 .voucher-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .voucher-list li { display: grid; gap: 2px; justify-items: start; padding: 10px 12px; border: 1px solid #e4e7ec; border-radius: 10px; }
+
+/* ponytail: halaman legal, indikator gangguan, dan panel refund. */
+.legal-page{padding-block:52px 84px}.legal-head{max-width:780px;margin-bottom:34px}.legal-head h1{font-size:clamp(2rem,3.4vw,3rem);margin:12px 0 14px}.legal-head p{color:var(--muted);line-height:1.7;margin:0}.legal-updated{display:inline-block;margin-top:12px;color:var(--muted);font-size:.8rem}.legal-body{display:grid;gap:14px;max-width:860px}.legal-block{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:clamp(18px,2.4vw,28px)}.legal-block h2{font-size:clamp(1.05rem,1.7vw,1.4rem);margin:0 0 12px}.legal-block p{margin:0;color:var(--muted);line-height:1.7}.legal-block ul{margin:0;padding-left:20px;display:grid;gap:8px;color:var(--muted);line-height:1.65}.legal-danger{border-left:4px solid #d8b45c}.legal-danger h2{color:#e8c877}.legal-back{display:flex;flex-wrap:wrap;gap:12px;margin:26px 0 0}
+.contact-list{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:10px}.contact-list li{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}.contact-list a{color:var(--lime);min-height:44px;display:inline-flex;align-items:center;overflow-wrap:anywhere}
+.footer-links{display:flex;flex-wrap:wrap;gap:4px 18px}
+.product-flag{align-self:flex-start;font-size:.7rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#e8c877;border:1px solid #d8b45c;border-radius:999px;padding:3px 10px}.product.is-outage{opacity:.6;cursor:not-allowed}
+.notice-warn{border-left:4px solid #d8b45c}.notice-warn strong{color:#e8c877}
+.refund-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}.refund-card{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:18px;display:grid;gap:12px}.refund-info{display:grid;gap:4px}.refund-info span{color:var(--muted);font-size:.88rem}.refund-info small{color:var(--muted);overflow-wrap:anywhere}.refund-actions{display:flex;flex-wrap:wrap;gap:10px}.refund-done{margin-top:26px}.refund-done h3{font-size:1.05rem;margin:0 0 12px}.refund-error{color:var(--danger)}.outage-on{border-color:#d8b45c;color:#e8c877}
+@media(max-width:640px){.refund-actions{flex-direction:column}.refund-actions .secondary-button{width:100%}.legal-page{padding-block:36px 60px}}

@@ -59,7 +59,7 @@ test('sign out is a red danger action in its own separated zone', () => {
   assert.match(css, /\.signout-zone\{[^}]*border-top:1px solid var\(--line\)/)
 })
 
-test('setiap input mematikan riwayat/autofill browser (kredensial & OTP tetap semantik)', async () => {
+test('setiap input menonaktifkan riwayat/autofill browser (kredensial & OTP tetap semantik)', async () => {
   const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
   const tags = source.match(/<input\b[\s\S]*?\/>/g) ?? []
   assert.equal(tags.length, (source.match(/<input\b/g) ?? []).length, 'ekstraksi tag input gagal')
@@ -86,7 +86,7 @@ test('zona 2 langkah: baris aksi rapat dan tombol nonaktif jelas', () => {
   assert.match(css, /\.link-button:disabled,\.secondary-button:disabled\{color:#849e80;cursor:not-allowed\}/)
 })
 
-test('form profil nggak melar ngikutin tinggi kolom kanan', () => {
+test('form profil tidak melar mengikuti tinggi kolom kanan', () => {
   assert.match(css, /\.profile-col \.profile-form\{flex:0 1 auto;align-content:start\}/)
   assert.equal(css.includes('align-content:space-between'), false)
 })

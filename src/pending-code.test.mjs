@@ -22,7 +22,7 @@ test('draf kode yang dikirim pulih setelah refresh, lengkap dengan sisa hitungan
   assert.equal(pending.resendWait, 55)
 })
 
-test('draf kode yang sudah lewat 1 jam dibuang, bukan dipulihkan', () => {
+test('draf kode yang sudah melewati 1 jam dibuang, bukan dipulihkan', () => {
   const storage = fakeStorage()
   const now = 1_700_000_000_000
   writePendingCode(storage, { email: 'pembeli@contoh.com', purpose: 'login', sentAt: now - PENDING_CODE_TTL_MS })

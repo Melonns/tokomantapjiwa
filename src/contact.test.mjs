@@ -8,7 +8,7 @@ test('email and phone share one field without ambiguous fallback', () => {
   assert.deepEqual(parseContact('6281234567890'), { phone: '+6281234567890' })
   assert.deepEqual(parseContact(' +6281234567890 '), { phone: '+6281234567890' })
   for (const input of ['bukan-email', 'aku@', '0812 3456 7890', '0812abc', '12345678', '+62081234567890', '']) {
-    assert.throws(() => parseContact(input), /Masukkan email valid/)
+    assert.throws(() => parseContact(input), /Masukkan alamat email yang valid/)
   }
 })
 
@@ -21,7 +21,7 @@ test('registration stores three distinct fields only after validation', () => {
     ['bad', '081234567890', 'melon_24'],
     ['aku@example.com', 'not-a-phone', 'melon_24'],
     ['aku@example.com', '081234567890', 'x'],
-    ['aku@example.com', '081234567890', ' nama pakai spasi '],
+    ['aku@example.com', '081234567890', ' nama dengan spasi '],
   ]) assert.throws(() => parseRegistration(email, phone, username))
 })
 

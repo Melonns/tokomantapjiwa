@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCatalogCsv, parseCatalogCsv } from './catalog-csv.mjs';
 
-test('csv katalog: header + baris pakai pemisah titik-koma biar rapi di Excel Indonesia', () => {
+test('csv katalog: header dan baris memakai pemisah titik-koma agar rapi di Excel Indonesia', () => {
   const csv = buildCatalogCsv([
     { sku: 'ff12', name: '12 Diamonds', game: 'FREE FIRE', category: 'Games', cost: 1605, price: 1800, saran: 1800, priceMode: 'auto', enabled: true },
     { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', cost: 3057, price: 4000, saran: 3800, priceMode: 'manual', enabled: false },
@@ -35,12 +35,12 @@ test('csv katalog: sel kosong = harga tidak diubah, dan sel berisi titik-koma am
   ]);
 });
 
-test('csv katalog: header tidak dikenal dibalas null supaya panel bisa kasih contoh', () => {
+test('csv katalog: header tidak dikenal dibalas null agar panel dapat memberi contoh', () => {
   assert.equal(parseCatalogCsv('nama,game\n12 Diamonds,FREE FIRE\n'), null);
   assert.deepEqual(parseCatalogCsv(''), []);
 });
 
-test('csv katalog: harga di luar batas server tidak dipakai (dianggap kosong)', () => {
+test('csv katalog: harga di luar batas server diabaikan (dianggap kosong)', () => {
   const rows = parseCatalogCsv('sku,harga\nff12,999999999999\nml10,0\n');
   assert.deepEqual(rows, [
     { sku: 'ff12', price: null, priceMode: 'auto' },

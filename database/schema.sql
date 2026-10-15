@@ -11,6 +11,16 @@
 --   ALTER TABLE orders DROP CONSTRAINT orders_zone_id_check;
 --   ALTER TABLE orders ADD CONSTRAINT orders_zone_id_check CHECK (zone_id ~ '^[A-Za-z0-9_-]{0,64}$');
 -- Instalasi lama juga menjalankan blok CREATE TABLE IF NOT EXISTS account_checks/account_check_logs (beserta RLS/REVOKE) dari file ini.
+-- Fitur wajib (halaman legal, notifikasi email, refund, indikator gangguan) menambah kolom & status berikut pada instalasi lama:
+--   ALTER TABLE products ADD COLUMN IF NOT EXISTS gangguan boolean NOT NULL DEFAULT false;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_sn text;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_note text;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS refunded_at timestamptz;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_note text;
+--   ALTER TABLE orders DROP CONSTRAINT orders_status_check;
+--   ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded'));
+--   ALTER TABLE orders DROP CONSTRAINT orders_claimed_check;
+--   ALTER TABLE orders ADD CONSTRAINT orders_claimed_check CHECK (digiflazz_claimed_at IS NULL OR status IN ('fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded'));
 CREATE TABLE IF NOT EXISTS products (
   id text PRIMARY KEY CHECK (id ~ '^[A-Za-z0-9_-]{1,64}$'),
   name text NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
@@ -21,7 +31,9 @@ CREATE TABLE IF NOT EXISTS products (
   customer_format text NOT NULL DEFAULT 'ml_concat' CHECK (customer_format IN ('ml_concat', 'plain', 'uid_server', 'riot')),
   enabled boolean NOT NULL DEFAULT false,
   -- ponytail: 'auto' = harga jual dihitung ulang dari modal + aturan kategori tiap sinkron katalog supplier; 'manual' = dikunci admin.
-  price_mode text NOT NULL DEFAULT 'auto' CHECK (price_mode IN ('auto', 'manual'))
+  price_mode text NOT NULL DEFAULT 'auto' CHECK (price_mode IN ('auto', 'manual')),
+  -- ponytail: tanda gangguan penyedia. Produk gangguan disembunyikan dari katalog pembeli, tidak bisa dipakai voucher, dan checkout-nya ditolak.
+  gangguan boolean NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS products_enabled_idx ON products (game, id) WHERE enabled;
 
@@ -46,18 +58,23 @@ CREATE TABLE IF NOT EXISTS orders (
   customer_no text NOT NULL CHECK (length(customer_no) BETWEEN 1 AND 128),
   user_id text NOT NULL CHECK (user_id ~ '^[A-Za-z0-9 ._#-]{1,64}$'),
   zone_id text NOT NULL CHECK (zone_id ~ '^[A-Za-z0-9_-]{0,64}$'),
-  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review')),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded')),
   redirect_url text,
   payment_channel text,
   payment_detail jsonb,
   payment_expires_at timestamptz,
   discount integer NOT NULL DEFAULT 0 CHECK (discount >= 0),
   voucher_code text,
+  -- ponytail: SN dari penyedia + catatan kegagalan; dipakai struk dan email notifikasi.
+  fulfillment_sn text,
+  fulfillment_note text,
+  refunded_at timestamptz,
+  refund_note text,
   digiflazz_claimed_at timestamptz,
   digi_checked_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (digiflazz_claimed_at IS NULL OR status IN ('fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review'))
+  CHECK (digiflazz_claimed_at IS NULL OR status IN ('fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded'))
 );
 CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');

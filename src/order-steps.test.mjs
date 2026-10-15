@@ -6,8 +6,8 @@ import { VA_METHOD_IDS, VA_MIN_ORDER } from './pricing.mjs';
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
 const css = await readFile(new URL('./store.css', import.meta.url), 'utf8');
 
-test('halaman pesanan memakai enam kotak berurutan dari kredensial sampai kontak', () => {
-  const steps = ['Kredensial akun tujuan', 'Pilih nominal', 'Jumlah pembelian', 'Metode pembayaran', 'Kode promo', 'Detail kontak'];
+test('halaman pesanan memakai enam kotak berurutan dari data akun tujuan sampai kontak', () => {
+  const steps = ['Data akun tujuan', 'Pilih nominal', 'Jumlah pembelian', 'Metode pembayaran', 'Kode promo', 'Detail kontak'];
   const indexes = steps.map((title) => source.indexOf(title));
   assert.ok(indexes.every((index) => index > -1), 'semua judul kotak ada');
   for (let i = 0; i < indexes.length - 1; i++) assert.ok(indexes[i] < indexes[i + 1], `urutan ${steps[i]} sebelum ${steps[i + 1]}`);
@@ -19,7 +19,8 @@ test('halaman pesanan memakai enam kotak berurutan dari kredensial sampai kontak
 
 test('kotak nominal memuat kartu produk dan menandai pilihan aktif', () => {
   assert.match(source, /const orderItems = view === 'checkout' \?/);
-  assert.match(source, /className=\{item\.id === selected\?\.id \? 'product selected' : 'product'\}/);
+  assert.match(source, /className=\{isOutage\(item\) \? 'product is-outage' : item\.id === selected\?\.id \? 'product selected' : 'product'\}/);
+  assert.match(source, /disabled=\{isOutage\(item\)\}/);
   assert.match(source, /aria-current=\{item\.id === selected\?\.id \? 'true' : undefined\}/);
   assert.match(source, /Belum ada item produk yang dipilih\./);
 });
@@ -32,9 +33,9 @@ test('jumlah pembelian memakai stepper terbatas dan ringkasan menagih satu item'
   assert.match(source, /<span>Total<\/span><strong>\{rupiah\(selected\.price - voucherCut\(\)\)\}<\/strong>/);
   assert.match(source, /id="voucher-code"/);
   assert.match(source, /Potongan \{voucher\.code\}/);
-  assert.match(source, /Jumlah banyak belum aktif, jadi satu pesanan berisi satu item\./);
+  assert.match(source, /Pembelian banyak item belum aktif, sehingga satu pesanan berisi satu item\./);
   // ponytail: pembeli harus tahu total di checkout sama dengan harga di rak - lawan trik 'murah di depan, biaya di belakang'.
-  assert.match(source, /Sudah termasuk biaya pembayaran — tidak ada tambahan di langkah berikutnya\./);
+  assert.match(source, /Sudah termasuk biaya pembayaran, tidak ada tambahan di langkah berikutnya\./);
   assert.match(source, /aria-label="Kurangi jumlah"/);
   assert.match(source, /aria-label="Tambah jumlah"/);
 });
@@ -49,14 +50,14 @@ test('metode pembayaran yang dipilih ikut terkirim ke checkout, kode promo aktif
     assert.ok(source.includes(`id: '${id}'`), `kanal ${id} hilang dari PAYMENT_METHODS`);
   }
   assert.equal(source.includes('Metode final masih dipilih'), false);
-  assert.match(source, /Punya kode dari teman\? Tulis di sini/);
+  assert.match(source, /Masukkan kode promo/);
 });
 
-test('pesanan dibuat lewat modal konfirmasi, bukan langsung dari form', () => {
+test('pesanan dibuat melalui modal konfirmasi, bukan langsung dari formulir', () => {
   assert.match(source, /function openConfirm\(event\)/);
   assert.match(source, /onSubmit=\{openConfirm\}/);
   assert.match(source, /role="dialog" aria-modal="true" aria-labelledby="confirm-title"/);
-  assert.match(source, /Periksa sekali lagi\. Pesanan baru dibuat setelah kamu menekan Pesan sekarang\./);
+  assert.match(source, /Periksa kembali\. Pesanan baru dibuat setelah Anda menekan Pesan sekarang\./);
   assert.match(source, /<dt>Potongan \{voucher\.code\}<\/dt><dd>\u2212\{rupiah\(voucherCut\(\)\)\}<\/dd>/);
   assert.match(source, /<dt>Total<\/dt><dd><strong>\{rupiah\(\(selected\?\.price \|\| 0\) - voucherCut\(\)\)\}<\/strong><\/dd>/);
   assert.match(source, /Pesan sekarang/);
@@ -70,7 +71,7 @@ test('pesanan dibuat lewat modal konfirmasi, bukan langsung dari form', () => {
 test('detail kontak terisi otomatis untuk member dan bisa diisi tamu', () => {
   assert.match(source, /value=\{session\.user\.email \|\| ''\} readOnly/);
   assert.match(source, /session\.user\.phone \|\| session\.user\.user_metadata\?\.requested_phone/);
-  assert.match(source, /Transaksi tamu \(email \+ nomor HP\) belum aktif/);
+  assert.match(source, /Transaksi tamu \(email dan nomor HP\) belum aktif/);
 });
 
 test('halaman beli mendukung format uid_server (pilih server) dan riot (Riot ID)', () => {

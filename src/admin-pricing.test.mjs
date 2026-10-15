@@ -15,7 +15,7 @@ test('storefront never renders raw supplier prices', () => {
 test('admin pricing panel uses admin-only endpoints and labels cost as modal', () => {
   assert.match(source, /\/api\/admin\/supplier-products/);
   assert.match(source, /\/api\/admin\/products\//);
-  assert.match(source, /Harga supplier adalah modal, tidak tampil ke pembeli\./);
+  assert.match(source, /Harga supplier adalah modal dan tidak ditampilkan ke pembeli\./);
   assert.match(source, /Modal \$\{rupiah\(item\.cost\)\}/);
 });
 
@@ -82,7 +82,7 @@ test('panel harga bisa mengisi draft dari margin persen per brand', () => {
   assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category, pct\)/);
   assert.match(source, /className="price-margin"/);
   assert.match(source, /aria-label=\{`Margin harga \$\{brand\.name\} \(%\)`\}/);
-  assert.match(source, /Modal × \(1 \+ %\), sudah termasuk fee QRIS, dibulatkan ke atas\./);
+  assert.match(source, /Modal × \(1 \+ %\), sudah termasuk biaya QRIS, dibulatkan ke atas\./);
   assert.match(css, /\.price-margin\{display:flex/);
   assert.match(css, /\.price-margin-field input\{[^}]*min-height:44px/);
 });
@@ -91,10 +91,10 @@ test('panel harga menandai margin rugi/tipis dan menawarkan harga saran', () => 
   assert.match(source, /const health = priceHealth\(draft\.price, item\.cost, item\.category\)/);
   assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category\)/);
   assert.match(source, /price-health-\$\{health\.level\}/);
-  assert.match(source, /Rugi \$\{rupiah\(Math\.abs\(health\.netRp\)\)\} setelah fee QRIS\./);
+  assert.match(source, /Rugi \$\{rupiah\(Math\.abs\(health\.netRp\)\)\} setelah biaya QRIS\./);
   assert.match(source, /Margin aman: sisa \$\{rupiah\(health\.netRp\)\} \(\$\{health\.marginPct\}%\)\./);
-  assert.match(source, /Belum cukup buat fee VA\./);
-  assert.match(source, /Pakai saran \{rupiah\(saran\)\}/);
+  assert.match(source, /Belum cukup untuk biaya VA\./);
+  assert.match(source, /Gunakan saran \{rupiah\(saran\)\}/);
   assert.match(source, /target margin \{marginBand\(item\.category, Number\(item\.cost\) \|\| 0\)\.pct\}%/);
   assert.match(css, /\.price-warning\.price-health-rugi\{color:var\(--danger\)\}/);
   assert.match(css, /\.price-suggest-row\{display:flex/);
@@ -120,9 +120,9 @@ test('harga otomatis: ekspor CSV tidak membocorkan modal ke storefront', () => {
   assert.equal(source.includes('supplierPreview'), false);
 });
 
-test('panel admin punya halaman voucher dengan form dan tombol nyala/mati', () => {
+test('panel admin punya halaman voucher dengan formulir dan tombol aktif/nonaktif', () => {
   assert.match(source, /adminPage === 'vouchers' && <section className="order-section admin-section" aria-labelledby="voucher-title">/);
-  assert.match(source, /Voucher pembeli baru tidak bisa dipakai akun yang sudah pernah beli\./);
+  assert.match(source, /Voucher pembeli baru tidak dapat dipakai oleh akun yang sudah pernah membeli\./);
   assert.match(source, /request\('\/api\/admin\/vouchers', \{ method: 'POST'/);
   assert.match(source, /\{item\.active \? 'Matikan' : 'Nyalakan'\}/);
 });

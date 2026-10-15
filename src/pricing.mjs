@@ -1,5 +1,5 @@
-// ponytail: satu sumber aturan harga jual — margin per kategori turun di nominal besar (praktik konter:
-// nominal kecil dapat persen lebih besar, nominal besar lebih tipis biar tetap kompetitif) plus fee
+// ponytail: satu sumber aturan harga jual. Margin per kategori menurun pada nominal besar (praktik konter:
+// nominal kecil dapat persen lebih besar, nominal besar lebih tipis agar tetap kompetitif) plus fee
 // pembayaran yang wajib tertutup di dalam harga (biaya tidak boleh dibebankan ke pembeli).
 export const QRIS_FEE_PCT = 0.7 // sudah termasuk PPN
 export const EWALLET_FEE_PCT = 2 // GoPay/ShopeePay
@@ -35,7 +35,7 @@ export function roundUpTo(value, grid) {
   return Math.ceil(value / grid) * grid
 }
 
-// Harga saran = modal × (1 + margin) dibagi (1 − fee QRIS) supaya fee ikut tertutup, lalu dibulatkan ke atas.
+// Harga saran = modal × (1 + margin) dibagi (1 − biaya QRIS) agar biaya ikut tertutup, lalu dibulatkan ke atas.
 export function suggestPrice(cost, category, pctOverride) {
   const modal = Number(cost)
   if (!Number.isFinite(modal) || modal <= 0) return null
@@ -46,7 +46,7 @@ export function suggestPrice(cost, category, pctOverride) {
   return roundUpTo(Math.ceil(gross / (1 - QRIS_FEE_PCT / 100)), band.grid)
 }
 
-// Sisa bersih setelah fee QRIS; 'rugi' berarti harga tidak menutup modal + fee.
+// Sisa bersih setelah biaya QRIS; 'rugi' berarti harga tidak menutup modal dan biaya.
 export function priceHealth(price, cost, category) {
   const jual = Number(price)
   const modal = Number(cost)
@@ -72,7 +72,7 @@ export function availablePaymentMethods(methods, price) {
   return methods.filter((method) => !method.minOrder || (Number.isFinite(total) && total >= method.minOrder))
 }
 
-// ponytail: potongan voucher = fungsi murni yang sama dipakai server dan klien, biar angka di layar tidak pernah beda dengan yang ditagih.
+// ponytail: potongan voucher = fungsi murni yang sama dipakai server dan klien, agar angka di layar tidak pernah berbeda dari yang ditagih.
 export function voucherDiscount(voucher, total) {
   const harga = Number(total)
   const nilai = Number(voucher?.value)

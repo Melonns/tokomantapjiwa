@@ -31,7 +31,7 @@ test('katalog supplier disaring, SKU ganda memakai baris terakhir, kredensial ti
   assert.equal(JSON.stringify(items).includes('test-key'), false);
 });
 
-test('error provider membawa rc supaya endpoint bisa membedakan pesannya, dan pull berikutnya bisa pulih', async () => {
+test('error provider membawa rc agar endpoint dapat membedakan pesannya, dan pull berikutnya dapat pulih', async () => {
   let calls = 0;
   await assert.rejects(fetchSupplierCatalog(async () => { calls++; return { ok: true, json: async () => ({ data: { rc: '83', message: 'limitasi pengecekan pricelist' } }) }; }, env), err => err.rc === '83');
   const items = await fetchSupplierCatalog(async () => ({ ok: true, json: async () => ({ data: [active] }) }), env);
