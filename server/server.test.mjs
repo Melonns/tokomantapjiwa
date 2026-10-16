@@ -1042,3 +1042,29 @@ test('account deletion request fails clearly while the mailer is not ready', asy
     assert.match((await response.json()).error, /belum dapat diproses/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test('health endpoint reports database availability', async () => {
+  const pool = { async query(sql) { assert.match(sql, /select 1/i); return { rows: [{ ok: 1 }] }; } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: () => { throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.db, 'ok');
+    assert.match(body.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('health endpoint answers 503 while the database is unreachable', async () => {
+  const pool = { async query() { throw Error('connection refused'); } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: () => { throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health`);
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { ok: false, db: 'error' });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

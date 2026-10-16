@@ -27,6 +27,7 @@ export function createRateLimiter({ windowMs, max, now = () => Date.now() }) {
 }
 
 // ponytail: Urutan pembacaan IP mengikuti proxy yang benar-benar dipakai: Cloudflare, lalu reverse proxy (Caddy), lalu socket langsung.
+// Caddyfile menimpa X-Forwarded-For dengan alamat asli klien dan membuang Cf-Connecting-Ip, sehingga entri pertama selalu alamat sebenarnya.
 export function clientIp(req) {
   const direct = req?.headers?.['cf-connecting-ip'];
   if (typeof direct === 'string' && direct.trim()) return direct.trim();

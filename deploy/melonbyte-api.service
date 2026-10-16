@@ -1,0 +1,29 @@
+[Unit]
+Description=Melonbyte API (server Node)
+Documentation=https://melonbyte.biz.id
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=melonbyte
+Group=melonbyte
+WorkingDirectory=/srv/melonbyte
+EnvironmentFile=/srv/melonbyte/.env
+ExecStart=/usr/bin/node server/index.mjs
+Restart=always
+RestartSec=3
+SyslogIdentifier=melonbyte-api
+
+# Pengerasan dasar untuk VPS kecil.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=700M
+
+[Install]
+WantedBy=multi-user.target

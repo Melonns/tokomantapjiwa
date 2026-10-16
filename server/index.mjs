@@ -4,8 +4,16 @@ import pg from 'pg';
 import { createHandler, reconcilePending } from './app.mjs';
 
 if (!process.env.DATABASE_URL) throw Error('DATABASE_URL wajib diisi.');
-const ca = readFileSync(new URL('../prod-ca-2021.crt', import.meta.url), 'utf8');
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: { ca, rejectUnauthorized: true }, max: 10 });
+// ponytail: Sertifikat akar Supabase lama dipakai hanya bila berkasnya ada. Berkas itu tidak ikut Git
+// (lihat .gitignore), jadi hasil klon baru di VPS tetap hidup dengan daftar akar bawaan Node.
+let ca;
+try {
+  ca = readFileSync(new URL('../prod-ca-2021.crt', import.meta.url), 'utf8');
+} catch {
+  ca = undefined;
+}
+console.log(ca ? '[db] memakai sertifikat akar lokal prod-ca-2021.crt' : '[db] memakai daftar akar bawaan Node');
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: ca ? { ca, rejectUnauthorized: true } : { rejectUnauthorized: true }, max: 10 });
 const port = Number(process.env.PORT || 3001);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('PORT tidak valid.');
 const server = createServer(createHandler({ pool }));

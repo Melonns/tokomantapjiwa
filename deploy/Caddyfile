@@ -1,0 +1,66 @@
+# Konfigurasi Caddy untuk Melonbyte.
+# Salin ke /etc/caddy/Caddyfile, lalu periksa dengan:
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#
+# Peran berkas ini:
+#   1. Melayani berkas hasil build (dist/) sebagai situs statis.
+#   2. Meneruskan /api/* ke server Node yang hanya mendengarkan di localhost:3001.
+#   3. Mengurus sertifikat HTTPS Let's Encrypt secara otomatis.
+#   4. Menambahkan header keamanan dan aturan cache.
+
+{
+	# Ganti dengan alamat email aktif Anda. Dipakai Let's Encrypt untuk pemberitahuan masa berlaku.
+	email admin@melonbyte.biz.id
+}
+
+melonbyte.biz.id {
+	encode zstd gzip
+
+	# Header keamanan untuk seluruh balasan.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.midtrans.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co; font-src 'self'; manifest-src 'self'"
+		-Server
+	}
+
+	# Berkas ber-hash dari Vite boleh disimpan lama di peramban; index.html tidak boleh.
+	@aset path /assets/*
+	header @aset Cache-Control "public, max-age=31536000, immutable"
+	@ikon path /favicon.svg /icon-192.png /apple-touch-icon.png /og.png /robots.txt /sitemap.xml
+	header @ikon Cache-Control "public, max-age=86400"
+	@halaman path / /index.html
+	header @halaman Cache-Control "no-cache"
+
+	# API Node.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3001 {
+			# Ganti header alamat yang bisa dipalsukan klien dengan alamat asli yang dilihat Caddy,
+			# supaya pembatas percobaan per IP di server Node tidak dapat dilewati.
+			header_up X-Forwarded-For {remote_host}
+			header_up -Cf-Connecting-Ip
+		}
+	}
+
+	# Situs statis. Rute aplikasi memakai tanda pagar, jadi semua alamat dilayani index.html.
+	handle {
+		root * /srv/melonbyte/dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/melonbyte.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}
+
+# Aktifkan blok ini hanya setelah catatan DNS www diarahkan ke server yang sama.
+# www.melonbyte.biz.id {
+# 	redir https://melonbyte.biz.id{uri} permanent
+# }

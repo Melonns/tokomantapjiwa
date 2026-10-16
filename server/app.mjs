@@ -363,6 +363,15 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
     };
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
+      // ponytail: titik kesehatan untuk pemantauan uptime, memastikan API dan basis data benar-benar hidup.
+      if ((req.method === 'GET' || req.method === 'HEAD') && path === '/api/health') {
+        try {
+          await pool.query('SELECT 1');
+          return send(res, 200, { ok: true, db: 'ok', time: new Date().toISOString() });
+        } catch {
+          return send(res, 503, { ok: false, db: 'error' });
+        }
+      }
       if (req.method === 'GET' && path === '/api/products') {
         const { rows } = await pool.query('SELECT p.id, p.name, p.game, p.price, p.customer_format AS "format", p.gangguan, COALESCE(s.category, \'\') AS category FROM products p LEFT JOIN supplier_products s ON s.sku = p.id WHERE p.enabled = true ORDER BY p.game, p.id');
         return send(res, 200, { products: rows.map(({ gangguan, ...p }) => ({ ...p, id: String(p.id), category: String(p.category || ''), checkable: Boolean(checkableGame(p.game)), ...(gangguan === true ? { gangguan: true } : {}) })), checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env) });

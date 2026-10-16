@@ -1,0 +1,4 @@
+# Berkas yang dijalankan atau dibaca di Linux harus tetap berakhir LF.
+*.sh text eol=lf
+deploy/Caddyfile text eol=lf
+deploy/*.service text eol=lf

@@ -4,4 +4,4 @@ dist/
 !.env.example
 node_modules/
 *.crt
-*.ctr
+backup/
