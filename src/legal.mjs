@@ -39,7 +39,7 @@ export const LEGAL_PAGES = {
         title: 'Pengembalian dana (refund)',
         items: [
           'Refund berlaku untuk pesanan yang gagal diproses di sisi kami atau penyedia, bukan karena salah isi ID, salah pilih nominal, atau berubah pikiran.',
-          'Dana kembali ke metode pembayaran awal (QRIS, VA, atau e-wallet yang Anda gunakan). Waktu masuknya 1–3 hari kerja, tergantung bank atau e-wallet.',
+          'Dana kembali ke metode pembayaran awal (QRIS, VA, atau e-wallet yang Anda gunakan). Waktu masuknya 1-3 hari kerja, tergantung bank atau e-wallet.',
           'Setelah refund diproses, pesanan ditandai "dana dikembalikan" dan Anda menerima email konfirmasi.',
         ],
       },
@@ -133,7 +133,7 @@ export const LEGAL_PAGES = {
       },
       {
         title: 'Jam layanan',
-        body: 'Setiap hari, 08.00–22.00 WIB. Di luar jam tersebut pesanan tetap berjalan otomatis; balasan petugas menyusul pada jam layanan berikutnya.',
+        body: 'Setiap hari, 08.00-22.00 WIB. Di luar jam tersebut pesanan tetap berjalan otomatis; balasan petugas menyusul pada jam layanan berikutnya.',
       },
     ],
   },

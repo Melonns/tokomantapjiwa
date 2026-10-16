@@ -97,6 +97,28 @@ test('webhook digiflazz dengan HMAC-SHA1 sah menutup pesanan dan menyimpan SN', 
   assert.equal(seen.length, 1);
 });
 
+test('webhook digiflazz menerima ping tanpa menyentuh database', async () => {
+  const body = JSON.stringify({ event: 'ping' });
+  const signature = createHmac('sha1', 'whsec').update(body).digest('hex');
+  let calls = 0;
+  const handler = createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, fetchImpl() { throw Error('net touched'); }, env: { ...env, DIGIFLAZZ_WEBHOOK_SECRET: 'whsec' } });
+  const { status, payload } = await call(handler, '/api/webhooks/digiflazz', { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature': signature, 'x-digiflazz-event': 'ping' }, body });
+  assert.equal(status, 200);
+  assert.equal(payload.received, true);
+  assert.equal(calls, 0);
+});
+
+test('webhook digiflazz untuk ref id di luar toko dijawab 200 tanpa menyentuh database', async () => {
+  const body = JSON.stringify({ data: { ref_id: 'bukan-pesanan-toko', status: 'Sukses', rc: '00' } });
+  const signature = createHmac('sha1', 'whsec').update(body).digest('hex');
+  let calls = 0;
+  const handler = createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, fetchImpl() { throw Error('net touched'); }, env: { ...env, DIGIFLAZZ_WEBHOOK_SECRET: 'whsec' } });
+  const { status, payload } = await call(handler, '/api/webhooks/digiflazz', { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature': signature, 'x-digiflazz-event': 'update' }, body });
+  assert.equal(status, 200);
+  assert.equal(payload.applied, false);
+  assert.equal(calls, 0);
+});
+
 test('webhook digiflazz tanpa rahasia dikonfigurasi ditolak jelas', async () => {
   const handler = createHandler({ pool: { query() { throw Error('db touched'); } }, fetchImpl() { throw Error('net touched'); }, env });
   const { status, payload } = await call(handler, '/api/webhooks/digiflazz', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: { ref_id: orderId, status: 'Sukses', rc: '00' } }) });

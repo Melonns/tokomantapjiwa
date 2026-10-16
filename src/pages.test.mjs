@@ -67,6 +67,16 @@ test('paid orders land on a dedicated invoice page, not the account page', () =>
   assert.equal(source.includes('Selesaikan pembayaran di halaman Midtrans'), false);
   assert.match(source, /copyText\(invoiceDetail\.vaNumber\)/);
   assert.match(source, /Menunggu pembayaran/);
-  assert.match(source, /setReceiptRetry\(\(value\) => value \+ 1\), 8000\)/);
+  assert.match(source, /setReceiptRetry\(\(value\) => value \+ 1\), receiptDelay\(receiptRetry\)\)/);
   assert.match(source, /ACTIVE_STATUSES\.includes\(receipt\?\.status\)/);
+});
+
+test('halaman tidak dikenal, jeda struk bertingkat, dan pengajuan hapus akun tersedia', () => {
+  assert.match(source, /view === 'notfound'/);
+  assert.match(source, /id="tidak-ditemukan"/);
+  assert.match(source, /import \{ receiptDelay \} from '\.\/refresh\.mjs'/);
+  assert.match(source, /receiptDelay\(receiptRetry\)/);
+  assert.match(source, /\/api\/account\/deletion-request/);
+  assert.match(source, /Ajukan penghapusan akun/);
+  assert.match(source, /account-danger/);
 });

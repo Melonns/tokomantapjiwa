@@ -13,7 +13,7 @@ export function parseRegistration(emailInput, phoneInput, usernameInput) {
   const { phone } = parseContact(phoneInput)
   if (!phone) throw new Error('Masukkan nomor HP yang valid.')
   const username = usernameInput.trim()
-  if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) throw new Error('Username harus 3–24 karakter: huruf, angka, atau garis bawah.')
+  if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) throw new Error('Username harus 3-24 karakter: huruf, angka, atau garis bawah.')
   return { email, requested_phone: phone, username }
 }
 

@@ -1,9 +1,10 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
+import { paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
 import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
+import { clientIp, createRateLimiter } from './ratelimit.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
 // ponytail: Format tujuan per brand. Brand di luar daftar ini hanya dapat disimpan sebagai draf harga
@@ -21,6 +22,7 @@ const customerFormats = {
 };
 const formatFor = game => customerFormats[String(game || '').toUpperCase()] || null;
 const error = (status, message) => Object.assign(new Error(message), { status });
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const ready = env => Boolean(env.DATABASE_URL && env.MIDTRANS_SERVER_KEY && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((env.MIDTRANS_ENV === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (env.MIDTRANS_ENV === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
 const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
 // ponytail: Kanal pembayaran spesifik memakai Core API /v2/charge. Halaman invoice ini sendiri yang menampilkan QR/VA, bukan pengalihan ke Snap.
@@ -29,7 +31,8 @@ const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
 const VA_MIN_ORDER = 100000;
 const VA_METHOD_IDS = new Set(['bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill']);
 const PAYMENT_METHODS = {
-  qris: () => ({ payment_type: 'qris' }),
+  // ponytail: acquirer QRIS dipatok ke ShopeePay karena jalur GoPay gagal diproses di simulator sandbox untuk merchant ini (uji 15 Oktober 2026); dapat diganti lewat MIDTRANS_QRIS_ACQUIRER bila Midtrans mengaktifkan acquirer lain.
+  qris: (id, storeUrl, env) => ({ payment_type: 'qris', qris: { acquirer: env.MIDTRANS_QRIS_ACQUIRER || 'airpay shopee' } }),
   bca_va: () => ({ payment_type: 'bank_transfer', bank: 'bca' }),
   bni_va: () => ({ payment_type: 'bank_transfer', bank: 'bni' }),
   bri_va: () => ({ payment_type: 'bank_transfer', bank: 'bri' }),
@@ -215,9 +218,17 @@ async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
   return true;
 }
 
+// ponytail: pembayaran yang kedaluwarsa, ditolak, atau dibatalkan menutup pesanan dan mengembalikan kuota voucher; satu tempat untuk webhook dan rekonsiliasi.
+async function failPayment(pool, orderId, grossAmount) {
+  const { rows } = await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND price = $2 AND status = 'pending' RETURNING voucher_code", [orderId, grossAmount]);
+  if (!rows[0]) return false;
+  if (rows[0].voucher_code) await releaseVoucher(pool, orderId);
+  return true;
+}
+
 // ponytail: Jaring pengaman saat notifikasi Midtrans tak sampai (tunnel mati, server sempat down): status ditarik langsung dari Midtrans
 // tiap kali struk pesanan pending dibuka/di-poll. Best-effort: error apa pun dikembalikan sebagai status tersimpan agar struk tetap tampil.
-async function reconcilePending(pool, fetchImpl, env, order) {
+export async function reconcilePending(pool, fetchImpl, env, order) {
   if (!['pending', 'payment_paid', 'fulfillment_pending'].includes(order.status) || !ready(env)) return order;
   try {
     if (order.status === 'pending') {
@@ -227,10 +238,7 @@ async function reconcilePending(pool, fetchImpl, env, order) {
       const notice = String(status?.transaction_status || '');
       if (Number(status?.gross_amount) !== order.price) return order;
       if (['settlement', 'capture'].includes(notice)) await applyPaid(pool, fetchImpl, env, order.id, Number(status.gross_amount));
-      else if (['expire', 'deny', 'cancel'].includes(notice)) {
-        await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND price = $2 AND status = 'pending'", [order.id, Number(status.gross_amount)]);
-        if (order.voucherCode) await releaseVoucher(pool, order.id);
-      }
+      else if (['expire', 'deny', 'cancel'].includes(notice)) await failPayment(pool, order.id, Number(status.gross_amount));
       else return order;
       console.error('[reconcile] midtrans:', order.id, notice, 'diterapkan');
     } else if (order.status === 'payment_paid') {
@@ -335,7 +343,24 @@ function whatsappLink(input) {
 }
 
 export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
+  // ponytail: Pembatas percobaan per IP untuk endpoint yang mudah disalahgunakan. Batas dapat diubah lewat env.
+  const limit = (name, fallback, windowMs) => createRateLimiter({ windowMs, max: Number(env[`RATE_LIMIT_${name}_MAX`]) > 0 ? Number(env[`RATE_LIMIT_${name}_MAX`]) : fallback });
+  const limits = {
+    login: limit('LOGIN', 10, 15 * 60 * 1000),
+    checkout: limit('CHECKOUT', 20, 10 * 60 * 1000),
+    checkAccount: limit('CHECKACCOUNT', 30, 10 * 60 * 1000),
+    voucher: limit('VOUCHER', 30, 10 * 60 * 1000),
+    deletion: limit('DELETION', 3, 60 * 60 * 1000),
+  };
+  const limitsOff = env.RATE_LIMIT_DISABLED === '1';
   return async (req, res) => {
+    const guard = (name) => {
+      if (limitsOff) return;
+      const result = limits[name].check(`${name}:${clientIp(req)}`);
+      if (result.allowed) return;
+      res.setHeader('Retry-After', String(result.retryAfterSec));
+      throw error(429, 'Terlalu banyak percobaan dari jaringan ini. Tunggu sebentar, lalu coba lagi.');
+    };
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
       if (req.method === 'GET' && path === '/api/products') {
@@ -355,7 +380,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       if (req.method === 'GET' && path === '/api/admin/orders') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
-        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
+        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId", created_at AS "createdAt" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
         return send(res, 200, { orders: rows });
       }
       if (req.method === 'GET' && path === '/api/admin/supplier-products') {
@@ -462,6 +487,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       // ponytail: pratinjau voucher di checkout. Hitungannya sama dengan yang dipakai saat pesanan dibuat, jadi angka di layar = angka yang ditagih.
       if (req.method === 'POST' && path === '/api/voucher') {
+        guard('voucher');
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         let body;
         try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
@@ -476,6 +502,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         return send(res, 200, { voucher: { code: picked.voucher.code, label: picked.voucher.label, discount: picked.discount, total: rows[0].price - picked.discount } });
       }
       if (req.method === 'POST' && path === '/api/checkout') {
+        guard('checkout');
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         let input;
         try { input = validateCheckout(await readJson(req)); } catch (err) { throw err.status ? err : error(400, err.message); }
@@ -506,7 +533,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         try {
           charge = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/charge`, {
             method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` },
-            body: JSON.stringify({ ...method(id, storeUrl), transaction_details: { order_id: id, gross_amount: amount } })
+            body: JSON.stringify({ ...method(id, storeUrl, env), transaction_details: { order_id: id, gross_amount: amount } })
           });
         } catch (err) {
           console.error('[checkout] charge gagal:', err?.upstreamStatus ? `HTTP ${err.upstreamStatus}` : '', err?.message || String(err));
@@ -523,6 +550,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       // ponytail: periksa nickname adalah layanan pemeriksaan per brand (ML memakai cek ML, FF memakai cek FF); hasil disimpan agar tidak membayar berulang.
       if (req.method === 'POST' && path === '/api/check-account') {
+        guard('checkAccount');
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         let body, input;
         try { body = await readJson(req); input = validateCheckout(body); } catch (err) { throw err.status ? err : error(400, err.message); }
@@ -555,7 +583,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       if (req.method === 'GET' && path === '/api/orders') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
-        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId" FROM orders WHERE owner_id = $1 ORDER BY created_at DESC, id DESC', [ownerId]);
+        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", created_at AS "createdAt" FROM orders WHERE owner_id = $1 ORDER BY created_at DESC, id DESC', [ownerId]);
         return send(res, 200, { orders: rows });
       }
       if (req.method === 'GET' && path.startsWith('/api/orders/')) {
@@ -567,13 +595,20 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         return send(res, 200, { order: await reconcilePending(pool, fetchImpl, env, rows[0]) });
       }
       if (req.method === 'POST' && path === '/api/webhooks/midtrans') {
-        if (!ready(env)) throw error(503, 'Webhook belum siap.');
         const notice = await readJson(req);
-        const legitimate = verifiedPayment(notice, env.MIDTRANS_SERVER_KEY) && idPattern.test(notice.order_id);
-        console.error('[webhook] midtrans:', String(notice?.order_id).slice(0, 80), String(notice?.transaction_status).slice(0, 40), legitimate ? 'sah' : 'TIDAK SAH');
-        if (!legitimate) throw error(401, 'Notifikasi tidak sah.');
-        if (!env.DIGIFLAZZ_USERNAME || !env.DIGIFLAZZ_API_KEY) throw error(503, 'Fulfillment belum siap.');
-        if (!await applyPaid(pool, fetchImpl, env, notice.order_id, Number(notice.gross_amount))) throw error(404, 'Pesanan atau jumlah pembayaran tidak cocok.');
+        const noticeStatus = String(notice?.transaction_status || '');
+        const sah = paymentSignature(notice, env.MIDTRANS_SERVER_KEY);
+        const idToko = idPattern.test(String(notice?.order_id || ''));
+        console.error('[webhook] midtrans:', String(notice?.order_id).slice(0, 80), noticeStatus.slice(0, 40), sah ? (idToko ? 'sah' : 'sah (id di luar toko)') : 'TIDAK SAH');
+        if (!sah) throw error(401, 'Notifikasi tidak sah.');
+        // ponytail: notifikasi sah selalu dijawab 200 supaya Midtrans berhenti mengulang kirim dan berhenti mengirim surel peringatan; id di luar pola pesanan toko cukup diabaikan tanpa menyentuh basis data.
+        if (['settlement', 'capture'].includes(noticeStatus)) {
+          if (!verifiedPayment(notice, env.MIDTRANS_SERVER_KEY) || !idToko) return send(res, 200, { received: true, applied: false });
+          if (!ready(env)) throw error(503, 'Webhook belum siap.');
+          if (!await applyPaid(pool, fetchImpl, env, notice.order_id, Number(notice.gross_amount))) return send(res, 200, { received: true, applied: false });
+        } else if (['expire', 'deny', 'cancel'].includes(noticeStatus) && idToko) {
+          await failPayment(pool, notice.order_id, Number(notice.gross_amount));
+        }
         return send(res, 200, { received: true });
       }
       if (req.method === 'POST' && /^\/api\/admin\/orders\/[^/]+\/check-digiflazz$/.test(path)) {
@@ -613,9 +648,18 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         }
         let notice;
         try { notice = JSON.parse(raw); } catch { throw error(400, 'JSON tidak valid.'); }
+        const event = String(req.headers['x-digiflazz-event'] || '').trim().toLowerCase();
+        if (event === 'ping') {
+          console.error('[webhook] digiflazz: ping diterima, konfigurasi webhook sudah benar');
+          return send(res, 200, { received: true });
+        }
         const data = notice?.data;
         const refId = String(data?.ref_id || '');
-        if (!idPattern.test(refId)) throw error(404, 'Pesanan tidak ditemukan.');
+        // ponytail: ref id di luar pola pesanan toko cukup dijawab 200 supaya Digiflazz tidak mengulang kirim.
+        if (!idPattern.test(refId)) {
+          console.error(`[webhook] digiflazz: notifikasi tanpa ref id pesanan diabaikan (event: ${event || 'tanpa header'})`);
+          return send(res, 200, { received: true, applied: false });
+        }
         const status = String(data?.status || '');
         if (status === 'Pending') {
           await pool.query("UPDATE orders SET updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending'", [refId]);
@@ -671,8 +715,24 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         notifyOrder(pool, fetchImpl, env, 'refunded', id);
         return send(res, 200, { refunded: true, manual });
       }
+      // ponytail: Penghapusan akun diajukan lewat surel supaya pemilik akun dapat diverifikasi manual sebelum data dihapus.
+      if (req.method === 'POST' && path === '/api/account/deletion-request') {
+        guard('deletion');
+        const ownerId = await authenticatedOwner(req, fetchImpl, env);
+        const to = String(env.SUPPORT_EMAIL || env.MAIL_FROM || '').trim();
+        if (!mailReady(env) || !to) throw error(503, 'Pengajuan penghapusan belum dapat diproses. Hubungi kontak dukungan.');
+        const { rows } = await pool.query('SELECT email FROM auth.users WHERE id = $1', [ownerId]);
+        const requestedAt = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+        const mail = await sendOrderEmail(fetchImpl, env, to, {
+          subject: `Pengajuan penghapusan akun ${String(ownerId).slice(0, 8)}`,
+          html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6"><p>Pengguna berikut mengajukan penghapusan akun:</p><ul><li>Email terdaftar: ${escapeHtml(rows[0]?.email || 'tidak diketahui')}</li><li>ID akun: ${escapeHtml(ownerId)}</li><li>Waktu pengajuan: ${escapeHtml(requestedAt)} WIB</li></ul><p>Hapus data akun paling lambat 14 hari kerja, lalu kirim konfirmasi ke email terdaftar. Riwayat transaksi tetap disimpan sesuai kewajiban pembukuan.</p></div>`,
+        });
+        if (!mail.ok) throw error(502, 'Pengajuan belum dapat dikirim. Coba lagi atau hubungi kontak dukungan.');
+        return send(res, 200, { requested: true });
+      }
       // ponytail: login nomor HP menukar nomor jadi sesi lewat metadata akun; email hanya keluar setelah kata sandi terbukti benar.
       if (req.method === 'POST' && path === '/api/auth/login') {
+        guard('login');
         let url;
         try { url = new URL(env.SUPABASE_URL); } catch { throw error(503, 'Autentikasi belum siap.'); }
         if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !env.SUPABASE_ANON_KEY) throw error(503, 'Autentikasi belum siap.');

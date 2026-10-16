@@ -20,7 +20,7 @@ const EVENTS = {
   },
   refunded: {
     subject: (order) => `Dana pesanan ${shortId(order.id)} sudah dikembalikan`,
-    lead: () => 'Dana pesanan sudah dikembalikan ke metode pembayaran awal. Waktu masuknya tergantung bank atau e-wallet, umumnya 1–3 hari kerja.',
+    lead: () => 'Dana pesanan sudah dikembalikan ke metode pembayaran awal. Waktu masuknya tergantung bank atau e-wallet, umumnya 1-3 hari kerja.',
   },
 };
 

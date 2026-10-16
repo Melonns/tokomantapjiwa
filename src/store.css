@@ -152,6 +152,7 @@
 .invoice-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:14px 20px;padding-bottom:22px;border-bottom:1px solid var(--line);margin-bottom:26px}
 .invoice-head h1{font-size:clamp(1.9rem,3vw,2.6rem);margin:8px 0 0}
 .invoice-code{color:var(--muted);font-size:.66em;letter-spacing:0}
+.invoice-meta{margin:6px 0 0;color:var(--muted);font-size:.88rem}
 .back-button{display:inline-flex;align-items:center;min-height:44px;color:var(--muted);font-size:.9rem;font-weight:700}
 .back-button:hover{color:var(--lime)}
 .invoice-banner{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 22px;border:1px solid #819d76;border-left-width:4px;border-radius:6px;background:#101b13;padding:clamp(18px,2.4vw,26px);margin-bottom:18px}
@@ -226,3 +227,4 @@
 .notice-warn{border-left:4px solid #d8b45c}.notice-warn strong{color:#e8c877}
 .refund-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}.refund-card{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:18px;display:grid;gap:12px}.refund-info{display:grid;gap:4px}.refund-info span{color:var(--muted);font-size:.88rem}.refund-info small{color:var(--muted);overflow-wrap:anywhere}.refund-actions{display:flex;flex-wrap:wrap;gap:10px}.refund-done{margin-top:26px}.refund-done h3{font-size:1.05rem;margin:0 0 12px}.refund-error{color:var(--danger)}.outage-on{border-color:#d8b45c;color:#e8c877}
 @media(max-width:640px){.refund-actions{flex-direction:column}.refund-actions .secondary-button{width:100%}.legal-page{padding-block:36px 60px}}
+.account-danger{margin-top:26px;padding-top:20px;border-top:1px solid var(--line);display:grid;gap:10px}.account-danger h2{font-size:1.05rem;margin:0}.account-danger p{margin:0;color:var(--muted);font-size:.88rem;line-height:1.6}.account-danger .secondary-button{justify-self:start;color:var(--danger);border-color:var(--danger)}.account-danger .secondary-button:hover:not(:disabled){background:#3a1a17}

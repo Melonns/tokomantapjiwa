@@ -90,6 +90,44 @@ test('sandbox payment cannot trigger live Digiflazz', async () => {
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('notifikasi kedaluwarsa menutup pesanan dan tetap dijawab 200', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let status = 'pending', calls = 0;
+  const pool = { async query(sql) {
+    if (sql.includes("status = 'payment_failed'")) { status = 'payment_failed'; return { rows: [{ voucher_code: null }] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: async () => { calls++; throw Error('api touched'); } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const notice = { order_id: id, status_code: '202', gross_amount: '25000.00', transaction_status: 'expire' };
+    notice.signature_key = createHash('sha512').update(id + notice.status_code + notice.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+    const res = await fetch('http://127.0.0.1:' + server.address().port + '/api/webhooks/midtrans', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notice) });
+    assert.equal(res.status, 200);
+    assert.equal(status, 'payment_failed');
+    assert.equal(calls, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('notifikasi lunas untuk pesanan tak dikenal dijawab 200 tanpa pengiriman', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const pool = { async query(sql) {
+    if (sql.includes('SET status = CASE')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: async () => { throw Error('api touched'); } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const notice = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
+    notice.signature_key = createHash('sha512').update(id + notice.status_code + notice.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+    const res = await fetch('http://127.0.0.1:' + server.address().port + '/api/webhooks/midtrans', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notice) });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).applied, false);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('invalid checkout returns useful 400 JSON without touching DB', async () => {
   let calls = 0;
   const server = createServer(createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
@@ -103,7 +141,7 @@ test('invalid checkout returns useful 400 JSON without touching DB', async () =>
 });
 
 test('checkout uses server price and returns the invoice payment contract', async () => {
-  let amount, inserts = 0, chargeUrl = '', stored;
+  let amount, inserts = 0, chargeUrl = '', stored, chargeBody;
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
     if (sql.startsWith('INSERT INTO orders')) { inserts++; assert.equal(params[3], 25000); return { rows: [] }; }
@@ -112,7 +150,8 @@ test('checkout uses server price and returns the invoice payment contract', asyn
   } };
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
     chargeUrl = url;
-    amount = JSON.parse(options.body).transaction_details.gross_amount;
+    chargeBody = JSON.parse(options.body);
+    amount = chargeBody.transaction_details.gross_amount;
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
   }) });
   const server = createServer(handler).listen(0, '127.0.0.1');
@@ -128,6 +167,7 @@ test('checkout uses server price and returns the invoice payment contract', asyn
     assert.equal(chargeUrl, 'https://api.sandbox.midtrans.com/v2/charge');
     assert.equal(inserts, 1);
     assert.equal(amount, 25000);
+    assert.equal(chargeBody.qris.acquirer, 'airpay shopee');
     assert.equal(stored[1], 'qris');
     assert.equal(stored[3].toISOString(), new Date('2026-10-15T12:35:07+07:00').toISOString());
   } finally { await new Promise(resolve => server.close(resolve)); }
@@ -941,5 +981,64 @@ test('receipt read leaves Digiflazz alone while the re-check throttle holds', as
     assert.equal((await response.json()).order.status, 'fulfillment_pending');
     assert.deepEqual(seen, []);
     assert.equal(queries, 2);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('login attempts are limited per IP and answer 429 with Retry-After', async () => {
+  const handler = createHandler({ pool: { query() { throw Error('db touched'); } }, env: { ...env, RATE_LIMIT_LOGIN_MAX: '2' }, fetchImpl: async () => { throw Error('unexpected external request'); } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/auth/login`;
+    const post = () => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '08123456789', password: 'rahasia' }) });
+    assert.notEqual((await post()).status, 429);
+    assert.notEqual((await post()).status, 429);
+    const blocked = await post();
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get('retry-after')) >= 1);
+    assert.match((await blocked.json()).error, /Terlalu banyak percobaan/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('rate limits can be switched off for controlled testing', async () => {
+  const handler = createHandler({ pool: { query() { throw Error('db touched'); } }, env: { ...env, RATE_LIMIT_LOGIN_MAX: '1', RATE_LIMIT_DISABLED: '1' }, fetchImpl: async () => { throw Error('unexpected external request'); } });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/auth/login`;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '08123456789', password: 'rahasia' }) });
+      assert.notEqual(response.status, 429);
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('account deletion request notifies support with the registered email', async () => {
+  const seen = [];
+  const pool = { async query(sql) { if (sql.includes('auth.users')) return { rows: [{ email: 'pembeli@contoh.id' }] }; throw Error('unexpected SQL: ' + sql); } };
+  const mailEnv = { ...env, SUPPORT_EMAIL: 'dukungan@melonbyte.biz.id', BREVO_API_KEY: 'xkeysib-uji', MAIL_FROM: 'noreply@melonbyte.biz.id' };
+  const fetchImpl = withAuth(async (url, options) => { seen.push({ url, body: JSON.parse(options.body) }); return { ok: true, status: 201 }; });
+  const server = createServer(createHandler({ pool, env: mailEnv, fetchImpl })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/account/deletion-request`, { method: 'POST', headers: authHeaders });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { requested: true });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, 'https://api.brevo.com/v3/smtp/email');
+    assert.equal(seen[0].body.to[0].email, 'dukungan@melonbyte.biz.id');
+    assert.match(seen[0].body.subject, /penghapusan akun/i);
+    assert.match(seen[0].body.htmlContent, /pembeli@contoh\.id/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('account deletion request fails clearly while the mailer is not ready', async () => {
+  const pool = { async query() { throw Error('db should not be touched'); } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/account/deletion-request`, { method: 'POST', headers: authHeaders });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /belum dapat diproses/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

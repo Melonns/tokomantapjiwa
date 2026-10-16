@@ -25,14 +25,20 @@ export function customerNo(format, input) {
   return input.userId + input.zoneId;
 }
 
-export function verifiedPayment(body, key) {
+// ponytail: tanda tangan SHA512 atas order_id + status_code + gross_amount + server key; berlaku untuk semua notifikasi Midtrans, termasuk yang bukan pelunasan.
+export function paymentSignature(body, key) {
   if (!key || !body || typeof body !== 'object' ||
-      ![body.order_id, body.status_code, body.gross_amount, body.signature_key, body.transaction_status].every(v => typeof v === 'string') ||
-      !/^[a-f0-9]{128}$/i.test(body.signature_key) || body.status_code !== '200' ||
-      !['settlement', 'capture'].includes(body.transaction_status) ||
-      (body.transaction_status === 'capture' && body.fraud_status !== 'accept') ||
-      (body.fraud_status && body.fraud_status !== 'accept') ||
-      !/^\d+\.00$/.test(body.gross_amount)) return false;
+      ![body.order_id, body.status_code, body.gross_amount, body.signature_key].every(v => typeof v === 'string') ||
+      !/^[a-f0-9]{128}$/i.test(body.signature_key)) return false;
   const actual = createHash('sha512').update(body.order_id + body.status_code + body.gross_amount + key).digest();
   return timingSafeEqual(actual, Buffer.from(body.signature_key, 'hex'));
+}
+
+// ponytail: hanya notifikasi lunas yang boleh memicu pengiriman barang.
+export function verifiedPayment(body, key) {
+  return paymentSignature(body, key) && body.status_code === '200' &&
+    typeof body.transaction_status === 'string' && ['settlement', 'capture'].includes(body.transaction_status) &&
+    (body.transaction_status !== 'capture' || body.fraud_status === 'accept') &&
+    (!body.fraud_status || body.fraud_status === 'accept') &&
+    /^\d+\.00$/.test(body.gross_amount);
 }
