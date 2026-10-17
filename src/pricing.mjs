@@ -8,21 +8,23 @@ export const VA_MIN_ORDER = 100000 // fee flat ini baru masuk akal di pesanan be
 export const VA_METHOD_IDS = ['bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill']
 
 // Band = [modal mulai dari, margin %, pembulatan ke atas]. Nama kategori mengikuti kolom category katalog supplier.
+// ponytail: pembulatan 100 dipakai di semua band. Pembulatan 500/1000 membuat harga melompat jauh di atas modal
+// (contoh Weekly Diamond Pass 2x modal 60.588 tersaran 65.000, padahal pasar menjual 64.600).
 const BANDS = {
-  Games: [[0, 10, 100], [10000, 8, 500], [50000, 6, 500], [250000, 4, 1000]],
-  Pulsa: [[0, 12, 100], [15000, 6, 500], [45000, 5, 500], [90000, 4, 1000]],
-  Data: [[0, 12, 100], [10000, 8, 500], [50000, 6, 1000]],
-  'E-Money': [[0, 2, 500], [100000, 1.5, 1000]],
-  PLN: [[0, 5, 500], [100000, 4, 1000]],
-  Gas: [[0, 5, 500], [100000, 4, 1000]],
-  TV: [[0, 8, 500], [50000, 6, 1000]],
-  Voucher: [[0, 8, 500], [50000, 6, 1000]],
-  'Aktivasi Voucher': [[0, 8, 500], [50000, 6, 1000]],
-  'Aktivasi Perdana': [[0, 8, 500], [50000, 6, 1000]],
-  'Paket SMS & Telpon': [[0, 8, 500], [50000, 6, 1000]],
-  'Masa Aktif': [[0, 8, 500], [50000, 6, 1000]],
+  Games: [[0, 10, 100], [10000, 7, 100], [50000, 5, 100], [250000, 4, 100]],
+  Pulsa: [[0, 12, 100], [15000, 6, 100], [45000, 5, 100], [90000, 4, 100]],
+  Data: [[0, 12, 100], [10000, 8, 100], [50000, 6, 100]],
+  'E-Money': [[0, 2, 100], [100000, 1.5, 100]],
+  PLN: [[0, 5, 100], [100000, 4, 100]],
+  Gas: [[0, 5, 100], [100000, 4, 100]],
+  TV: [[0, 8, 100], [50000, 6, 100]],
+  Voucher: [[0, 8, 100], [50000, 6, 100]],
+  'Aktivasi Voucher': [[0, 8, 100], [50000, 6, 100]],
+  'Aktivasi Perdana': [[0, 8, 100], [50000, 6, 100]],
+  'Paket SMS & Telpon': [[0, 8, 100], [50000, 6, 100]],
+  'Masa Aktif': [[0, 8, 100], [50000, 6, 100]],
 }
-const FALLBACK = [[0, 8, 100], [10000, 6, 500], [100000, 5, 1000]]
+const FALLBACK = [[0, 8, 100], [10000, 6, 100], [100000, 5, 100]]
 
 export function marginBand(category, cost) {
   const bands = BANDS[category] || FALLBACK

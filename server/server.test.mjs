@@ -173,6 +173,31 @@ test('checkout uses server price and returns the invoice payment contract', asyn
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('QRIS memakai acquirer cadangan saat kanal pertama menolak', async () => {
+  const acquirers = [];
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
+    throw Error('unexpected SQL');
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
+    assert.equal(url, 'https://api.sandbox.midtrans.com/v2/charge');
+    const body = JSON.parse(options.body);
+    acquirers.push(body.qris.acquirer);
+    if (acquirers.length === 1) return { ok: false, status: 406, json: async () => ({ status_message: 'Payment channel is not available' }) };
+    return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
+  }) });
+  const server = createServer(handler).listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 201);
+    assert.deepEqual(acquirers, ['airpay shopee', 'gopay']);
+    assert.deepEqual((await response.json()).paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('picked payment method charges that channel through Core API and unknown ones are rejected', async () => {
   let chargeBody = 'not-called';
   let stored = 'not-called';
@@ -497,11 +522,11 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     assert.equal(insert.params.length, 1 + 3 * 6);
     const cleanup = statements.find(statement => statement.sql.startsWith('DELETE FROM supplier_products'));
     assert.deepEqual(cleanup.params, [insert.params[0]]);
-    // ponytail: aturan harga berjalan sendiri pada setiap sinkron: ml10 (modal 28343) naik ke 31000, ff12 tetap 1800.
+    // ponytail: aturan harga berjalan sendiri pada setiap sinkron: ml10 (modal 28343) naik ke 30600, ff12 tetap 1800.
     assert.equal(body.autoPriced, 1);
-    assert.deepEqual(body.priceChanges, [{ sku: 'ml10', from: 20000, to: 31000 }]);
+    assert.deepEqual(body.priceChanges, [{ sku: 'ml10', from: 20000, to: 30600 }]);
     const repriced = statements.filter(statement => statement.sql.startsWith('UPDATE products SET price = $2'));
-    assert.deepEqual(repriced.map(statement => statement.params), [['ml10', 31000]]);
+    assert.deepEqual(repriced.map(statement => statement.params), [['ml10', 30600]]);
     const autoSelect = statements.find(statement => statement.sql.startsWith('SELECT p.id, p.price'));
     assert.match(autoSelect.sql, /WHERE p\.price_mode = 'auto'/);
   } finally { await new Promise(resolve => server.close(resolve)); }

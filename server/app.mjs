@@ -5,6 +5,7 @@ import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay }
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
 import { clientIp, createRateLimiter } from './ratelimit.mjs';
+import { refreshGameIcons } from './game-icons.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
 // ponytail: Format tujuan per brand. Brand di luar daftar ini hanya dapat disimpan sebagai draf harga
@@ -30,9 +31,17 @@ const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
 // ponytail: fee VA/Mandiri flat (Rp 4.000 + PPN) cuma masuk akal di pesanan besar - kanal ini ditolak di bawah ambang.
 const VA_MIN_ORDER = 100000;
 const VA_METHOD_IDS = new Set(['bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill']);
+// ponytail: QRIS dapat dibuat lewat beberapa acquirer. Urutannya diambil dari MIDTRANS_QRIS_ACQUIRERS (dipisah koma);
+// nama lama MIDTRANS_QRIS_ACQUIRER tetap dihormati. Bila kanal pertama sedang gangguan, kanal berikutnya dicoba
+// memakai order_id yang sama, dan Midtrans menolak order_id ganda sehingga tidak mungkin ada tagihan dobel.
+const qrisAcquirers = (env) => {
+  const daftar = String(env.MIDTRANS_QRIS_ACQUIRERS || env.MIDTRANS_QRIS_ACQUIRER || 'airpay shopee,gopay')
+    .split(',').map((item) => item.trim()).filter(Boolean);
+  const unik = [...new Set(daftar)];
+  return unik.length ? unik : ['airpay shopee'];
+};
 const PAYMENT_METHODS = {
-  // ponytail: acquirer QRIS dipatok ke ShopeePay karena jalur GoPay gagal diproses di simulator sandbox untuk merchant ini (uji 15 Oktober 2026); dapat diganti lewat MIDTRANS_QRIS_ACQUIRER bila Midtrans mengaktifkan acquirer lain.
-  qris: (id, storeUrl, env) => ({ payment_type: 'qris', qris: { acquirer: env.MIDTRANS_QRIS_ACQUIRER || 'airpay shopee' } }),
+  qris: (id, storeUrl, env) => ({ payment_type: 'qris', qris: { acquirer: qrisAcquirers(env)[0] } }),
   bca_va: () => ({ payment_type: 'bank_transfer', bank: 'bca' }),
   bni_va: () => ({ payment_type: 'bank_transfer', bank: 'bni' }),
   bri_va: () => ({ payment_type: 'bank_transfer', bank: 'bri' }),
@@ -422,6 +431,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const repriced = await repriceAutoProducts(pool);
         return send(res, 200, { synced: items.length, catalogFetchedAt: syncedAt.toISOString(), autoPriced: repriced.length, priceChanges: repriced.slice(0, 5) });
       }
+      // ponytail: ikon game diambil ulang dari App Store agar tidak ketinggalan saat ada kolaborasi atau ulang tahun.
+      if (req.method === 'POST' && path === '/api/admin/game-icons/refresh') {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const icons = await refreshGameIcons({ fetchImpl, folders: ['public/logo/game', 'dist/logo/game'] });
+        return send(res, 200, { ok: icons.every((item) => item.ok), icons });
+      }
       if (req.method === 'PUT' && path.startsWith('/api/admin/products/')) {
         const sku = path.slice('/api/admin/products/'.length);
         await authenticatedAdmin(req, pool, fetchImpl, env);
@@ -538,14 +553,33 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const storeUrl = (env.STORE_URL || req.headers.origin || 'http://localhost:5173').replace(/\/+$/, '');
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas (4xx) menutup pesanan;
         // kegagalan ambigu (5xx/timeout) dibiarkan pending untuk rekonsiliasi dan order_id tidak pernah digunakan ulang.
+
         let charge;
-        try {
-          charge = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/charge`, {
-            method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` },
-            body: JSON.stringify({ ...method(id, storeUrl, env), transaction_details: { order_id: id, gross_amount: amount } })
-          });
-        } catch (err) {
-          console.error('[checkout] charge gagal:', err?.upstreamStatus ? `HTTP ${err.upstreamStatus}` : '', err?.message || String(err));
+        let chargeError;
+        const kandidat = methodId === 'qris'
+          ? qrisAcquirers(env).map((acquirer) => ({ payment_type: 'qris', qris: { acquirer } }))
+          : [method(id, storeUrl, env)];
+        // ponytail: coba kanal berurutan dan berhenti pada kanal pertama yang berhasil. order_id tidak berubah,
+        // jadi percobaan ulang tidak dapat membuat tagihan dobel. Kegagalan ambigu (tanpa status atau 5xx) dibiarkan
+        // untuk rekonsiliasi, sedangkan 406 berarti kanal tersebut memang tidak tersedia.
+        for (const [urutan, kanal] of kandidat.entries()) {
+          try {
+            charge = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/charge`, {
+              method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` },
+              body: JSON.stringify({ ...kanal, transaction_details: { order_id: id, gross_amount: amount } })
+            });
+            if (urutan > 0) console.warn('[checkout] QRIS dialihkan ke acquirer', kanal.qris.acquirer);
+            break;
+          } catch (err) {
+            chargeError = err;
+            const status = Number(err?.upstreamStatus);
+            const layakUlang = urutan < kandidat.length - 1 && (!status || status >= 500 || status === 406);
+            console.error('[checkout] charge gagal:', kanal?.qris?.acquirer ? `acquirer ${kanal.qris.acquirer}` : '', status ? `HTTP ${status}` : '', err?.message || String(err));
+            if (!layakUlang) break;
+          }
+        }
+        if (!charge) {
+          const err = chargeError;
           if (Number(err?.upstreamStatus) >= 400 && Number(err?.upstreamStatus) < 500) await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
           if (picked) await releaseVoucher(pool, id);
           throw error(502, 'Pembayaran belum dapat dibuat. Coba lagi atau pilih metode lain.');

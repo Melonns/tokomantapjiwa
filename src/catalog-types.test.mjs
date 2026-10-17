@@ -19,7 +19,7 @@ test('katalog memakai tipe dari kategori supplier, bukan tab statis', () => {
 test('tab, grid brand, dan empty state mengikuti tipe aktif', () => {
   assert.match(source, /\{typeTabs\.map\(\(type\) => <button key=\{type\.id\} type="button" className=\{activeType\.id === type\.id \? 'active' : ''\}/)
   assert.match(source, /const activeBrands = \[\.\.\.new Set\(products\.filter\(\(item\) => catalogTypeOf\(item\)\.id === activeType\.id\)\.map\(\(item\) => item\.game\)\.filter\(Boolean\)\)\]/)
-  assert.match(source, /\{activeBrands\.map\(\(item\) => <button key=\{item\} type="button" className="game-card"/)
+  assert.match(source, /\{activeBrands\.map\(\(item\) => \{ const logo = brandLogo\(item\); return <button key=\{item\} type="button" className="game-card poster"/)
   assert.match(source, /<strong>\{activeType\.label\} belum tersedia\.<\/strong>/)
 })
 

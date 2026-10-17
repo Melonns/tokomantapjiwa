@@ -5,12 +5,14 @@ import { availablePaymentMethods, marginBand, priceHealth, QRIS_FEE_PCT, suggest
 test('saran harga mengikuti modal + biaya QRIS dan dibulatkan ke atas', () => {
   // Angka nyata dari katalog supplier: 10% di nominal kecil, turun di nominal besar.
   assert.equal(suggestPrice(1605, 'Games'), 1800);
-  assert.equal(suggestPrice(28343, 'Games'), 31000);
-  assert.equal(suggestPrice(60135, 'Games'), 64500);
+  assert.equal(suggestPrice(28343, 'Games'), 30600);
+  assert.equal(suggestPrice(60135, 'Games'), 63600);
+  // Contoh nyata dari pemilik toko: Weekly Diamond Pass 2x modal 60.588, pasar menjual 64.600.
+  assert.equal(suggestPrice(60588, 'Games'), 64100);
   assert.equal(suggestPrice(10175, 'Pulsa'), 11500);
-  assert.equal(suggestPrice(19830, 'Pulsa'), 21500);
-  assert.equal(suggestPrice(50270, 'E-Money'), 52000);
-  assert.equal(suggestPrice(21400, 'PLN'), 23000);
+  assert.equal(suggestPrice(19830, 'Pulsa'), 21200);
+  assert.equal(suggestPrice(50270, 'E-Money'), 51700);
+  assert.equal(suggestPrice(21400, 'PLN'), 22700);
   // Nominal receh tetap dapat harga bulat.
   assert.equal(suggestPrice(5, 'Games'), 100);
   assert.equal(suggestPrice(1605, 'Games', 20), 2000);
@@ -22,9 +24,11 @@ test('saran harga mengikuti modal + biaya QRIS dan dibulatkan ke atas', () => {
 
 test('margin turun saat modal naik, kategori tak dikenal dapat default', () => {
   const games = [100, 20000, 100000, 300000].map((cost) => marginBand('Games', cost).pct);
-  assert.deepEqual(games, [10, 8, 6, 4]);
+  assert.deepEqual(games, [10, 7, 5, 4]);
+  // Pembulatan harus halus supaya harga tidak melompat jauh di atas modal.
+  assert.deepEqual([100, 20000, 100000, 300000].map((cost) => marginBand('Games', cost).grid), [100, 100, 100, 100]);
   const pulsa = [10175, 19830, 48785, 98685].map((cost) => suggestPrice(cost, 'Pulsa'));
-  assert.deepEqual(pulsa, [11500, 21500, 52000, 104000]);
+  assert.deepEqual(pulsa, [11500, 21200, 51600, 103400]);
   assert.equal(marginBand('Kategori Baru', 5000).pct, 8);
   assert.equal(marginBand('E-Money', 200000).pct, 1.5);
 });

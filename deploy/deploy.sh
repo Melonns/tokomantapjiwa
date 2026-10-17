@@ -13,13 +13,19 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3001/api/health}"
 
 cd "$APP_DIR"
 
+if [ ! -f "$APP_DIR/.env" ]; then
+  echo "Berkas $APP_DIR/.env belum ada. Salin dari .env.example lalu isi nilainya." >&2
+  exit 1
+fi
+
 echo "==> Menarik kode terbaru dari cabang $BRANCH"
 git fetch --prune origin
 git checkout "$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
+# --include=dev dipakai agar vite tetap terpasang meski NODE_ENV=production ada di lingkungan VPS.
 echo "==> Memasang dependensi"
-npm ci --no-audit --no-fund
+npm ci --include=dev --no-audit --no-fund
 
 if [ "${SKIP_TESTS:-0}" != "1" ]; then
   echo "==> Menjalankan tes"

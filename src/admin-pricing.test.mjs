@@ -26,7 +26,12 @@ test('admin pricing view: search, filters, card grid, semua produk tampil', () =
   assert.doesNotMatch(source, /Tampilkan lebih banyak/);
   assert.doesNotMatch(source, /pricingVisible/);
   assert.doesNotMatch(source, /catalogShown/);
-  assert.match(source, /brand\.items\.map\(/);
+  assert.match(source, /brand\.kinds\.map\(/);
+  assert.match(source, /kind\.items\.map\(/);
+  assert.match(source, /className="price-kind"/);
+  assert.match(source, /className="price-kind-head"/);
+  assert.match(source, /groupByKind\(items\)/);
+  assert.match(css, /\.price-kind-head\{/);
   assert.match(source, /catalogShowUnsupported/);
 });
 

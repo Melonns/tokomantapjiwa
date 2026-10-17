@@ -90,3 +90,10 @@ test('form profil tidak melar mengikuti tinggi kolom kanan', () => {
   assert.match(css, /\.profile-col \.profile-form\{flex:0 1 auto;align-content:start\}/)
   assert.equal(css.includes('align-content:space-between'), false)
 })
+
+test('kartu harga membungkus baris aksi supaya tombol tidak keluar dari kotak', () => {
+  assert.match(css, /\.price-actions\{flex-wrap:wrap;justify-content:flex-start;min-width:0\}/)
+  assert.match(css, /\.price-actions input\[type=number\]\{flex:1 1 140px;min-width:0;/)
+  assert.equal(css.includes('.price-actions{flex-wrap:nowrap'), false)
+  assert.match(css, /\.price-warning\{[^}]*overflow-wrap:anywhere\}/)
+})
