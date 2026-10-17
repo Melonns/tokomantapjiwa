@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Deploy Melonbyte: tarik kode terbaru, pasang dependensi, jalankan tes, build, lalu mulai ulang API.
-# Jalankan di VPS sebagai pengguna aplikasi:
+# Jalankan di VPS sebagai pengguna layanan (di panduan ini: melon):
 #   bash /srv/melonbyte/deploy/deploy.sh
 # Lewati tes bila perlu (tidak disarankan): SKIP_TESTS=1 bash deploy/deploy.sh
+# Skrip ini tidak terikat satu proyek: APP_DIR, BRANCH, SERVICE, dan HEALTH_URL dapat ditimpa lewat variabel lingkungan.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/srv/melonbyte}"

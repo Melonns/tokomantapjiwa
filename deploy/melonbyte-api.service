@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=melonbyte
-Group=melonbyte
+User=melon
+Group=melon
 WorkingDirectory=/srv/melonbyte
 EnvironmentFile=/srv/melonbyte/.env
 ExecStart=/usr/bin/node server/index.mjs
