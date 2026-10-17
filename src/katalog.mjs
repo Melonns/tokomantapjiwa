@@ -19,6 +19,25 @@ export function productKind(name) {
   return 'Lainnya'
 }
 
+// Nama kartu nominal dipangkas dari nama brand karena brand sudah tertulis di atas kartu.
+export function namaSingkat(item) {
+  const nama = String(item?.name || '').replace(/\s+/g, ' ').trim()
+  const game = String(item?.game || '').replace(/\s+/g, ' ').trim()
+  if (!nama || !game) return nama
+  const buang = (potong) => nama.slice(potong).replace(/^[\s:|-]+/, '').trim()
+  const kecil = (teks) => teks.toLowerCase()
+  if (kecil(nama).startsWith(kecil(game))) {
+    const sisa = buang(game.length)
+    if (sisa) return sisa
+  }
+  const kata = game.split(' ')[0]
+  if (game.split(' ').length === 1 && kecil(nama).startsWith(kecil(kata))) {
+    const sisa = buang(kata.length)
+    if (sisa) return sisa
+  }
+  return nama
+}
+
 // Kelompokkan daftar produk satu brand; brand yang jenisnya cuma satu tidak perlu dipecah.
 export function groupByKind(items) {
   const peta = new Map()

@@ -331,7 +331,7 @@ function notifyOrder(pool, fetchImpl, env, event, orderId) {
   if (!mailReady(env)) return;
   void (async () => {
     try {
-      const { rows } = await pool.query(`SELECT o.id, o.status, o.product_name AS "productName", o.price, o.discount, o.voucher_code AS "voucherCode", o.user_id AS "userId", o.zone_id AS "zoneId", o.fulfillment_sn AS "sn", o.refund_note AS "refundNote", (SELECT email FROM auth.users WHERE id = o.owner_id) AS email FROM orders o WHERE o.id = $1`, [orderId]);
+      const { rows } = await pool.query(`SELECT o.id, o.status, o.product_name AS "productName", o.price, o.discount, o.voucher_code AS "voucherCode", o.user_id AS "userId", o.zone_id AS "zoneId", o.fulfillment_sn AS "sn", o.refund_note AS "refundNote", COALESCE(o.contact_email, (SELECT email FROM auth.users WHERE id = o.owner_id)) AS email FROM orders o WHERE o.id = $1`, [orderId]);
       const order = rows[0];
       const message = order?.email ? orderEmail(event, order, env) : null;
       if (!message) return;
@@ -398,7 +398,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       if (req.method === 'GET' && path === '/api/admin/orders') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
-        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId", created_at AS "createdAt" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
+        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId", created_at AS "createdAt", contact_phone AS "contactPhone", COALESCE(contact_email, (SELECT email FROM auth.users WHERE id = orders.owner_id)) AS "contactEmail" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
         return send(res, 200, { orders: rows });
       }
       if (req.method === 'GET' && path === '/api/admin/supplier-products') {
@@ -548,7 +548,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const id = randomUUID();
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
-        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null]);
+        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null]);
         if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) throw error(400, 'Kuota voucher baru saja habis. Coba kembali tanpa voucher.');
         const storeUrl = (env.STORE_URL || req.headers.origin || 'http://localhost:5173').replace(/\/+$/, '');
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas (4xx) menutup pesanan;
@@ -624,6 +624,13 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
         return send(res, 200, { check: { nickname: result.nickname, region: result.region, cached: false, checkedAt: new Date().toISOString() } });
       }
+      if (req.method === 'GET' && path === '/api/ratings') {
+        const game = (new URL(req.url, 'http://localhost').searchParams.get('game') || '').trim();
+        if (!game) throw error(400, 'Nama layanan wajib diisi.');
+        const { rows } = await pool.query("SELECT count(*)::int AS count, avg(r.score)::float AS average FROM order_ratings r JOIN orders o ON o.id = r.order_id JOIN products p ON p.id = o.product_id WHERE p.game = $1 AND o.status = 'fulfilled'", [game]);
+        const average = rows[0]?.average ? Math.round(Number(rows[0].average) * 10) / 10 : null;
+        return send(res, 200, { rating: { count: Number(rows[0]?.count || 0), average } });
+      }
       if (req.method === 'GET' && path === '/api/orders') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", created_at AS "createdAt" FROM orders WHERE owner_id = $1 ORDER BY created_at DESC, id DESC', [ownerId]);
@@ -633,9 +640,24 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         const id = path.slice('/api/orders/'.length);
         if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
-        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", fulfillment_note AS "fulfillmentNote", refund_note AS "refundNote", refunded_at AS "refundedAt", ${PAYMENT_DETAIL_COLUMNS} FROM orders WHERE owner_id = $1 AND id = $2`, [ownerId, id]);
+        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", fulfillment_note AS "fulfillmentNote", refund_note AS "refundNote", refunded_at AS "refundedAt", ${PAYMENT_DETAIL_COLUMNS}, (SELECT score FROM order_ratings WHERE order_id = orders.id) AS "ratingScore", (SELECT note FROM order_ratings WHERE order_id = orders.id) AS "ratingNote" FROM orders WHERE owner_id = $1 AND id = $2`, [ownerId, id]);
         if (!rows[0]) throw error(404, 'Pesanan tidak ditemukan.');
         return send(res, 200, { order: await reconcilePending(pool, fetchImpl, env, rows[0]) });
+      }
+      if (req.method === 'POST' && /^\/api\/orders\/[^/]+\/rating$/.test(path)) {
+        const ownerId = await authenticatedOwner(req, fetchImpl, env);
+        const id = path.split('/')[3];
+        if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
+        const body = await readJson(req);
+        const score = Number(body?.score);
+        if (!Number.isInteger(score) || score < 1 || score > 5) throw error(400, 'Pilih nilai 1 sampai 5 bintang.');
+        const note = String(body?.note || '').trim();
+        if (note.length > 500) throw error(400, 'Catatan penilaian maksimal 500 karakter.');
+        const { rows } = await pool.query('SELECT status FROM orders WHERE owner_id = $1 AND id = $2', [ownerId, id]);
+        if (!rows[0]) throw error(404, 'Pesanan tidak ditemukan.');
+        if (rows[0].status !== 'fulfilled') throw error(409, 'Penilaian bisa dikirim setelah pesanan selesai.');
+        await pool.query('INSERT INTO order_ratings (order_id, owner_id, score, note) VALUES ($1, $2, $3, $4) ON CONFLICT (order_id) DO UPDATE SET score = EXCLUDED.score, note = EXCLUDED.note, updated_at = now()', [id, ownerId, score, note || null]);
+        return send(res, 200, { rating: { score, note: note || null } });
       }
       if (req.method === 'POST' && path === '/api/webhooks/midtrans') {
         const notice = await readJson(req);

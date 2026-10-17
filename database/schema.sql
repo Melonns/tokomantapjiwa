@@ -16,6 +16,8 @@
 --   ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_sn text;
 --   ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_note text;
 --   ALTER TABLE orders ADD COLUMN IF NOT EXISTS refunded_at timestamptz;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_email text;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_phone text;
 --   ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_note text;
 --   ALTER TABLE orders DROP CONSTRAINT orders_status_check;
 --   ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded'));
@@ -58,6 +60,9 @@ CREATE TABLE IF NOT EXISTS orders (
   customer_no text NOT NULL CHECK (length(customer_no) BETWEEN 1 AND 128),
   user_id text NOT NULL CHECK (user_id ~ '^[A-Za-z0-9 ._#-]{1,64}$'),
   zone_id text NOT NULL CHECK (zone_id ~ '^[A-Za-z0-9_-]{0,64}$'),
+  -- ponytail: kontak pesanan diisi pembeli di halaman checkout; boleh beda dari email akun.
+  contact_email text CHECK (contact_email IS NULL OR length(contact_email) BETWEEN 3 AND 120),
+  contact_phone text CHECK (contact_phone IS NULL OR length(contact_phone) BETWEEN 8 AND 20),
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded')),
   redirect_url text,
   payment_channel text,
@@ -78,6 +83,19 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
+
+
+-- Penilaian pembeli setelah pesanan selesai. Satu pesanan hanya punya satu penilaian,
+-- dan hanya pesanan berstatus fulfilled yang boleh dinilai.
+CREATE TABLE IF NOT EXISTS order_ratings (
+  order_id uuid PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+  owner_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  score smallint NOT NULL CHECK (score BETWEEN 1 AND 5),
+  note text CHECK (note IS NULL OR length(note) <= 500),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS order_ratings_owner_idx ON order_ratings (owner_id);
 
 
 -- Voucher grand opening. Kuota, masa berlaku, dan batas per akun dijaga di server; browser hanya menampilkan hasilnya.

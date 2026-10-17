@@ -6,6 +6,12 @@ import { validateCheckout, verifiedPayment, customerNo } from './core.mjs';
 import { createHandler, digiRequest } from './app.mjs';
 import { checkGames } from './check.mjs';
 
+// Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
+// (misalnya 6000 atau 6665-6669) sehingga tes gagal tanpa sebab yang jelas.
+// Setiap tes memakai port tetap di rentang aman dan berbeda.
+let portUji = 34100;
+const portAman = () => { portUji += 1; return portUji; };
+
 const env = { MIDTRANS_SERVER_KEY: 'sandbox-secret', DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', MIDTRANS_ENV: 'sandbox', DIGIFLAZZ_TESTING: 'true', CHECKOUT_ENABLED: 'true', DATABASE_URL: 'test', SUPABASE_URL: 'https://sample.supabase.co', SUPABASE_ANON_KEY: 'public-key' };
 const ownerId = '22222222-2222-4222-8222-222222222222';
 const authHeaders = { authorization: 'Bearer buyer-token' };
@@ -54,7 +60,7 @@ test('Digiflazz request uses development testing flag and stable ref_id', () => 
 test('checkout stays disabled without explicit operator flag', async () => {
   let calls = 0;
   const handler = createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, fetchImpl: withAuth(() => { calls++; throw Error('external touched'); }), env: { ...env, CHECKOUT_ENABLED: 'false' } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '123', zoneId: '100' }) });
@@ -66,7 +72,7 @@ test('checkout stays disabled without explicit operator flag', async () => {
 test('forged notification never touches database or Digi', async () => {
   let called = 0;
   const handler = createHandler({ pool: { query() { called++; throw Error('db touched'); } }, fetchImpl() { called++; throw Error('digi touched'); }, env });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order_id: '1', transaction_status: 'settlement', signature_key: 'forged' }) });
@@ -81,7 +87,7 @@ test('sandbox payment cannot trigger live Digiflazz', async () => {
   n.signature_key = createHash('sha512').update(id + n.status_code + n.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
   let called = 0;
   const handler = createHandler({ pool: { query() { called++; throw Error('db touched'); } }, fetchImpl() { called++; throw Error('api touched'); }, env: { ...env, DIGIFLAZZ_TESTING: 'false' } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const res = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(n) });
@@ -98,7 +104,7 @@ test('notifikasi kedaluwarsa menutup pesanan dan tetap dijawab 200', async () =>
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env, fetchImpl: async () => { calls++; throw Error('api touched'); } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const notice = { order_id: id, status_code: '202', gross_amount: '25000.00', transaction_status: 'expire' };
@@ -117,7 +123,7 @@ test('notifikasi lunas untuk pesanan tak dikenal dijawab 200 tanpa pengiriman', 
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env, fetchImpl: async () => { throw Error('api touched'); } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const notice = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
@@ -130,7 +136,7 @@ test('notifikasi lunas untuk pesanan tak dikenal dijawab 200 tanpa pengiriman', 
 
 test('invalid checkout returns useful 400 JSON without touching DB', async () => {
   let calls = 0;
-  const server = createServer(createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'x', userId: {}, zoneId: '1' }) });
@@ -154,7 +160,7 @@ test('checkout uses server price and returns the invoice payment contract', asyn
     amount = chargeBody.transaction_details.gross_amount;
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
   }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', price: 1 }) });
@@ -188,7 +194,7 @@ test('QRIS memakai acquirer cadangan saat kanal pertama menolak', async () => {
     if (acquirers.length === 1) return { ok: false, status: 406, json: async () => ({ status_message: 'Payment channel is not available' }) };
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
   }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
@@ -213,7 +219,7 @@ test('picked payment method charges that channel through Core API and unknown on
     if (chargeBody.payment_type === 'gopay') return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/gopay/x/qr-code' }, { name: 'deeplink-redirect', url: 'gojek://gopay/merchanttransfer?tref=x' }] }) };
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-16 12:15:57', va_numbers: [{ bank: 'bca', va_number: '8830038369608185' }] }) };
   }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -256,7 +262,7 @@ test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak'
     charged.push(JSON.parse(options.body).transaction_details.gross_amount);
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
   }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -294,7 +300,7 @@ test('VA checkout is refused below the flat-fee minimum', async () => {
     throw Error('unexpected SQL');
   } };
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => { charged = true; return { ok: true, status: 200, json: async () => ({}) } }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bca_va' }) });
@@ -313,7 +319,7 @@ test('a rejected charge closes the pending order instead of leaving it dangling'
     throw Error('unexpected SQL');
   } };
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => { const err = Error('Payment channel is not activated'); err.upstreamStatus = 402; throw err; }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bca_va' }) });
@@ -333,7 +339,7 @@ test('plain format checkout sends the user id alone as customer number', async (
     throw Error('unexpected SQL');
   } };
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => ({ ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) })) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ff12', userId: '12345' }) });
@@ -350,7 +356,7 @@ test('public products and owned order expose only frontend contract fields', asy
     if (sql.startsWith('SELECT id, status, product_name')) { assert.match(sql, /WHERE owner_id = \$1 AND id = \$2/); return { rows: [{ id, status: 'pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] }; }
     throw Error('unexpected SQL');
   } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -375,7 +381,7 @@ test('pending Digi response stays pending and duplicate webhook never retries', 
     throw Error(`unexpected SQL: ${sql}`);
   } };
   const handler = createHandler({ pool, env, fetchImpl: async () => { calls++; return { ok: true, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Pending', rc: '03' } }) }; } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const notice = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
@@ -402,7 +408,7 @@ test('duplicate paid notification claims exactly one Digi request', async () => 
     throw Error(`unexpected SQL: ${sql}`);
   } };
   const handler = createHandler({ pool, env, fetchImpl: async () => { calls++; return { ok: true, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '12345678', status: 'Sukses', rc: '00' } }) }; } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const notification = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
@@ -429,7 +435,7 @@ const supplierFetch = (catalog, onCall) => withAuth(async url => {
 test('empty public catalog never exposes supplier costs', async () => {
   let supplierCalls = 0;
   const pool = { async query(sql) { if (sql.startsWith('SELECT p.id, p.name, p.game')) { assert.match(sql, /LEFT JOIN supplier_products/); return { rows: [] }; } throw Error('unexpected SQL: ' + sql); } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { supplierCalls++; throw Error('supplier touched: ' + url); }) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { supplierCalls++; throw Error('supplier touched: ' + url); }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const body = await (await fetch(`http://127.0.0.1:${server.address().port}/api/products`)).json();
@@ -444,7 +450,7 @@ test('sinkron katalog yang dibatasi Digiflazz memakai pesan tunggu, bukan error 
   const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => {
     if (url === 'https://api.digiflazz.com/v1/price-list') return { ok: true, json: async () => ({ data: { rc: '83', message: 'limitasi pengecekan pricelist' } }) };
     throw Error('unexpected external request: ' + url);
-  }) })).listen(0, '127.0.0.1');
+  }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/supplier-products/sync`, { method: 'POST', headers: authHeaders });
@@ -469,7 +475,7 @@ test('supplier costs stay behind the admin role and the panel reads them from th
     if (sql.startsWith('SELECT id, name, game, price, enabled')) return { rows: [{ id: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', price: 22000, enabled: true, price_mode: 'manual' }, { id: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', price: 5000, enabled: true, price_mode: 'auto' }] };
     throw Error('unexpected SQL: ' + sql);
   } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -507,7 +513,7 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     if (sql.startsWith('UPDATE products SET price = $2')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/supplier-products/sync`, { method: 'POST', headers: authHeaders });
@@ -546,7 +552,7 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
     if (sql.startsWith('UPDATE products')) return { rows: [{ id: params[0], name: 'Produk lama', game: 'MOBILE LEGENDS', price: params[1], enabled: false, price_mode: params[2] }] };
     throw Error('unexpected SQL: ' + sql);
   } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: supplierFetch(supplierFixtures, () => supplierCalls++) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -593,7 +599,7 @@ test('produk menandai dukungan pemeriksaan per brand dan status pemeriksaan meng
     { id: 'ax10', name: 'AXIS 10.000', game: 'AXIS', price: 10000, format: 'plain', category: 'Pulsa' },
   ];
   const pool = { async query(sql) { if (sql.startsWith('SELECT p.id, p.name, p.game')) return { rows }; throw Error('unexpected SQL: ' + sql); } };
-  const open = (serverEnv) => createServer(createHandler({ pool, env: serverEnv, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  const open = (serverEnv) => createServer(createHandler({ pool, env: serverEnv, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(portAman(), '127.0.0.1');
   const first = open(env);
   try {
     await new Promise(resolve => first.once('listening', resolve));
@@ -626,7 +632,7 @@ test('pemeriksaan nickname memakai layanan sesuai brand produk, menyimpan hasil,
     provider = { url, options };
     return { ok: true, status: 200, json: async () => ({ error: false, code: 200, message: 'Success', data: { product: { name: 'Mobile Legends', code: 'MLBB' }, account: { region: 'ID', nickname: 'Purbaya Sadewa. RI' } } }) };
   }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
@@ -657,7 +663,7 @@ test('hasil tersimpan yang masih segar menjawab tanpa provider dan tanpa tulis u
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => { providerCalls++; return { ok: true, json: async () => ({}) }; }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
@@ -682,7 +688,7 @@ test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa
     bodies.push(JSON.parse(options.body));
     return { ok: true, status: 200, json: async () => ({ data: { account: { region: 'ID', nickname: 'FreeFire Player' } } }) };
   }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ff12', userId: '456', force: true }) });
@@ -702,7 +708,7 @@ test('kuota harian habis ditolak sebelum provider dipanggil', async () => {
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => { providerCalls++; return { ok: true, json: async () => ({}) }; }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
@@ -725,7 +731,7 @@ test('ID tidak ketemu dan provider mati tidak disimpan', async () => {
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => mode === 'missing'
     ? { ok: true, status: 200, json: async () => ({ error: true, code: 404, message: 'Account not found', data: null }) }
     : { ok: false, status: 500, json: async () => ({}) }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const url = `http://127.0.0.1:${server.address().port}/api/check-account`;
@@ -744,7 +750,7 @@ test('ID tidak ketemu dan provider mati tidak disimpan', async () => {
 test('brand tanpa layanan pemeriksaan ditolak dengan pesan jelas (422)', async () => {
   const pool = { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ax10', game: 'AXIS', customer_format: 'plain' }] }; throw Error('unexpected SQL: ' + sql); } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ax10', userId: '0812345' }) });
@@ -754,14 +760,14 @@ test('brand tanpa layanan pemeriksaan ditolak dengan pesan jelas (422)', async (
 });
 
 test('pemeriksaan nickname menolak tanpa sesi terverifikasi dan saat provider belum diset', async () => {
-  const unauthorized = createServer(createHandler({ pool: { query() { throw Error('db touched'); } }, env: checkEnv, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) })).listen(0, '127.0.0.1');
+  const unauthorized = createServer(createHandler({ pool: { query() { throw Error('db touched'); } }, env: checkEnv, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => unauthorized.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${unauthorized.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
     assert.equal(response.status, 401);
   } finally { await new Promise(resolve => unauthorized.close(resolve)); }
   let fetchCalls = 0;
-  const inactive = createServer(createHandler({ pool: { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] }; throw Error('unexpected SQL: ' + sql); } }, env, fetchImpl: withAuth(async () => { fetchCalls++; return { ok: true, json: async () => ({}) }; }) })).listen(0, '127.0.0.1');
+  const inactive = createServer(createHandler({ pool: { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] }; throw Error('unexpected SQL: ' + sql); } }, env, fetchImpl: withAuth(async () => { fetchCalls++; return { ok: true, json: async () => ({}) }; }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => inactive.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${inactive.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
@@ -784,7 +790,7 @@ test('brand baru (Genshin/Honkai uid_server dan Valorant riot) bisa diaktifkan',
     if (sql.startsWith('INSERT INTO products')) { inserts.push(params); return { rows: [{ id: params[0], name: params[1], game: params[2], price: params[3], enabled: params[4] }] }; }
     throw Error('unexpected SQL: ' + sql);
   } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { throw Error('unexpected external request: ' + url); }) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { throw Error('unexpected external request: ' + url); }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -807,7 +813,7 @@ test('panel katalog mengirim semua baris supplier aktif tanpa dipotong', async (
     if (sql.startsWith('SELECT id, name, game, price, enabled')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { throw Error('unexpected external request: ' + url); }) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { throw Error('unexpected external request: ' + url); }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/supplier-products`, { headers: authHeaders });
@@ -828,7 +834,7 @@ test('login nomor HP menukar nomor jadi sesi tanpa membocorkan email', async () 
   const server = createServer(createHandler({ pool, env, fetchImpl: async (url, options) => {
     tokenCall = { url, options };
     return { ok: true, status: 200, json: async () => ({ access_token: 'access-fixture', refresh_token: 'refresh-fixture', user: { id: ownerId } }) };
-  } })).listen(0, '127.0.0.1');
+  } })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6281234567890', password: 'rahasia6' }) });
@@ -845,7 +851,7 @@ test('login nomor HP menukar nomor jadi sesi tanpa membocorkan email', async () 
 test('login nomor HP dengan kata sandi salah atau nomor tak dikenal selalu 401 tanpa bocoran', async () => {
   let external = 0;
   const pool = { async query() { return { rows: [{ email: 'aku@contoh.com' }] }; } };
-  const wrong = createServer(createHandler({ pool, env, fetchImpl: async () => { external++; return { ok: false, status: 400, json: async () => ({ error_code: 'invalid_credentials', error_description: 'Invalid login credentials' }) }; } })).listen(0, '127.0.0.1');
+  const wrong = createServer(createHandler({ pool, env, fetchImpl: async () => { external++; return { ok: false, status: 400, json: async () => ({ error_code: 'invalid_credentials', error_description: 'Invalid login credentials' }) }; } })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => wrong.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${wrong.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6281234567890', password: 'salah-sekali' }) });
@@ -855,7 +861,7 @@ test('login nomor HP dengan kata sandi salah atau nomor tak dikenal selalu 401 t
     assert.equal('email' in body, false);
     assert.equal(external, 1);
   } finally { await new Promise(resolve => wrong.close(resolve)); }
-  const unknown = createServer(createHandler({ pool: { async query() { return { rows: [] }; } }, env, fetchImpl: async () => { external++; throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  const unknown = createServer(createHandler({ pool: { async query() { return { rows: [] }; } }, env, fetchImpl: async () => { external++; throw Error('external touched'); } })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => unknown.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${unknown.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6289999999999', password: 'rahasia6' }) });
@@ -866,7 +872,7 @@ test('login nomor HP dengan kata sandi salah atau nomor tak dikenal selalu 401 t
 
 test('email belum dikonfirmasi saat login nomor HP dijawab dengan kode konfirmasi', async () => {
   const pool = { async query() { return { rows: [{ email: 'aku@contoh.com' }] }; } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error_code: 'email_not_confirmed', msg: 'Email not confirmed' }) }) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error_code: 'email_not_confirmed', msg: 'Email not confirmed' }) }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: '+6281234567890', password: 'rahasia6' }) });
@@ -877,7 +883,7 @@ test('email belum dikonfirmasi saat login nomor HP dijawab dengan kode konfirmas
 
 test('login nomor HP menolak input tidak valid tanpa menyentuh database', async () => {
   let touched = 0;
-  const server = createServer(createHandler({ pool: { query() { touched++; throw Error('db touched'); } }, env, fetchImpl: async () => { touched++; throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool: { query() { touched++; throw Error('db touched'); } }, env, fetchImpl: async () => { touched++; throw Error('external touched'); } })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     for (const body of [{ phone: '0812', password: 'rahasia6' }, { phone: '+6281234567890' }, { phone: '+6281234567890', password: '' }]) {
@@ -905,7 +911,7 @@ test('receipt read pulls Midtrans status when the webhook never arrived', async 
     if (url === 'https://api.digiflazz.com/v1/transaction') return { ok: true, status: 200, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Sukses', rc: '00' } }) };
     throw Error('unexpected external request: ' + url);
   });
-  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
@@ -928,7 +934,7 @@ test('receipt read never flips an order on pending and closes expired ones', asy
     if (url.endsWith('/status')) return { ok: true, status: 200, json: async () => ({ order_id: id, transaction_status: midtransStatus, gross_amount: '25000.00' }) };
     throw Error('unexpected external request: ' + url);
   });
-  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const url = `http://127.0.0.1:${server.address().port}/api/orders/${id}`;
@@ -955,7 +961,7 @@ test('receipt read re-drives a paid order whose fulfillment never ran', async ()
     if (url === 'https://api.digiflazz.com/v1/transaction') return { ok: true, status: 200, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Sukses', rc: '00' } }) };
     throw Error('unexpected external request: ' + url);
   });
-  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
@@ -979,7 +985,7 @@ test('receipt read re-checks Digiflazz while a fulfillment is still pending', as
     if (url === 'https://api.digiflazz.com/v1/transaction') return { ok: true, status: 200, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Sukses', rc: '00' } }) };
     throw Error('unexpected external request: ' + url);
   });
-  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
@@ -999,7 +1005,7 @@ test('receipt read leaves Digiflazz alone while the re-check throttle holds', as
   } };
   const seen = [];
   const fetchImpl = withAuth(async url => { seen.push(url); throw Error('unexpected external request: ' + url); });
-  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders/${id}`, { headers: authHeaders });
@@ -1011,7 +1017,7 @@ test('receipt read leaves Digiflazz alone while the re-check throttle holds', as
 
 test('login attempts are limited per IP and answer 429 with Retry-After', async () => {
   const handler = createHandler({ pool: { query() { throw Error('db touched'); } }, env: { ...env, RATE_LIMIT_LOGIN_MAX: '2' }, fetchImpl: async () => { throw Error('unexpected external request'); } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const url = `http://127.0.0.1:${server.address().port}/api/auth/login`;
@@ -1027,7 +1033,7 @@ test('login attempts are limited per IP and answer 429 with Retry-After', async 
 
 test('rate limits can be switched off for controlled testing', async () => {
   const handler = createHandler({ pool: { query() { throw Error('db touched'); } }, env: { ...env, RATE_LIMIT_LOGIN_MAX: '1', RATE_LIMIT_DISABLED: '1' }, fetchImpl: async () => { throw Error('unexpected external request'); } });
-  const server = createServer(handler).listen(0, '127.0.0.1');
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const url = `http://127.0.0.1:${server.address().port}/api/auth/login`;
@@ -1043,7 +1049,7 @@ test('account deletion request notifies support with the registered email', asyn
   const pool = { async query(sql) { if (sql.includes('auth.users')) return { rows: [{ email: 'pembeli@contoh.id' }] }; throw Error('unexpected SQL: ' + sql); } };
   const mailEnv = { ...env, SUPPORT_EMAIL: 'dukungan@melonbyte.biz.id', BREVO_API_KEY: 'xkeysib-uji', MAIL_FROM: 'noreply@melonbyte.biz.id' };
   const fetchImpl = withAuth(async (url, options) => { seen.push({ url, body: JSON.parse(options.body) }); return { ok: true, status: 201 }; });
-  const server = createServer(createHandler({ pool, env: mailEnv, fetchImpl })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env: mailEnv, fetchImpl })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/account/deletion-request`, { method: 'POST', headers: authHeaders });
@@ -1059,7 +1065,7 @@ test('account deletion request notifies support with the registered email', asyn
 
 test('account deletion request fails clearly while the mailer is not ready', async () => {
   const pool = { async query() { throw Error('db should not be touched'); } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('unexpected external request'); }) })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('unexpected external request'); }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/account/deletion-request`, { method: 'POST', headers: authHeaders });
@@ -1070,7 +1076,7 @@ test('account deletion request fails clearly while the mailer is not ready', asy
 
 test('health endpoint reports database availability', async () => {
   const pool = { async query(sql) { assert.match(sql, /select 1/i); return { rows: [{ ok: 1 }] }; } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: () => { throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: () => { throw Error('external touched'); } })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health`);
@@ -1085,11 +1091,44 @@ test('health endpoint reports database availability', async () => {
 
 test('health endpoint answers 503 while the database is unreachable', async () => {
   const pool = { async query() { throw Error('connection refused'); } };
-  const server = createServer(createHandler({ pool, env, fetchImpl: () => { throw Error('external touched'); } })).listen(0, '127.0.0.1');
+  const server = createServer(createHandler({ pool, env, fetchImpl: () => { throw Error('external touched'); } })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health`);
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { ok: false, db: 'error' });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('penilaian hanya diterima untuk pesanan selesai dan dirangkum per layanan', async () => {
+  const orderId = '33333333-3333-4333-8333-333333333333';
+  let status = 'fulfilled';
+  let simpan = null;
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT status FROM orders WHERE owner_id')) return { rows: [{ status }] };
+    if (sql.startsWith('INSERT INTO order_ratings')) { simpan = params; return { rows: [] } };
+    if (sql.startsWith('SELECT count(*)::int AS count, avg(r.score)')) return { rows: [{ count: 3, average: 4.666 }] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('unexpected external request'); }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const kirim = (body) => fetch(`${base}/api/orders/${orderId}/rating`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify(body) });
+    assert.equal((await kirim({ score: 6 })).status, 400);
+    assert.equal((await kirim({ score: 0 })).status, 400);
+    assert.equal((await kirim({ score: 'lima' })).status, 400);
+    status = 'pending';
+    assert.equal((await kirim({ score: 5 })).status, 409);
+    status = 'fulfilled';
+    assert.equal((await kirim({ score: 5, note: 'x'.repeat(501) })).status, 400);
+    const ok = await kirim({ score: 5, note: '  Pelayanan cepat  ' });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(simpan, [orderId, ownerId, 5, 'Pelayanan cepat']);
+    const ringkas = await fetch(`${base}/api/ratings?game=${encodeURIComponent('MOBILE LEGENDS')}`);
+    assert.equal(ringkas.status, 200);
+    assert.deepEqual((await ringkas.json()).rating, { count: 3, average: 4.7 });
+    assert.equal((await fetch(`${base}/api/ratings`)).status, 400);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

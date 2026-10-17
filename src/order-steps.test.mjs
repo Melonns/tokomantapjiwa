@@ -25,25 +25,26 @@ test('kotak nominal memuat kartu produk dan menandai pilihan aktif', () => {
   assert.match(source, /Belum ada item produk yang dipilih\./);
 });
 
-test('jumlah pembelian memakai stepper terbatas dan ringkasan menagih satu item', () => {
-  assert.match(source, /const MAX_ITEM_QTY = 10/);
-  assert.match(source, /function changeQuantity\(delta\)/);
-  assert.match(source, /function setQuantityValue\(raw\)/);
+test('kotak jumlah menampilkan satu item terkunci, bukan stepper', () => {
+  // ponytail: jumlah dikunci 1 supaya pembeli tahu yang dibeli satu item, tanpa kontrol palsu.
+  assert.equal(source.includes('qty-stepper'), false, 'stepper jumlah sudah tidak ada');
+  assert.equal(source.includes('MAX_ITEM_QTY'), false, 'batas jumlah sudah tidak ada');
+  assert.match(source, /<h3>Jumlah pembelian<\/h3><span className="step-tag">Terkunci<\/span>/);
+  assert.match(source, /<p className="qty-fixed" aria-label="Jumlah pembelian 1 item"><strong>1<\/strong><span>item<\/span><\/p>/);
+  assert.match(source, /Satu pesanan berisi satu item\. Untuk jumlah lebih banyak, buat pesanan terpisah\./);
+  assert.match(css, /\.qty-fixed\{[^}]*border-radius:var\(--r-pill\)/);
   assert.match(source, /<span>Jumlah<\/span><strong>1 item<\/strong>/);
   assert.match(source, /<span>Total<\/span><strong>\{rupiah\(selected\.price - voucherCut\(\)\)\}<\/strong>/);
   assert.match(source, /id="voucher-code"/);
   assert.match(source, /Potongan \{voucher\.code\}/);
-  assert.match(source, /Pembelian banyak item belum aktif, sehingga satu pesanan berisi satu item\./);
   // ponytail: pembeli harus tahu total di checkout sama dengan harga di rak - lawan trik 'murah di depan, biaya di belakang'.
   assert.match(source, /Sudah termasuk biaya pembayaran, tidak ada tambahan di langkah berikutnya\./);
-  assert.match(source, /aria-label="Kurangi jumlah"/);
-  assert.match(source, /aria-label="Tambah jumlah"/);
 });
 
 test('metode pembayaran yang dipilih ikut terkirim ke checkout, kode promo aktif', () => {
   assert.match(source, /const PAYMENT_METHODS = \[/);
   assert.match(source, /role="radiogroup" aria-label="Metode pembayaran"/);
-  assert.match(source, /zoneId: zoneId\.trim\(\), paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code \}/);
+  assert.match(source, /zoneId: zoneId\.trim\(\) \}\)/);
   assert.match(source, /QR atau nomor Virtual Account tampil di halaman invoice setelah pesanan dibuat/);
   assert.match(source, /const VA_BANKS = \{ bca: 'BCA', bni: 'BNI', bri: 'BRI', permata: 'Permata' \}/);
   for (const id of ['qris', 'bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill', 'gopay', 'shopeepay']) {
@@ -68,15 +69,16 @@ test('pesanan dibuat melalui modal konfirmasi, bukan langsung dari formulir', ()
   assert.equal(source.includes('snap/v1/transactions'), false);
 });
 
-test('detail kontak terisi otomatis untuk member dan bisa diisi tamu', () => {
-  assert.match(source, /value=\{session\.user\.email \|\| ''\} readOnly/);
-  assert.match(source, /session\.user\.phone \|\| session\.user\.user_metadata\?\.requested_phone/);
-  assert.match(source, /Transaksi tamu \(email dan nomor HP\) belum aktif/);
+test('detail kontak bisa diisi dan diubah, terisi otomatis untuk member', () => {
+  assert.match(source, /<input value=\{contactEmail\} onChange=\{\(event\) => setContactEmail\(event\.target\.value\)\} type="email"/);
+  assert.match(source, /<input value=\{contactPhone\} onChange=\{\(event\) => setContactPhone\(event\.target\.value\)\} type="tel"/);
+  assert.match(source, /setContactEmail\(\(current\) => current \|\| profilEmail\)/);
+  assert.match(source, /Terisi dari profil Anda\. Bisa diubah untuk pesanan ini tanpa mengubah data akun\./);
 });
 
 test('halaman beli mendukung format uid_server (pilih server) dan riot (Riot ID)', () => {
   assert.match(source, /const uidServerOptions = \[/);
-  assert.match(source, /<label>Server <select value=\{zoneId\}/);
+  assert.match(source, /<PilihanServer nilai=\{zoneId\} onPilih=\{setZoneId\} \/>/);
   assert.match(source, /orderFormat === 'uid_server'/);
   assert.match(source, /orderFormat === 'riot'/);
   assert.match(source, /Nama#1234/);
@@ -100,7 +102,7 @@ test('kanal VA disembunyikan di pesanan kecil dan dipaksa aman saat checkout', (
   assert.match(source, /function activePaymentMethod\(price\)/);
   assert.match(source, /availablePaymentMethods\(PAYMENT_METHODS, selected \? selected\.price - voucherCut\(\) : 0\)\.map\(\(method, index, options\)/);
   assert.match(source, /Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai \{rupiah\(VA_MIN_ORDER\)\}/);
-  assert.match(source, /paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code \}/);
+  assert.match(source, /paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code, contactEmail: contactEmail\.trim\(\)/);
   assert.match(css, /\.pay-note\{color:var\(--muted\)/);
 });
 test('struk menampilkan harga asli, potongan, dan total yang ditagih', () => {
