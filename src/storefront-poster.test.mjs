@@ -29,7 +29,12 @@ test('kartu poster punya proporsi tegak dan efek hover', () => {
 })
 
 test('poster menyesuaikan layar kecil dan menghormati gerak minimal', () => {
-  assert.match(css, /@media\(max-width:620px\)\{\.poster-grid\{grid-template-columns:repeat\(auto-fill,minmax\(140px,1fr\)\)/)
-  assert.match(css, /@media\(max-width:370px\)\{\.poster-grid\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}\}/)
+  assert.match(css, /@media\(max-width:620px\)\{\.poster-grid\{grid-template-columns:repeat\(auto-fill,minmax\(140px,1fr\)/)
+  assert.match(css, /@media\(max-width:460px\)\{\.poster-grid\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}\}/)
+  assert.match(css, /\.poster-text strong\{font-size:\.85rem\}\r?\n\.poster-hint\{display:inline-flex\}/)
   assert.match(css, /@media\(prefers-reduced-motion:reduce\)\{[^}]*\.poster-hint/)
+})
+
+test('skip navigation moves keyboard focus to main content', () => {
+  assert.match(app, /<main id="main" tabIndex=\{-1\}>/)
 })

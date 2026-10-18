@@ -19,6 +19,9 @@
 --   ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_email text;
 --   ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_phone text;
 --   ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_note text;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at timestamptz;
+--   ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_environment text;
+--   CREATE INDEX IF NOT EXISTS orders_environment_paid_at_idx ON orders (payment_environment, paid_at) WHERE paid_at IS NOT NULL;
 --   ALTER TABLE orders DROP CONSTRAINT orders_status_check;
 --   ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('pending', 'payment_failed', 'payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded'));
 --   ALTER TABLE orders DROP CONSTRAINT orders_claimed_check;
@@ -74,6 +77,8 @@ CREATE TABLE IF NOT EXISTS orders (
   fulfillment_sn text,
   fulfillment_note text,
   refunded_at timestamptz,
+  paid_at timestamptz,
+  payment_environment text CHECK (payment_environment IS NULL OR payment_environment IN ('sandbox', 'production')),
   refund_note text,
   digiflazz_claimed_at timestamptz,
   digi_checked_at timestamptz,
@@ -83,6 +88,7 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
+CREATE INDEX IF NOT EXISTS orders_environment_paid_at_idx ON orders (payment_environment, paid_at) WHERE paid_at IS NOT NULL;
 
 
 -- Penilaian pembeli setelah pesanan selesai. Satu pesanan hanya punya satu penilaian,

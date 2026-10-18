@@ -220,7 +220,7 @@ async function releaseVoucher(pool, orderId) {
 }
 
 async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
-  const paid = await pool.query(`UPDATE orders SET status = CASE WHEN status = 'pending' THEN 'payment_paid' ELSE status END, updated_at = now()
+  const paid = await pool.query(`UPDATE orders SET status = CASE WHEN status = 'pending' THEN 'payment_paid' ELSE status END, paid_at = COALESCE(paid_at, now()), updated_at = now()
     WHERE id = $1 AND price = $2 AND status NOT IN ('payment_failed') RETURNING id, price`, [orderId, grossAmount]);
   if (!paid.rows[0]) return false;
   await claimAndFulfill(pool, fetchImpl, env, orderId);
@@ -396,6 +396,36 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const { rows } = await pool.query('SELECT user_id FROM admin_users WHERE user_id = $1', [ownerId]);
         return send(res, 200, { role: rows[0] ? 'admin' : 'buyer' });
       }
+      if (req.method === 'GET' && path === '/api/admin/sales') {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const requestedDays = Number(new URL(req.url, 'http://localhost').searchParams.get('days'));
+        const days = requestedDays === 7 ? 7 : 30;
+        const { rows } = await pool.query(`WITH days AS (
+          SELECT generate_series((now() AT TIME ZONE 'Asia/Jakarta')::date - ($1::int - 1), (now() AT TIME ZONE 'Asia/Jakarta')::date, interval '1 day')::date AS day
+        ), movements AS (
+          SELECT (paid_at AT TIME ZONE 'Asia/Jakarta')::date AS day, SUM(price)::bigint AS paid, 0::bigint AS refunded, COUNT(*)::int AS paid_count, 0::int AS refund_count
+          FROM orders
+          WHERE payment_environment = $2 AND paid_at >= (((now() AT TIME ZONE 'Asia/Jakarta')::date - ($1::int - 1))::timestamp AT TIME ZONE 'Asia/Jakarta')
+            AND paid_at < (((now() AT TIME ZONE 'Asia/Jakarta')::date + 1)::timestamp AT TIME ZONE 'Asia/Jakarta')
+            AND status IN ('payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded')
+          GROUP BY 1
+          UNION ALL
+          SELECT (refunded_at AT TIME ZONE 'Asia/Jakarta')::date AS day, 0::bigint AS paid, SUM(price)::bigint AS refunded, 0::int AS paid_count, COUNT(*)::int AS refund_count
+          FROM orders
+          WHERE status = 'refunded' AND payment_environment = $2 AND refunded_at >= (((now() AT TIME ZONE 'Asia/Jakarta')::date - ($1::int - 1))::timestamp AT TIME ZONE 'Asia/Jakarta')
+            AND refunded_at < (((now() AT TIME ZONE 'Asia/Jakarta')::date + 1)::timestamp AT TIME ZONE 'Asia/Jakarta')
+          GROUP BY 1
+        ), daily AS (
+          SELECT days.day, COALESCE(SUM(movements.paid), 0)::bigint AS paid, COALESCE(SUM(movements.refunded), 0)::bigint AS refunded, COALESCE(SUM(movements.paid_count), 0)::int AS paid_count, COALESCE(SUM(movements.refund_count), 0)::int AS refund_count
+          FROM days LEFT JOIN movements USING (day) GROUP BY days.day
+        ), current_orders AS (
+          SELECT COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_payments, COUNT(*) FILTER (WHERE status IN ('payment_paid', 'fulfillment_pending', 'fulfillment_failed', 'manual_review'))::int AS pending_fulfillment FROM orders WHERE payment_environment = $2
+        )
+        SELECT to_char(daily.day, 'YYYY-MM-DD') AS date, daily.paid, daily.refunded, daily.paid_count AS "paidCount", daily.refund_count AS "refundCount", current_orders.pending_payments AS "pendingPayments", current_orders.pending_fulfillment AS "pendingFulfillment"
+        FROM daily CROSS JOIN current_orders ORDER BY daily.day`, [days, env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox']);
+        const daily = rows.map(row => ({ date: row.date, paid: Number(row.paid), refunded: Number(row.refunded), paidCount: Number(row.paidCount), refundCount: Number(row.refundCount) }));
+        return send(res, 200, { days, environment: env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox', daily, pendingPayments: Number(rows[0]?.pendingPayments || 0), pendingFulfillment: Number(rows[0]?.pendingFulfillment || 0) });
+      }
       if (req.method === 'GET' && path === '/api/admin/orders') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId", created_at AS "createdAt", contact_phone AS "contactPhone", COALESCE(contact_email, (SELECT email FROM auth.users WHERE id = orders.owner_id)) AS "contactEmail" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
@@ -548,7 +578,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const id = randomUUID();
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
-        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null]);
+        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone, payment_environment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null, env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox']);
         if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) throw error(400, 'Kuota voucher baru saja habis. Coba kembali tanpa voucher.');
         const storeUrl = (env.STORE_URL || req.headers.origin || 'http://localhost:5173').replace(/\/+$/, '');
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas (4xx) menutup pesanan;

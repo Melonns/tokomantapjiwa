@@ -28,7 +28,7 @@ test('kontak ikut dikirim dan disimpan di pesanan', () => {
   assert.match(app, /contactEmail: contactEmail\.trim\(\), contactPhone: contactPhone\.trim\(\)/)
   assert.match(core, /contactEmail !== undefined && \(typeof contactEmail !== 'string'/)
   assert.match(core, /if \(contactEmail\) input\.contactEmail = contactEmail\.trim\(\)/)
-  assert.match(server, /INSERT INTO orders \([^)]*contact_email, contact_phone\)/)
+  assert.match(server, /INSERT INTO orders \([^)]*contact_email, contact_phone, payment_environment\)/)
   assert.match(server, /COALESCE\(o\.contact_email, \(SELECT email FROM auth\.users/)
   assert.match(schema, /contact_email text CHECK \(contact_email IS NULL OR length\(contact_email\) BETWEEN 3 AND 120\)/)
   assert.match(schema, /contact_phone text CHECK \(contact_phone IS NULL OR length\(contact_phone\) BETWEEN 8 AND 20\)/)

@@ -33,8 +33,19 @@ test('catalog search suggests entries in a dropdown and opens the game page', ()
 });
 ;
 
+test('admin summary is a routed page with a real-data range control and honest environment label', () => {
+  assert.match(source, /if \(hash === '#admin\/ringkasan'\) return \{ view: 'admin', adminPage: 'summary'/);
+  assert.match(source, /if \(hash === '#admin' \|\| hash === '#admin\/produk'\) return \{ view: 'admin'/);
+  assert.match(source, /href="#admin\/ringkasan"/);
+  assert.match(source, /request\(`\/api\/admin\/sales\?days=\$\{adminSalesDays\}`/);
+  assert.match(source, /Lingkungan sandbox\. Angka di bawah bukan penjualan nyata\./);
+  assert.match(source, /Belum ada data pembayaran terverifikasi pada periode ini\./);
+  assert.match(source, /adminSalesDays === 7/);
+  assert.match(source, /adminSalesDays === 30/);
+});
+
 test('admin pages are separate from personal profile and gated by server-verified role', () => {
-  assert.match(source, /hash === '#admin' \|\| hash === '#admin\/produk'/);
+  assert.match(source, /if \(hash === '#admin\/ringkasan'\) return \{ view: 'admin', adminPage: 'summary'/);
   assert.match(source, /const canManage = Boolean\(session && roleState === 'ready' && role === 'admin' && roleToken === session\.access_token\)/);
   assert.match(source, /canManage && <a href="#admin"/);
   assert.match(source, /aria-label="Navigasi admin"/);

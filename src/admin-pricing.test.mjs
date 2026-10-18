@@ -57,6 +57,8 @@ test('admin pricing groups per kategori dan game dengan sakelar, tanpa tombol te
   assert.match(source, /className="switch price-category-switch"/);
   assert.match(source, /className="switch price-brand-switch"/);
   assert.match(css, /\.price-group>\.price-category-switch,\.price-brand>\.price-brand-switch\{position:absolute/);
+  assert.match(css, /\.price-cat-head:hover,\.price-brand-head:hover\{background:#203224;border-radius:var\(--r-tile\)\}/);
+  assert.match(css, /\.price-category\[open\]>\.price-cat-head:hover\{border-radius:var\(--r-card\) var\(--r-card\) 0 0\}/);
   assert.doesNotMatch(source, /<summary[^>]*>[^]*?<label className="switch"[^]*?<\/summary>/);
   assert.doesNotMatch(source, /price-group-button/);
   assert.doesNotMatch(source, /Sembunyikan semua/);
