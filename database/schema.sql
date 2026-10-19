@@ -183,3 +183,5 @@ ALTER TABLE voucher_redemptions ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON vouchers, voucher_redemptions FROM anon, authenticated;
 ALTER TABLE refund_events ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON refund_events FROM anon, authenticated;
+ALTER TABLE order_ratings ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON order_ratings FROM anon, authenticated;

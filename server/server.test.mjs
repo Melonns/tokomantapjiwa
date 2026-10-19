@@ -1087,6 +1087,35 @@ test('rate limits can be switched off for controlled testing', async () => {
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('global limit protects ordinary routes while webhooks use a separate bucket', async () => {
+  const handler = createHandler({
+    pool: { async query() { return { rows: [] }; } },
+    env: { ...env, RATE_LIMIT_GLOBAL_MAX: '2', RATE_LIMIT_WEBHOOK_MAX: '1' },
+    fetchImpl: async () => { throw Error('unexpected external request'); },
+  });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    assert.equal((await fetch(`${base}/api/health`)).status, 200);
+    assert.equal((await fetch(`${base}/api/health`)).status, 200);
+    const blocked = await fetch(`${base}/api/health`);
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get('retry-after')) >= 1);
+
+    const webhook = () => fetch(`${base}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.notEqual((await webhook()).status, 429);
+    assert.equal((await webhook()).status, 429);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('production refuses to start with rate limiting disabled', () => {
+  assert.throws(
+    () => createHandler({ pool: {}, env: { ...env, NODE_ENV: 'production', STORE_URL: 'https://melonbyte.biz.id', RATE_LIMIT_DISABLED: '1' } }),
+    /RATE_LIMIT_DISABLED/,
+  );
+});
+
 test('account deletion request notifies support with the registered email', async () => {
   const seen = [];
   const pool = { async query(sql) { if (sql.includes('auth.users')) return { rows: [{ email: 'pembeli@contoh.id' }] }; throw Error('unexpected SQL: ' + sql); } };

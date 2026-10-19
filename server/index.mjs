@@ -16,8 +16,17 @@ console.log(ca ? '[db] memakai sertifikat akar lokal prod-ca-2021.crt' : '[db] m
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: ca ? { ca, rejectUnauthorized: true } : { rejectUnauthorized: true }, max: 10 });
 const port = Number(process.env.PORT || 3001);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('PORT tidak valid.');
+// ponytail: API hanya mendengarkan loopback; Caddy adalah satu-satunya pintu masuk publik.
+// HOST tetap dapat diubah untuk pengujian lokal, tetapi produksi memakai 127.0.0.1.
+const host = process.env.HOST || '127.0.0.1';
 const server = createServer(createHandler({ pool }));
-server.listen(port, () => console.log(`Melonbyte API listening on ${port}`));
+server.requestTimeout = 20000;
+server.headersTimeout = 10000;
+server.keepAliveTimeout = 5000;
+server.timeout = 30000;
+server.maxHeadersCount = 50;
+server.maxRequestsPerSocket = 1000;
+server.listen(port, host, () => console.log(`Melonbyte API listening on ${host}:${port}`));
 // ponytail: Jaring pengaman rekonsiliasi. Webhook tetap jalur utama; sapuan ini hanya memproses pesanan yang belum tuntas
 // agar notifikasi yang hilang tidak menggantung. Matikan dengan RECONCILE_INTERVAL_MINUTES=0.
 const reconcileMinutes = Number(process.env.RECONCILE_INTERVAL_MINUTES ?? 10);
@@ -38,4 +47,19 @@ if (Number.isFinite(reconcileMinutes) && reconcileMinutes > 0) {
   setInterval(reconcileSweep, reconcileMinutes * 60 * 1000).unref();
   console.log(`[reconcile] jaring pengaman aktif setiap ${reconcileMinutes} menit`);
 }
-process.on('SIGTERM', () => server.close(() => pool.end()));
+
+// Tutup koneksi dengan rapi, tetapi jangan biarkan systemd menunggu selamanya.
+let stopping = false;
+function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  server.close(() => {
+    Promise.resolve(pool.end()).finally(() => process.exit(0));
+  });
+  setTimeout(() => {
+    server.closeAllConnections?.();
+    process.exit(1);
+  }, 10000).unref();
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

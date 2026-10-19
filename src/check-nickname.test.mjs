@@ -25,7 +25,7 @@ test('hasil pemeriksaan menampilkan nama, asal data, dan tombol periksa ulang', 
 
 test('kegagalan pemeriksaan ditampilkan apa adanya dan tidak mengunci checkout', () => {
   assert.match(source, /setCheckError\(error\.message\)/)
-  assert.match(source, /Fitur periksa nickname belum aktif di server ini\./)
+  assert.match(source, /Periksa nickname belum tersedia saat ini\./);
   assert.match(source, /Isi User ID dan Zone ID berupa angka terlebih dahulu\./)
 })
 

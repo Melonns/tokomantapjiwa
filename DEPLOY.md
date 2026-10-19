@@ -179,7 +179,15 @@ dig +short melonbyte.biz.id
 curl -I https://melonbyte.biz.id
 ```
 
-Bila `www` diaktifkan, buka komentar blok `www.melonbyte.biz.id` di `/etc/caddy/Caddyfile` lalu `sudo systemctl reload caddy`.
+Bila `www` diaktifkan, blok `www.melonbyte.biz.id` sudah tersedia di Caddyfile; arahkan DNS `www` ke domain utama atau IP VPS, lalu `sudo systemctl reload caddy`.
+
+Bila memakai Cloudflare:
+
+- Proxy hanya untuk record web (`A`/`CNAME`); record `MX`, `TXT`, dan DKIM harus **DNS only**.
+- SSL/TLS: **Full (strict)**, Always Use HTTPS, Minimum TLS 1.2.
+- Jangan aktifkan Bot Fight Mode atau Under Attack Mode secara permanen karena dapat memblokir webhook.
+- Caddyfile sudah memuat `trusted_proxies` Cloudflare. UFW hanya membuka 80/443 dari daftar IP Cloudflare; perbarui daftar itu bila Cloudflare mengubah range.
+- Setelah aktif, `curl -I https://melonbyte.biz.id` harus memuat `server: cloudflare` dan `cf-ray`.
 
 ## 8. Uji setelah domain aktif
 
@@ -262,6 +270,12 @@ sudo systemctl restart melonbyte-api
 - `.env` bermode `600` dan tidak pernah masuk Git.
 - Bila ada kunci yang pernah tampil di luar server (tangkapan layar, obrolan, atau repositori), ganti kuncinya di penyedia masing-masing lalu perbarui `.env` dan mulai ulang layanan.
 - Aktifkan 2FA pada akun GitHub, Midtrans, Digiflazz, Supabase, dan Brevo.
+- Pembatas percobaan aktif untuk seluruh API, login, checkout, cek akun, voucher, dan webhook. `RATE_LIMIT_DISABLED=1` ditolak saat `NODE_ENV=production`.
+- Caddy membatasi ukuran header, ukuran badan permintaan, dan waktu baca/tulis; folder `.env`, `.git`, serta jalur pemindai umum dijawab 404.
+- UFW memakai `limit` untuk SSH; fail2ban mengelola dua jail: `sshd` dan `caddy-ratelimit` (429 berulang).
+- Layanan API berjalan sebagai `melon`, hanya mendengarkan `127.0.0.1:3001`, dan memakai pengerasan systemd (`systemd-analyze security melonbyte-api`).
+- Semua tabel publik mengaktifkan RLS dan mencabut akses `anon`/`authenticated`; API memakai koneksi server, bukan kunci publik browser.
+- `npm audit --omit=dev` harus tetap bersih sebelum deploy.
 
 ## Lampiran: Catatan khusus Oracle Cloud (Always Free)
 

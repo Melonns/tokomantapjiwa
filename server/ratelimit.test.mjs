@@ -31,3 +31,9 @@ test('clientIp membaca cf-connecting-ip, lalu x-forwarded-for, lalu socket', () 
   assert.equal(clientIp({ headers: {}, socket: { remoteAddress: '3.3.3.3' } }), '3.3.3.3');
   assert.equal(clientIp({}), 'tanpa-ip');
 });
+
+test('clientIp mengabaikan nilai header yang bukan alamat IP', () => {
+  assert.equal(clientIp({ headers: { 'cf-connecting-ip': 'x'.repeat(1000), 'x-forwarded-for': '2.2.2.2' }, socket: { remoteAddress: '3.3.3.3' } }), '2.2.2.2');
+  assert.equal(clientIp({ headers: { 'x-forwarded-for': 'bukan-ip, 9.9.9.9' }, socket: { remoteAddress: '3.3.3.3' } }), '9.9.9.9');
+  assert.equal(clientIp({ headers: {}, socket: { remoteAddress: '::ffff:3.3.3.3' } }), '3.3.3.3');
+});

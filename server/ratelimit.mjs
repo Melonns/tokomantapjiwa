@@ -1,5 +1,6 @@
 // ponytail: Pembatas percobaan sederhana per IP. Disimpan di memori proses, cukup untuk satu instance API
 // dengan trafik toko kecil dan tanpa Redis. Batas dapat diubah lewat env dan dimatikan dengan RATE_LIMIT_DISABLED=1.
+import { isIP } from 'node:net';
 
 export function createRateLimiter({ windowMs, max, now = () => Date.now() }) {
   const hits = new Map();
@@ -28,10 +29,21 @@ export function createRateLimiter({ windowMs, max, now = () => Date.now() }) {
 
 // ponytail: Urutan pembacaan IP mengikuti proxy yang benar-benar dipakai: Cloudflare, lalu reverse proxy (Caddy), lalu socket langsung.
 // Caddyfile menimpa X-Forwarded-For dengan alamat asli klien dan membuang Cf-Connecting-Ip, sehingga entri pertama selalu alamat sebenarnya.
+// Nilai header divalidasi sebagai IP agar penyerang tidak bisa membuat kunci pembatas raksasa atau memalsukan format.
 export function clientIp(req) {
-  const direct = req?.headers?.['cf-connecting-ip'];
-  if (typeof direct === 'string' && direct.trim()) return direct.trim();
   const forwarded = req?.headers?.['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim();
-  return req?.socket?.remoteAddress || 'tanpa-ip';
+  const candidates = [
+    req?.headers?.['cf-connecting-ip'],
+    ...(typeof forwarded === 'string' ? forwarded.split(',') : []),
+    req?.socket?.remoteAddress,
+  ];
+  for (const value of candidates) {
+    if (typeof value !== 'string') continue;
+    let candidate = value.trim();
+    if (!candidate) continue;
+    if (candidate.startsWith('[') && candidate.endsWith(']')) candidate = candidate.slice(1, -1);
+    if (/^::ffff:/i.test(candidate)) candidate = candidate.slice(7);
+    if (isIP(candidate)) return candidate;
+  }
+  return 'tanpa-ip';
 }

@@ -3,6 +3,8 @@ Description=Melonbyte API (server Node)
 Documentation=https://melonbyte.biz.id
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,20 +13,41 @@ Group=melon
 WorkingDirectory=/srv/melonbyte
 EnvironmentFile=/srv/melonbyte/.env
 Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
 ExecStart=/usr/bin/node server/index.mjs
 Restart=always
 RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
 SyslogIdentifier=melonbyte-api
 
-# Pengerasan dasar untuk VPS kecil.
+# Pengerasan untuk VPS kecil. API hanya membaca repo dan bicara ke luar lewat HTTPS.
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
 RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+MemoryHigh=512M
 MemoryMax=700M
+TasksMax=128
+LimitNOFILE=8192
 
 [Install]
 WantedBy=multi-user.target

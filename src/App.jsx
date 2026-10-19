@@ -28,18 +28,18 @@ if (import.meta.hot) import.meta.hot.dispose(() => supabase?.auth.stopAutoRefres
 const rupiah = (amount) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amount)
 const STATUS_LABELS = { pending: 'Menunggu pembayaran', payment_paid: 'Pembayaran diterima', fulfillment_pending: 'Sedang diproses', fulfilled: 'Selesai', fulfillment_failed: 'Gagal diproses', manual_review: 'Sedang diperiksa admin', payment_failed: 'Pembayaran gagal', refunded: 'Dana dikembalikan' }
 const STATUS_HINTS = {
-  pending: 'Bayar dengan QR atau nomor Virtual Account di halaman ini. Status pesanan berubah otomatis setelah pembayaran diterima.',
-  payment_paid: 'Pembayaran telah diterima. Pesanan diproses otomatis.',
-  fulfillment_pending: 'Pesanan sedang diproses otomatis. Periksa kembali beberapa saat nanti.',
-  fulfilled: 'Pesanan telah selesai. Terima kasih atas pembelian Anda.',
-  fulfillment_failed: 'Proses otomatis gagal. Admin akan memeriksa dan memproses ulang pesanan.',
-  refunded: 'Pesanan tidak dapat diproses. Dana telah dikembalikan ke metode pembayaran awal. Konfirmasi dikirim melalui email.',
-  manual_review: 'Pesanan sedang diperiksa secara manual oleh admin.',
+  pending: 'Selesaikan pembayaran sebelum waktu habis.',
+  payment_paid: 'Pesanan diproses otomatis.',
+  fulfillment_pending: 'Periksa kembali beberapa saat nanti.',
+  fulfilled: 'Terima kasih atas pembelian Anda.',
+  fulfillment_failed: 'Admin akan memeriksa dan memproses ulang pesanan.',
+  refunded: 'Dana dikembalikan ke metode pembayaran awal. Konfirmasi dikirim melalui email.',
+  manual_review: 'Admin sedang memeriksa pesanan.',
   payment_failed: 'Pembayaran gagal atau kedaluwarsa. Buat pesanan baru untuk mencoba kembali.',
 }
 const ACTIVE_STATUSES = ['pending', 'payment_paid', 'fulfillment_pending']
 const statusLabel = (status) => STATUS_LABELS[status] || status
-const statusHint = (status) => STATUS_HINTS[status] || 'Status terbaru pesanan ditampilkan di halaman ini.'
+const statusHint = (status) => STATUS_HINTS[status] || ''
 
 // ponytail: Kanal bayar Core API Midtrans; id wajib sama dengan PAYMENT_METHODS di server/app.mjs.
 // Halaman invoice ini sendiri yang menampilkan QR/VA, tanpa pengalihan ke situs Midtrans.
@@ -1748,7 +1748,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
         </section>
 
         </> : view === 'game' || view === 'checkout' ? <section className="checkout-section wrap" id={view === 'game' ? 'game-detail' : 'data-akun'} aria-labelledby="order-title">
-          <div className={`section-heading brand-head${view === 'checkout' ? ' brand-head-kecil' : ''}`}><div><a className="back-button" href={view === 'game' ? '#katalog' : selected ? `#game/${encodeURIComponent(selected.game)}` : '#katalog'}>‹ {view === 'game' ? 'Semua layanan' : 'Kembali'}</a><div className="brand-banner" style={{ '--brand': brandWarna(gameAktif) || '#3d5a35', '--brand-dark': brandGelap(gameAktif) || '#22331d' }}><div className="brand-ident">{brandLogo(gameAktif) ? <span className={`brand-art${brandLogo(gameAktif).cover ? ' brand-art-foto' : ''}`} style={{ background: brandLogo(gameAktif).bg }}><img src={brandLogo(gameAktif).src} alt="" decoding="async" style={brandLogo(gameAktif).cover ? { objectFit: 'cover' } : brandLogo(gameAktif).invert ? { filter: 'brightness(0) invert(1)' } : undefined} /></span> : null}<div className="brand-copy"><h2 id="order-title">{gameAktif || 'Checkout'}</h2><p>{view === 'game' ? 'Isi data secara berurutan; ringkasan di samping ikut diperbarui.' : 'Periksa pesanan, lalu lanjut ke pembayaran.'}</p></div></div>{view === 'game' ? <p className={`brand-stat${ratingRingkas && ratingRingkas.count > 0 ? '' : ' brand-stat-kosong'}`}>{ratingRingkas && ratingRingkas.count > 0 ? <><strong>★ {String(ratingRingkas.average ?? 0).replace('.', ',')}</strong><span>{ratingRingkas.count} penilaian</span></> : <><strong aria-hidden="true">★</strong><span>belum ada penilaian</span></>}</p> : null}</div></div></div>
+          <div className={`section-heading brand-head${view === 'checkout' ? ' brand-head-kecil' : ''}`}><div><a className="back-button" href={view === 'game' ? '#katalog' : selected ? `#game/${encodeURIComponent(selected.game)}` : '#katalog'}>‹ {view === 'game' ? 'Semua layanan' : 'Kembali'}</a><div className="brand-banner" style={{ '--brand': brandWarna(gameAktif) || '#3d5a35', '--brand-dark': brandGelap(gameAktif) || '#22331d' }}><div className="brand-ident">{brandLogo(gameAktif) ? <span className={`brand-art${brandLogo(gameAktif).cover ? ' brand-art-foto' : ''}`} style={{ background: brandLogo(gameAktif).bg }}><img src={brandLogo(gameAktif).src} alt="" decoding="async" style={brandLogo(gameAktif).cover ? { objectFit: 'cover' } : brandLogo(gameAktif).invert ? { filter: 'brightness(0) invert(1)' } : undefined} /></span> : null}<div className="brand-copy"><h2 id="order-title">{gameAktif || 'Checkout'}</h2>{view === 'checkout' && <p>Periksa pesanan, lalu lanjut ke pembayaran.</p>}</div></div>{view === 'game' ? <p className={`brand-stat${ratingRingkas && ratingRingkas.count > 0 ? '' : ' brand-stat-kosong'}`}>{ratingRingkas && ratingRingkas.count > 0 ? <><strong>★ {String(ratingRingkas.average ?? 0).replace('.', ',')}</strong><span>{ratingRingkas.count} penilaian</span></> : <><strong aria-hidden="true">★</strong><span>belum ada penilaian</span></>}</p> : null}</div></div></div>
           {catalogState === 'loading' && <div className="notice" role="status">Memuat produk...</div>}
           {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum dapat dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
           {catalogState === 'ready' && view === 'game' && filtered.length === 0 && <div className="notice" role="status"><strong>Belum ada nominal aktif.</strong><p>Produk baru tampil setelah harga dan stok dikonfigurasi. Checkout belum tersedia.</p></div>}
@@ -1760,11 +1760,8 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
               <ol className="order-steps">
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">1</span><h3>{orderType.targetTitle}</h3></div>
-                  {orderFormat === 'ml_concat' && <p className="field-hint">Pastikan User ID dan Zone ID sesuai akun game tujuan.</p>}
-                  {orderFormat === 'uid_server' && <p className="field-hint">Server akun terlihat di layar masuk game. Pilih server yang sama untuk semua nominal.</p>}
-                  {orderFormat === 'riot' && <p className="field-hint">Gunakan Riot ID lengkap dengan tag, contoh: NamaAnda#1234.</p>}
                   <div className="field-row"><label>{orderFormat === 'riot' ? 'Riot ID' : orderType.targetLabel} <input value={userId} onChange={(event) => setUserId(event.target.value)} required maxLength={orderFormat === 'riot' ? '40' : '32'} inputMode={orderFormat === 'riot' ? 'text' : 'numeric'} pattern={orderFormat === 'riot' ? '[A-Za-z0-9# ._-]+' : '[0-9]+'} placeholder={orderFormat === 'riot' ? 'Nama#1234' : orderType.targetPlaceholder} autoComplete="off" /></label>{orderFormat === 'ml_concat' && <label>Zone ID <input value={zoneId} onChange={(event) => setZoneId(event.target.value)} required maxLength="20" inputMode="numeric" pattern="[0-9]+" placeholder="Zone ID" autoComplete="off" /></label>}{orderFormat === 'uid_server' && <div className="field-block"><span className="field-block-label">Server</span><PilihanServer nilai={zoneId} onPilih={setZoneId} /></div>}</div>
-                  <p className="field-hint">{orderFormat === 'plain' ? orderType.targetHint : orderFormat === 'ml_concat' ? 'User ID dan Zone ID berupa angka. Jangan memasukkan kata sandi game.' : orderFormat === 'riot' ? 'Cukup Riot ID. Jangan memasukkan kata sandi akun.' : 'UID berupa angka dan server akun. Jangan memasukkan kata sandi akun.'}</p>
+                  <p className="field-hint">{orderFormat === 'plain' ? orderType.targetHint : orderFormat === 'ml_concat' ? 'User ID dan Zone ID berupa angka. Jangan memasukkan kata sandi.' : orderFormat === 'riot' ? 'Tulis Riot ID lengkap, contoh: NamaAnda#1234.' : 'Pilih server yang sama dengan akun game. Jangan memasukkan kata sandi.'}</p>
                   {selected?.checkable && (
                     <div className="check-block">
                       {checkState === 'done' && checkResult ? (
@@ -1774,42 +1771,38 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                       )}
                       {checkState === 'done' && <button type="button" className="check-again-button" onClick={() => checkNickname(true)} disabled={!checkAvailable || checkState === 'loading'}>Periksa ulang</button>}
                       {checkState === 'error' && <p className="check-error" role="alert">{checkError}</p>}
-                      {!checkAvailable && <p className="field-hint">Fitur periksa nickname belum aktif di server ini.</p>}
+                      {!checkAvailable && <p className="field-hint">Periksa nickname belum tersedia saat ini.</p>}
                     </div>
                   )}
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">2</span><h3>Pilih nominal</h3></div>
-                  {view === 'checkout' && <p className="field-hint">Ganti nominal kapan saja; ringkasan ikut diperbarui.</p>}
                   {orderKinds.map((kind) => <Fragment key={kind.name}>{orderKinds.length > 1 && <p className="product-kind">{kind.name}<small className="product-kind-count">{kind.items.length} nominal</small></p>}<div className="product-grid">{kind.items.map((item) => <button key={item.id} type="button" className={isOutage(item) ? 'product is-outage' : item.id === selected?.id ? 'product selected' : 'product'} aria-current={item.id === selected?.id ? 'true' : undefined} disabled={isOutage(item)} title={isOutage(item) ? OUTAGE_NOTE : undefined} onClick={() => { go(`/beli/${encodeURIComponent(item.id)}`) }}><strong>{namaSingkat(item)}</strong>{isOutage(item) && <span className="product-flag">Gangguan</span>}<span className="product-bottom"><span className="product-price">{rupiah(item.price)}</span></span></button>)}</div></Fragment>)}
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">3</span><h3>Jumlah pembelian</h3><span className="step-tag">Terkunci</span></div>
                   <p className="qty-fixed" aria-label="Jumlah pembelian 1 item"><strong>1</strong><span>item</span></p>
-                  <p className="field-hint" id="jumlah-tetap">Satu pesanan berisi satu item. Untuk jumlah lebih banyak, buat pesanan terpisah.</p>
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">4</span><h3>Metode pembayaran</h3></div>
                   <div className="pay-options" role="radiogroup" aria-label="Metode pembayaran">{availablePaymentMethods(PAYMENT_METHODS, selected ? selected.price - voucherCut() : 0).map((method, index, options) => <Fragment key={method.id}>{index === 0 || options[index - 1].group !== method.group ? <p className="pay-group">{method.group}</p> : null}<label className={paymentMethod === method.id ? 'pay-option active' : 'pay-option'}><input type="radio" name="payment" value={method.id} checked={paymentMethod === method.id} onChange={() => setPaymentMethod(method.id)} autoComplete="off" /><span><strong>{method.label}</strong><small>{method.note}</small></span></label></Fragment>)}</div>{availablePaymentMethods(PAYMENT_METHODS, selected ? selected.price - voucherCut() : 0).length < PAYMENT_METHODS.length && <p className="pay-note">Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai {rupiah(VA_MIN_ORDER)}.</p>}
-                  <p className="field-hint">QR atau nomor Virtual Account tampil di halaman invoice setelah pesanan dibuat. Pembayaran dilakukan di halaman tersebut, tanpa berpindah ke situs lain.</p>
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">5</span><h3>Kode promo</h3>{voucherCut() > 0 && <span className="step-tag">Terpakai</span>}</div>
                   <label>Kode promo <input id="voucher-code" value={promoCode} onChange={(event) => { setPromoCode(event.target.value.toUpperCase()); setVoucher(null); setVoucherNotice('') }} maxLength="24" placeholder="Masukkan kode promo" autoComplete="off" /></label>
                   <button type="button" className="secondary-button" onClick={applyVoucher} disabled={voucherBusy || !promoCode.trim()}>{voucherBusy ? 'Memeriksa...' : 'Gunakan'}</button>
                   {voucherNotice && <p className="voucher-notice" role="alert">{voucherNotice}</p>}
-                  {voucherCut() > 0 ? <p className="field-hint">Potongan {voucher.code} −{rupiah(voucherCut())} sudah masuk ke total.</p> : <p className="field-hint">Potongan langsung terlihat di ringkasan, sebelum Anda membayar.</p>}
+                  {voucherCut() > 0 && <p className="field-hint">Potongan {voucher.code} sebesar {rupiah(voucherCut())} sudah masuk ke total.</p>}
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">6</span><h3>Detail kontak</h3></div>
-                  <div className="field-row"><label><span className="field-label">Email<span className="field-badge field-badge-edit">Bisa diubah</span></span><input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} type="email" maxLength="120" autoComplete="off" placeholder="nama@email.com" aria-describedby="kontak-bisa-diubah" /></label><label><span className="field-label">Nomor HP<span className="field-badge field-badge-edit">Bisa diubah</span></span><input value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} type="tel" maxLength="20" inputMode="tel" autoComplete="off" placeholder="08..." aria-describedby="kontak-bisa-diubah" /></label></div>
-                  <p className="field-hint" id="kontak-bisa-diubah">{session ? 'Terisi dari profil Anda. Bisa diubah untuk pesanan ini tanpa mengubah data akun.' : 'Isi kontak yang bisa dihubungi. Untuk menyelesaikan pesanan, masuk ke akun terlebih dahulu.'}</p>
+                  <div className="field-row"><label><span className="field-label">Email</span><input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} type="email" maxLength="120" autoComplete="off" placeholder="nama@email.com" aria-describedby="kontak-bisa-diubah" /></label><label><span className="field-label">Nomor HP</span><input value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} type="tel" maxLength="20" inputMode="tel" autoComplete="off" placeholder="08..." aria-describedby="kontak-bisa-diubah" /></label></div>
+                  <p className="field-hint" id="kontak-bisa-diubah">{session ? 'Terisi dari profil akun.' : 'Masuk ke akun untuk menyelesaikan pesanan.'}</p>
                 </li>
               </ol>
-              {!checkoutAvailable && <p className="field-hint" role="status">Checkout belum tersedia. Integrasi pembayaran dan Digiflazz masih menunggu verifikasi.</p>}
+              {!checkoutAvailable && <p className="field-hint" role="status">Checkout belum tersedia. Coba lagi nanti.</p>}
               {checkoutError && <p className="form-error" role="alert">{checkoutError}</p>}
               <button className="checkout-button" type="submit" disabled={!checkoutAvailable || !selected || !session || checkoutState === 'loading'}>{checkoutState === 'loading' ? 'Membuat pesanan...' : 'Buat pesanan'}</button>
-              <p className="form-note">Anda masih dapat memeriksa data terlebih dahulu di langkah konfirmasi. QR atau nomor VA muncul di halaman invoice setelah pesanan dibuat.</p>
             </form>
             {confirmOpen && <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && checkoutState !== 'loading') setConfirmOpen(false) }}>
               <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
@@ -1832,34 +1825,33 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 </div>
               </div>
             </div>}
-            <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga</span><strong>{rupiah(selected.price)}</strong></div><div className="summary-total"><span>Jumlah</span><strong>1 item</strong></div>{voucherCut() > 0 && <div className="summary-total summary-cut"><span>Potongan {voucher.code}</span><strong>−{rupiah(voucherCut())}</strong></div>}<div className="summary-total"><span>Total</span><strong>{rupiah(selected.price - voucherCut())}</strong></div><p className="summary-inclusive">Sudah termasuk biaya pembayaran, tidak ada tambahan di langkah berikutnya.</p></> : <p>Belum ada item produk yang dipilih.</p>}</aside>
+            <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga</span><strong>{rupiah(selected.price)}</strong></div><div className="summary-total"><span>Jumlah</span><strong>1 item</strong></div>{voucherCut() > 0 && <div className="summary-total summary-cut"><span>Potongan {voucher.code}</span><strong>−{rupiah(voucherCut())}</strong></div>}<div className="summary-total"><span>Total</span><strong>{rupiah(selected.price - voucherCut())}</strong></div><p className="summary-inclusive">Harga sudah termasuk biaya pembayaran.</p></> : <p>Belum ada item produk yang dipilih.</p>}</aside>
           </div>}
         </section> : view === 'receipt' ? <div className="invoice-page wrap" id="struk">
           <div className="invoice-head">
             <div><a className="back-button" href="/akun">‹ Semua pesanan</a><h1>Invoice <span className="invoice-code">#{(receipt?.id || receiptId || '').slice(0, 8)}</span></h1>{receipt?.createdAt && <p className="invoice-meta">Dibuat {labelTanggalJam(receipt.createdAt)}</p>}</div>
             {receipt && <span className={`receipt-status status-${receipt.status}`}>{statusLabel(receipt.status)}</span>}
           </div>
-          {!session ? <div className="notice" role="status"><p>Masuk terlebih dahulu untuk membuka invoice ini. Invoice terhubung ke akun pembeli.</p><a className="secondary-button" href="/akun">Masuk</a></div> : receiptState === 'error' ? <p role="alert">Gagal memuat invoice. {receiptError} <button type="button" onClick={() => setReceiptRetry((value) => value + 1)}>Coba lagi</button> <a href="/akun">Kembali ke akun</a></p> : !receipt ? <p role="status">Memuat invoice...</p> : <>
+          {!session ? <div className="notice" role="status"><p>Masuk untuk membuka invoice ini.</p><a className="secondary-button" href="/akun">Masuk</a></div> : receiptState === 'error' ? <p role="alert">Gagal memuat invoice. {receiptError} <button type="button" onClick={() => setReceiptRetry((value) => value + 1)}>Coba lagi</button> <a href="/akun">Kembali ke akun</a></p> : !receipt ? <p role="status">Memuat invoice...</p> : <>
             <section className={`invoice-banner banner-${receipt.status}`} aria-label="Status pesanan">
-              <div><h2>{statusLabel(receipt.status)}</h2><p>{statusHint(receipt.status)}</p></div>
+              <div><h2>{statusLabel(receipt.status)}</h2>{statusHint(receipt.status) && <p>{statusHint(receipt.status)}</p>}</div>
               {receipt.status === 'pending' && receipt.paymentExpiresAt && <p className="invoice-timer">{invoiceRemaining > 0 ? <>Sisa waktu bayar <strong>{invoiceRemainingLabel}</strong></> : 'Waktu pembayaran habis. Buat pesanan baru untuk mencoba kembali.'}</p>}
             </section>
             {receipt.status === 'pending' && <section className="invoice-pay" aria-labelledby="invoice-pay-title">
               <h2 id="invoice-pay-title">Selesaikan pembayaran</h2>
               {invoiceDetail?.qrUrl ? <div className="pay-qr">
                 <img src={invoiceDetail.qrUrl} alt="Kode QR pembayaran" width="240" height="240" />
-                <div><p>Pindai kode QR ini dari aplikasi bank atau e-wallet, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p><p className="field-hint">Halaman ini diperbarui otomatis setelah pembayaran diterima.</p>{invoiceDetail.deeplink && <a className="secondary-button" href={invoiceDetail.deeplink}>Buka aplikasi pembayaran</a>}</div>
+                <div><p>Pindai kode QR ini dari aplikasi bank atau e-wallet, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>{invoiceDetail.deeplink && <a className="secondary-button" href={invoiceDetail.deeplink}>Buka aplikasi pembayaran</a>}</div>
               </div> : invoiceDetail?.vaNumber ? <div className="pay-va">
                 <p>Transfer ke nomor Virtual Account berikut, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>
                 <p className="pay-number"><span>{invoiceDetail.vaNumber}</span><button type="button" className="copy-button" onClick={() => copyText(invoiceDetail.vaNumber)}>{copied === invoiceDetail.vaNumber ? 'Tersalin' : 'Salin'}</button></p>
-                <p className="field-hint">Bank {VA_BANKS[invoiceDetail.bank] || invoiceDetail.bank}. Pembayaran terdeteksi otomatis.</p>
+                <p className="field-hint">Bank {VA_BANKS[invoiceDetail.bank] || invoiceDetail.bank}.</p>
               </div> : invoiceDetail?.billKey ? <div className="pay-va">
                 <p>Bayar melalui Mandiri Bill Payment, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>
                 <p className="pay-number"><span>Kode bayar {invoiceDetail.billerCode} · {invoiceDetail.billKey}</span><button type="button" className="copy-button" onClick={() => copyText(invoiceDetail.billKey)}>{copied === invoiceDetail.billKey ? 'Tersalin' : 'Salin'}</button></p>
-                <p className="field-hint">Pembayaran terdeteksi otomatis.</p>
               </div> : receipt.redirectUrl ? <div className="pay-legacy">
-                <p>Pesanan ini dibuat melalui halaman pembayaran Midtrans.</p><a className="checkout-button" href={receipt.redirectUrl}>Buka halaman pembayaran</a>
-              </div> : <p className="field-hint" role="status">Instruksi pembayaran belum tersedia. Muat ulang halaman ini beberapa saat nanti.</p>}
+                <p>Lanjutkan pembayaran di halaman berikut.</p><a className="checkout-button" href={receipt.redirectUrl}>Buka halaman pembayaran</a>
+              </div> : <p className="field-hint" role="status">Instruksi pembayaran belum tersedia. Muat ulang halaman ini.</p>}
             </section>}
             <section className="invoice-progress" aria-labelledby="invoice-progress-title">
               <h2 id="invoice-progress-title">Progres pesanan</h2>
@@ -1883,7 +1875,6 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             {receipt.status === 'fulfilled' && <section className="invoice-rating" aria-labelledby="invoice-rating-title">
               <h2 id="invoice-rating-title">Penilaian pesanan</h2>
               {ratingState === 'saved' ? <><p className="rating-thanks" role="status">Terima kasih. Penilaian Anda sudah tersimpan.</p><button type="button" className="rating-ubah" onClick={() => setRatingState('idle')}>Ubah penilaian</button></> : <>
-                <p className="field-hint">Nilai pelayanan toko ini. Penilaian membantu pembeli lain memilih layanan.</p>
                 <div className="rating-stars" role="radiogroup" aria-label="Jumlah bintang">
                   {[1, 2, 3, 4, 5].map((nilai) => <button key={nilai} type="button" role="radio" aria-checked={ratingScore === nilai} aria-label={`${nilai} bintang`} className={`rating-star${nilai <= ratingScore ? ' is-aktif' : ''}`} onClick={() => setRatingScore(nilai)}>★</button>)}
                 </div>
