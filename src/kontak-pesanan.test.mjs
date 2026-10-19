@@ -20,8 +20,8 @@ test('kolom kontak bisa diketik, bukan terkunci', () => {
 test('kontak terisi dari profil tetapi tetap bisa diubah', () => {
   assert.match(app, /setContactEmail\(\(current\) => current \|\| profilEmail\)/)
   assert.match(app, /setContactPhone\(\(current\) => current \|\| profilPhone\)/)
-  assert.match(app, /Terisi dari profil Anda\. Bisa diubah untuk pesanan ini tanpa mengubah data akun\./)
-  assert.match(app, /Isi kontak yang bisa dihubungi\. Untuk menyelesaikan pesanan, masuk ke akun terlebih dahulu\./)
+  assert.match(app, /Terisi dari profil akun\./);
+  assert.match(app, /Masuk ke akun untuk menyelesaikan pesanan\./);
 })
 
 test('kontak ikut dikirim dan disimpan di pesanan', () => {

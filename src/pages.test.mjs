@@ -74,7 +74,7 @@ test('paid orders land on a dedicated invoice page, not the account page', () =>
   assert.match(source, /invoiceDetail\?\.vaNumber/);
   assert.match(source, /invoiceDetail\?\.billKey/);
   assert.match(source, /invoiceRemainingLabel/);
-  assert.match(source, /Bayar dengan QR atau nomor Virtual Account di halaman ini\./);
+  assert.match(source, /Selesaikan pembayaran sebelum waktu habis\./);
   assert.equal(source.includes('Selesaikan pembayaran di halaman Midtrans'), false);
   assert.match(source, /copyText\(invoiceDetail\.vaNumber\)/);
   assert.match(source, /Menunggu pembayaran/);

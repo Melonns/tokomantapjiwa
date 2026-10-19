@@ -11,6 +11,20 @@
 {
 	# Ganti dengan alamat email aktif Anda. Dipakai Let's Encrypt untuk pemberitahuan masa berlaku.
 	email admin@melonbyte.biz.id
+
+	# Batasi header dan waktu koneksi agar slowloris tidak menahan worker selamanya.
+	servers {
+		max_header_size 16KB
+		# Hanya Cloudflare yang boleh menentukan alamat klien lewat Cf-Connecting-IP.
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		client_ip_headers Cf-Connecting-IP
+		timeouts {
+			read_header 10s
+			read_body 15s
+			write 30s
+			idle 60s
+		}
+	}
 }
 
 melonbyte.biz.id {
@@ -22,9 +36,31 @@ melonbyte.biz.id {
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
-		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
-		Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.midtrans.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co; font-src 'self'; manifest-src 'self'"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
+		Content-Security-Policy "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.midtrans.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co; font-src 'self'; manifest-src 'self'; media-src 'none'; worker-src 'self'"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		X-Permitted-Cross-Domain-Policies "none"
+		X-DNS-Prefetch-Control "off"
 		-Server
+		-Via
+	}
+
+	# Jangan cache data pribadi atau balasan API di browser/proxy.
+	header /api/* ?Cache-Control "no-store"
+	header /struk* ?Cache-Control "no-store"
+	header /akun* ?Cache-Control "no-store"
+	header /admin* ?Cache-Control "no-store"
+
+	# Batasi badan permintaan; API sendiri memakai batas 8 KB untuk JSON.
+	request_body {
+		max_size 64KB
+	}
+
+	# Jangan layani berkas sensitif atau jalur pemindai; jangan kembalikan index.html untuk itu.
+	@blokir path /.env* /.git* /wp-* /xmlrpc.php /phpmyadmin* /server-status /actuator*
+	handle @blokir {
+		respond 404
 	}
 
 	# Berkas ber-hash dari Vite boleh disimpan lama di peramban; index.html tidak boleh.
@@ -38,9 +74,8 @@ melonbyte.biz.id {
 	# API Node.
 	handle /api/* {
 		reverse_proxy 127.0.0.1:3001 {
-			# Ganti header alamat yang bisa dipalsukan klien dengan alamat asli yang dilihat Caddy,
-			# supaya pembatas percobaan per IP di server Node tidak dapat dilewati.
-			header_up X-Forwarded-For {remote_host}
+			# Cloudflare sudah divalidasi sebagai proxy tepercaya; teruskan IP klien asli.
+			header_up X-Forwarded-For {client_ip}
 			header_up -Cf-Connecting-Ip
 		}
 	}
@@ -65,7 +100,7 @@ melonbyte.biz.id {
 	}
 }
 
-# Aktifkan blok ini hanya setelah catatan DNS www diarahkan ke server yang sama.
-# www.melonbyte.biz.id {
-# 	redir https://melonbyte.biz.id{uri} permanent
-# }
+# www diarahkan ke apex; Cloudflare mem-proxy CNAME www ke apex.
+www.melonbyte.biz.id {
+	redir https://melonbyte.biz.id{uri} permanent
+}

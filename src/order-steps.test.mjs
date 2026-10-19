@@ -31,21 +31,21 @@ test('kotak jumlah menampilkan satu item terkunci, bukan stepper', () => {
   assert.equal(source.includes('MAX_ITEM_QTY'), false, 'batas jumlah sudah tidak ada');
   assert.match(source, /<h3>Jumlah pembelian<\/h3><span className="step-tag">Terkunci<\/span>/);
   assert.match(source, /<p className="qty-fixed" aria-label="Jumlah pembelian 1 item"><strong>1<\/strong><span>item<\/span><\/p>/);
-  assert.match(source, /Satu pesanan berisi satu item\. Untuk jumlah lebih banyak, buat pesanan terpisah\./);
+  assert.equal(source.includes('Satu pesanan berisi satu item. Untuk jumlah lebih banyak'), false);
   assert.match(css, /\.qty-fixed\{[^}]*border-radius:var\(--r-pill\)/);
   assert.match(source, /<span>Jumlah<\/span><strong>1 item<\/strong>/);
   assert.match(source, /<span>Total<\/span><strong>\{rupiah\(selected\.price - voucherCut\(\)\)\}<\/strong>/);
   assert.match(source, /id="voucher-code"/);
   assert.match(source, /Potongan \{voucher\.code\}/);
   // ponytail: pembeli harus tahu total di checkout sama dengan harga di rak - lawan trik 'murah di depan, biaya di belakang'.
-  assert.match(source, /Sudah termasuk biaya pembayaran, tidak ada tambahan di langkah berikutnya\./);
+  assert.match(source, /Harga sudah termasuk biaya pembayaran\./);
 });
 
 test('metode pembayaran yang dipilih ikut terkirim ke checkout, kode promo aktif', () => {
   assert.match(source, /const PAYMENT_METHODS = \[/);
   assert.match(source, /role="radiogroup" aria-label="Metode pembayaran"/);
   assert.match(source, /zoneId: zoneId\.trim\(\) \}\)/);
-  assert.match(source, /QR atau nomor Virtual Account tampil di halaman invoice setelah pesanan dibuat/);
+  assert.equal(source.includes('QR atau nomor Virtual Account tampil di halaman invoice'), false);
   assert.match(source, /const VA_BANKS = \{ bca: 'BCA', bni: 'BNI', bri: 'BRI', permata: 'Permata' \}/);
   for (const id of ['qris', 'bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill', 'gopay', 'shopeepay']) {
     assert.ok(source.includes(`id: '${id}'`), `kanal ${id} hilang dari PAYMENT_METHODS`);
@@ -73,7 +73,7 @@ test('detail kontak bisa diisi dan diubah, terisi otomatis untuk member', () => 
   assert.match(source, /<input value=\{contactEmail\} onChange=\{\(event\) => setContactEmail\(event\.target\.value\)\} type="email"/);
   assert.match(source, /<input value=\{contactPhone\} onChange=\{\(event\) => setContactPhone\(event\.target\.value\)\} type="tel"/);
   assert.match(source, /setContactEmail\(\(current\) => current \|\| profilEmail\)/);
-  assert.match(source, /Terisi dari profil Anda\. Bisa diubah untuk pesanan ini tanpa mengubah data akun\./);
+  assert.match(source, /Terisi dari profil akun\./);
 });
 
 test('halaman beli mendukung format uid_server (pilih server) dan riot (Riot ID)', () => {

@@ -390,6 +390,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
   // ponytail: Pembatas percobaan per IP untuk endpoint yang mudah disalahgunakan. Batas dapat diubah lewat env.
   const limit = (name, fallback, windowMs) => createRateLimiter({ windowMs, max: Number(env[`RATE_LIMIT_${name}_MAX`]) > 0 ? Number(env[`RATE_LIMIT_${name}_MAX`]) : fallback });
   const limits = {
+    global: limit('GLOBAL', 300, 60 * 1000),
+    webhook: limit('WEBHOOK', 600, 60 * 1000),
     login: limit('LOGIN', 10, 15 * 60 * 1000),
     checkout: limit('CHECKOUT', 20, 10 * 60 * 1000),
     checkAccount: limit('CHECKACCOUNT', 30, 10 * 60 * 1000),
@@ -397,6 +399,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
     deletion: limit('DELETION', 3, 60 * 60 * 1000),
   };
   const limitsOff = env.RATE_LIMIT_DISABLED === '1';
+  if (env.NODE_ENV === 'production' && limitsOff) throw Error('RATE_LIMIT_DISABLED tidak boleh aktif di production.');
   return async (req, res) => {
     const guard = (name) => {
       if (limitsOff) return;
@@ -407,6 +410,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
     };
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
+      guard(path.startsWith('/api/webhooks/') ? 'webhook' : 'global');
       if ((req.method === 'GET' || req.method === 'HEAD') && path === '/sitemap.xml') {
         const { rows } = await pool.query("SELECT DISTINCT game FROM products WHERE enabled = true AND game <> '' ORDER BY game");
         const pages = ['/', '/katalog', '/syarat', '/privasi', '/kontak', ...rows.map((row) => `/game/${encodeURIComponent(row.game)}`)];
