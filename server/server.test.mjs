@@ -235,7 +235,7 @@ test('picked payment method charges that channel through Core API and unknown on
     const wallet = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'gopay' }) });
     assert.equal(wallet.status, 201);
     assert.equal(chargeBody.payment_type, 'gopay');
-    assert.match(chargeBody.gopay.callback_url, /^http:\/\/localhost:5173\/#struk\/[0-9a-f-]{36}$/);
+    assert.match(chargeBody.gopay.callback_url, /^http:\/\/localhost:5173\/struk\/[0-9a-f-]{36}$/);
     assert.deepEqual((await wallet.json()).paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/gopay/x/qr-code', deeplink: 'gojek://gopay/merchanttransfer?tref=x' });
     const bad = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bitcoin' }) });
     assert.equal(bad.status, 400);
@@ -245,7 +245,7 @@ test('picked payment method charges that channel through Core API and unknown on
 
 test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak', async () => {
   const charged = [];
-  let orderParams, redemptions = 0, myUses = 0, myBuys = 0;
+  let orderParams, redemptions = 0, myUses = 0, myBuys = 0, lockedUses = 0;
   const voucher = { code: 'TEMAN1K', label: 'Teman dekat', kind: 'fixed', value: 1000, min_order: 10000, max_discount: null, quota: 50, used: 0, per_user: 1, new_buyers_only: true, active: true, ends_at: null };
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
@@ -256,8 +256,19 @@ test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak'
     if (sql.startsWith('INSERT INTO voucher_redemptions')) { redemptions++; return { rows: [] }; }
     if (sql.startsWith('INSERT INTO orders')) { orderParams = params; return { rows: [] }; }
     if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET status')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
+  // Transaksi voucher memakai klien khusus; nilai lockedUses mensimulasikan pemakaian yang terlihat oleh kunci baris.
+  pool.connect = async () => ({
+    async query(sql, params) {
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/i.test(sql.trim())) return { rows: [] };
+      if (sql.startsWith('SELECT code, quota, used, per_user, new_buyers_only')) return { rows: [voucher] };
+      if (sql.startsWith('SELECT count(*)::int AS count FROM voucher_redemptions')) return { rows: [{ count: lockedUses }] };
+      return pool.query(sql, params);
+    },
+    release() {}
+  });
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
     charged.push(JSON.parse(options.body).transaction_details.gross_amount);
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
@@ -288,6 +299,11 @@ test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak'
     myUses = 0;
     myBuys = 1;
     assert.equal((await checkout({ voucherCode: 'TEMAN1K' })).status, 400);
+    myBuys = 0;
+    lockedUses = 1; // checkout paralel: pratinjau lolos, kunci baris melihat pemakaian lain.
+    const balapan = await checkout({ voucherCode: 'TEMAN1K' });
+    assert.equal(balapan.status, 409);
+    assert.match(JSON.stringify(await balapan.json()), /tidak dapat dipakai lagi/);
     assert.equal(charged.length, 1);
     assert.equal(redemptions, 1);
   } finally { await new Promise(resolve => server.close(resolve)); }

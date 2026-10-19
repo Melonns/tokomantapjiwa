@@ -64,7 +64,7 @@ test('pesanan dibuat melalui modal konfirmasi, bukan langsung dari formulir', ()
   assert.match(source, /Pesan sekarang/);
   assert.match(source, /className="confirm-terms"/);
   assert.match(source, /disabled=\{!termsOk \|\| checkoutState === 'loading'\}/);
-  assert.match(source, /window\.location\.hash = `#struk\/\$\{encodeURIComponent\(data\.orderId\)\}`/);
+  assert.match(source, /go\(`\/struk\/\$\{encodeURIComponent\(data\.orderId\)\}`\)/);
   assert.equal(source.includes('window.location.assign('), false);
   assert.equal(source.includes('snap/v1/transactions'), false);
 });

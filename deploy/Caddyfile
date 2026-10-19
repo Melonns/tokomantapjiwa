@@ -45,7 +45,7 @@ melonbyte.biz.id {
 		}
 	}
 
-	# Situs statis. Rute aplikasi memakai tanda pagar, jadi semua alamat dilayani index.html.
+	# Situs statis. Rute aplikasi memakai URL path, jadi semua alamat dilayani index.html.
 	handle {
 		root * /srv/melonbyte/dist
 		try_files {path} /index.html

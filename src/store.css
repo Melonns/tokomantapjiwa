@@ -216,11 +216,32 @@
 .voucher-notice { margin: 8px 0 0; font-size: 13px; color: #b42318; }
 .summary-total.summary-cut strong { color: #067647; }
 .voucher-admin { display: grid; gap: 16px; }
-.voucher-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
-.voucher-form label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; }
-.voucher-form .voucher-new { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.voucher-form { display: grid; gap: 18px; padding: clamp(16px, 2.4vw, 24px); border: 1px solid var(--line); border-radius: var(--r-card); background: #101b13; }
+.voucher-form-head h3 { margin: 0; font-size: 1.05rem; letter-spacing: -.02em; }
+.voucher-form-head p { margin: 5px 0 0; color: var(--muted); font-size: .85rem; line-height: 1.55; max-width: 65ch; }
+.voucher-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 16px; }
+.voucher-field { display: grid; gap: 6px; font-size: .82rem; font-weight: 700; color: var(--text); }
+.voucher-field input { width: 100%; min-height: 44px; background: #0e1610; border: 1px solid #849e80; border-radius: var(--r-tile); color: var(--text); padding: 10px 12px; font-size: .95rem; }
+.voucher-field input:focus-visible { outline: 2px solid var(--lime); outline-offset: 1px; border-color: var(--lime); }
+.voucher-field small { font-weight: 400; color: var(--muted); font-size: .76rem; line-height: 1.4; }
+.voucher-new { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-tile); background: #0e1610; cursor: pointer; font-size: .86rem; }
+.voucher-new input { width: 18px; height: 18px; margin: 1px 0 0; flex: 0 0 auto; accent-color: var(--lime); }
+.voucher-new span { display: grid; gap: 2px; }
+.voucher-new small { font-weight: 400; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+.voucher-form-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.voucher-preview { margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.5; max-width: 62ch; }
+.voucher-form-foot button { border: 0; border-radius: var(--r-pill); background: var(--lime); color: var(--bg); font-weight: 800; min-height: 48px; padding: 12px 24px; white-space: nowrap; }
+.voucher-form-foot button:hover:not(:disabled) { background: #d6ffa5; }
+.voucher-form-foot button:disabled { background: #455545; color: #edf1e9; cursor: not-allowed; }
+.voucher-form-notice { margin: 0; color: var(--muted); font-size: .86rem; line-height: 1.5; }
+@media (max-width: 900px) { .voucher-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .voucher-fields { grid-template-columns: 1fr; } .voucher-form-foot button { width: 100%; } }
 .voucher-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.voucher-list li { display: grid; gap: 2px; justify-items: start; padding: 10px 12px; border: 1px solid #e4e7ec; border-radius:var(--r-tile); }
+.voucher-list li { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-tile); background: #0e1610; }
+.voucher-item-info { display: grid; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.voucher-item-info span, .voucher-item-info small { color: var(--muted); font-size: .82rem; line-height: 1.45; }
+.voucher-list li button { flex: 0 0 auto; }
+@media (max-width: 560px) { .voucher-list li { flex-wrap: wrap; } .voucher-list li button { width: 100%; } }
 
 /* ponytail: halaman legal, indikator gangguan, dan panel refund. */
 .legal-page{padding-block:52px 84px}.legal-head{max-width:780px;margin-bottom:34px}.legal-head h1{font-size:clamp(2rem,3.4vw,3rem);margin:12px 0 14px}.legal-head p{color:var(--muted);line-height:1.7;margin:0}.legal-updated{display:inline-block;margin-top:12px;color:var(--muted);font-size:.8rem}.legal-body{display:grid;gap:14px;max-width:860px}.legal-block{border:1px solid var(--line);border-radius:var(--r-card);background:var(--panel);padding:clamp(18px,2.4vw,28px)}.legal-block h2{font-size:clamp(1.05rem,1.7vw,1.4rem);margin:0 0 12px}.legal-block p{margin:0;color:var(--muted);line-height:1.7}.legal-block ul{margin:0;padding-left:20px;display:grid;gap:8px;color:var(--muted);line-height:1.65}.legal-danger{border-left:4px solid #d8b45c}.legal-danger h2{color:#e8c877}.legal-back{display:flex;flex-wrap:wrap;gap:12px;margin:26px 0 0}

@@ -197,7 +197,7 @@ test('isi email mengikuti baris struk: harga asli, potongan, total dibayar', () 
   assert.match(message.html, /Potongan \(TEMAN1K\)/);
   assert.match(message.html, /Rp 24\.000/);
   assert.match(message.html, /SN-9/);
-  assert.match(message.html, /https:\/\/melonbyte\.id\/#struk\//);
+  assert.match(message.html, /https:\/\/melonbyte\.id\/struk\//);
   assert.equal(orderEmail('entah', order, {}), null);
   assert.equal(orderEmail('paid', {}, {}), null);
 });

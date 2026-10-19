@@ -47,8 +47,8 @@ const PAYMENT_METHODS = {
   bri_va: () => ({ payment_type: 'bank_transfer', bank: 'bri' }),
   permata_va: () => ({ payment_type: 'bank_transfer', bank: 'permata' }),
   mandiri_bill: () => ({ payment_type: 'echannel', echannel: { bill_info1: 'Pembayaran pesanan', bill_info2: 'Melonbyte' } }),
-  gopay: (id, storeUrl) => ({ payment_type: 'gopay', gopay: { enable_callback: true, callback_url: `${storeUrl}/#struk/${id}` } }),
-  shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl}/#struk/${id}` } }),
+  gopay: (id, storeUrl) => ({ payment_type: 'gopay', gopay: { enable_callback: true, callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
+  shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
 };
 // ponytail: satu daftar kolom dipakai pembacaan struk dan rekonsiliasi supaya bentuk respons selalu sama.
 const PAYMENT_DETAIL_COLUMNS = 'payment_channel AS "paymentChannel", payment_detail AS "paymentDetail", payment_expires_at AS "paymentExpiresAt", redirect_url AS "redirectUrl", created_at AS "createdAt"';
@@ -198,7 +198,7 @@ async function voucherFor(pool, code, ownerId, total) {
   const { rows: mine } = await pool.query('SELECT count(*)::int AS count FROM voucher_redemptions WHERE code = $1 AND owner_id = $2', [voucher.code, ownerId]);
   if (mine[0].count >= voucher.per_user) return { error: 'Anda sudah memakai voucher ini.' };
   if (voucher.new_buyers_only) {
-    const { rows: buys } = await pool.query("SELECT count(*)::int AS count FROM orders WHERE owner_id = $1 AND status IN ('payment_paid','fulfillment_pending','fulfilled')", [ownerId]);
+    const { rows: buys } = await pool.query("SELECT count(*)::int AS count FROM orders WHERE owner_id = $1 AND status IN ('payment_paid','fulfillment_pending','fulfillment_failed','manual_review','fulfilled','refunded')", [ownerId]);
     if (buys[0].count > 0) return { error: 'Voucher ini khusus pembeli baru.' };
   }
   const discount = voucherDiscount(voucher, total);
@@ -206,10 +206,32 @@ async function voucherFor(pool, code, ownerId, total) {
   return { voucher, discount };
 }
 async function redeemVoucher(pool, voucher, orderId, ownerId, discount) {
-  const { rows } = await pool.query('UPDATE vouchers SET used = used + 1 WHERE code = $1 AND active = true AND (quota IS NULL OR used < quota) RETURNING used', [voucher.code]);
-  if (!rows[0]) return false;
-  await pool.query('INSERT INTO voucher_redemptions (order_id, code, owner_id, amount) VALUES ($1,$2,$3,$4) ON CONFLICT (order_id) DO NOTHING', [orderId, voucher.code, ownerId, discount]);
-  return true;
+  // ponytail: kunci baris voucher selama pemeriksaan dan pemakaian, supaya dua checkout paralel dengan kode yang sama
+  // tidak dapat sama-sama lolos batas per akun atau syarat pembeli baru.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT code, quota, used, per_user, new_buyers_only, active, ends_at FROM vouchers WHERE code = $1 FOR UPDATE', [voucher.code]);
+    const current = rows[0];
+    const invalid = !current || !current.active || (current.quota != null && current.used >= current.quota) ||
+      (current.ends_at && new Date(current.ends_at).getTime() < Date.now());
+    if (invalid) { await client.query('ROLLBACK'); return false; }
+    const { rows: mine } = await client.query('SELECT count(*)::int AS count FROM voucher_redemptions WHERE code = $1 AND owner_id = $2', [current.code, ownerId]);
+    if (mine[0].count >= current.per_user) { await client.query('ROLLBACK'); return false; }
+    if (current.new_buyers_only) {
+      const { rows: buys } = await client.query("SELECT count(*)::int AS count FROM orders WHERE owner_id = $1 AND status IN ('payment_paid','fulfillment_pending','fulfillment_failed','manual_review','fulfilled','refunded')", [ownerId]);
+      if (buys[0].count > 0) { await client.query('ROLLBACK'); return false; }
+    }
+    await client.query('UPDATE vouchers SET used = used + 1 WHERE code = $1', [current.code]);
+    await client.query('INSERT INTO voucher_redemptions (order_id, code, owner_id, amount) VALUES ($1,$2,$3,$4) ON CONFLICT (order_id) DO NOTHING', [orderId, current.code, ownerId, discount]);
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 // ponytail: pesanan yang gagal atau kedaluwarsa mengembalikan kuota agar pembeli tidak kehilangan vouchernya karena kesalahan di sisi kami.
 async function releaseVoucher(pool, orderId) {
@@ -579,8 +601,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone, payment_environment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null, env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox']);
-        if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) throw error(400, 'Kuota voucher baru saja habis. Coba kembali tanpa voucher.');
-        const storeUrl = (env.STORE_URL || req.headers.origin || 'http://localhost:5173').replace(/\/+$/, '');
+        if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) {
+          // Voucher gagal dipakai (misalnya kalah balapan dengan checkout lain): tutup pesanan yang belum ditagih.
+          await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
+          throw error(409, 'Voucher tidak dapat dipakai lagi. Periksa kode voucher lalu coba kembali.');
+        }
+        const storeUrl = (env.STORE_URL || 'http://localhost:5173').replace(/\/+$/, '');
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas (4xx) menutup pesanan;
         // kegagalan ambigu (5xx/timeout) dibiarkan pending untuk rekonsiliasi dan order_id tidak pernah digunakan ulang.
 
@@ -663,7 +689,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       if (req.method === 'GET' && path === '/api/orders') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
-        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", created_at AS "createdAt" FROM orders WHERE owner_id = $1 ORDER BY created_at DESC, id DESC', [ownerId]);
+        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", created_at AS "createdAt" FROM orders WHERE owner_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100', [ownerId]);
         return send(res, 200, { orders: rows });
       }
       if (req.method === 'GET' && path.startsWith('/api/orders/')) {
