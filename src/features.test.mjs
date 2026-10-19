@@ -37,7 +37,7 @@ test('halaman legal berisi aturan yang benar-benar berlaku, bukan template pasal
   const termsText = LEGAL_PAGES.terms.sections.map((section) => `${section.body || ''} ${(section.items || []).join(' ')}`).join(' ');
   assert.match(termsText, /dikembalikan penuh/);
   assert.match(termsText, /Tidak ada biaya tambahan/);
-  assert.deepEqual(LEGAL_LINKS.map((link) => link.hash), ['#syarat', '#privasi', '#kontak']);
+  assert.deepEqual(LEGAL_LINKS.map((link) => link.path), ['/syarat', '/privasi', '/kontak']);
 });
 
 test('kanal kontak dibentuk dari jawaban server dan tidak pernah jadi tautan mati', () => {
@@ -51,18 +51,18 @@ test('kanal kontak dibentuk dari jawaban server dan tidak pernah jadi tautan mat
 
 test('halaman legal, footer, dan kontak terhubung ke rute yang nyata', () => {
   assert.match(source, /import \{ LEGAL_LINKS, LEGAL_PAGES, contactChannels \} from '\.\/legal\.mjs'/);
-  assert.match(source, /if \(hash === '#syarat'\) return \{ view: 'terms'/);
-  assert.match(source, /if \(hash === '#privasi'\) return \{ view: 'privacy'/);
-  assert.match(source, /if \(hash === '#kontak'\) return \{ view: 'contact'/);
+  assert.match(source, /if \(path === '\/syarat'\) return \{ view: 'terms'/);
+  assert.match(source, /if \(path === '\/privasi'\) return \{ view: 'privacy'/);
+  assert.match(source, /if \(path === '\/kontak'\) return \{ view: 'contact'/);
   assert.match(source, /<LegalPage view=\{view\} info=\{contactInfo\} state=\{contactState\} \/>/);
-  assert.match(source, /className="footer-links"/);
+  assert.match(source, /className="footer-nav"/);
   assert.match(source, /request\('\/api\/contact'\)/);
   assert.match(css, /\.legal-page\{/);
 });
 
 test('refund punya status sendiri, panel admin, dan baris struk', () => {
   assert.match(source, /refunded: 'Dana dikembalikan'/);
-  assert.match(source, /if \(hash === '#admin\/refund'\) return \{ view: 'admin', adminPage: 'refunds'/);
+  assert.match(source, /if \(path === '\/admin\/refund'\) return \{ view: 'admin', adminPage: 'refunds'/);
   assert.match(source, /Refund melalui Midtrans/);
   assert.match(source, /Tandai manual/);
   assert.match(source, /\/api\/admin\/orders\/\$\{encodeURIComponent\(order\.id\)\}\/refund/);

@@ -1,5 +1,9 @@
 User-agent: *
 Allow: /
 Disallow: /api/
+Disallow: /admin
+Disallow: /akun
+Disallow: /beli/
+Disallow: /struk/
 
 Sitemap: https://melonbyte.biz.id/sitemap.xml

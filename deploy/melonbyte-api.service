@@ -10,6 +10,7 @@ User=melon
 Group=melon
 WorkingDirectory=/srv/melonbyte
 EnvironmentFile=/srv/melonbyte/.env
+Environment=NODE_ENV=production
 ExecStart=/usr/bin/node server/index.mjs
 Restart=always
 RestartSec=3

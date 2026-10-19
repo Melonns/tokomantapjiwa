@@ -235,7 +235,7 @@ test('picked payment method charges that channel through Core API and unknown on
     const wallet = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'gopay' }) });
     assert.equal(wallet.status, 201);
     assert.equal(chargeBody.payment_type, 'gopay');
-    assert.match(chargeBody.gopay.callback_url, /^http:\/\/localhost:5173\/#struk\/[0-9a-f-]{36}$/);
+    assert.match(chargeBody.gopay.callback_url, /^http:\/\/localhost:5173\/struk\/[0-9a-f-]{36}$/);
     assert.deepEqual((await wallet.json()).paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/gopay/x/qr-code', deeplink: 'gojek://gopay/merchanttransfer?tref=x' });
     const bad = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bitcoin' }) });
     assert.equal(bad.status, 400);
@@ -245,7 +245,7 @@ test('picked payment method charges that channel through Core API and unknown on
 
 test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak', async () => {
   const charged = [];
-  let orderParams, redemptions = 0, myUses = 0, myBuys = 0;
+  let orderParams, redemptions = 0, myUses = 0, myBuys = 0, lockedUses = 0;
   const voucher = { code: 'TEMAN1K', label: 'Teman dekat', kind: 'fixed', value: 1000, min_order: 10000, max_discount: null, quota: 50, used: 0, per_user: 1, new_buyers_only: true, active: true, ends_at: null };
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
@@ -256,8 +256,19 @@ test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak'
     if (sql.startsWith('INSERT INTO voucher_redemptions')) { redemptions++; return { rows: [] }; }
     if (sql.startsWith('INSERT INTO orders')) { orderParams = params; return { rows: [] }; }
     if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
+    if (sql.startsWith('UPDATE orders SET status')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
+  // Transaksi voucher memakai klien khusus; nilai lockedUses mensimulasikan pemakaian yang terlihat oleh kunci baris.
+  pool.connect = async () => ({
+    async query(sql, params) {
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/i.test(sql.trim())) return { rows: [] };
+      if (sql.startsWith('SELECT code, quota, used, per_user, new_buyers_only')) return { rows: [voucher] };
+      if (sql.startsWith('SELECT count(*)::int AS count FROM voucher_redemptions')) return { rows: [{ count: lockedUses }] };
+      return pool.query(sql, params);
+    },
+    release() {}
+  });
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
     charged.push(JSON.parse(options.body).transaction_details.gross_amount);
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
@@ -288,6 +299,11 @@ test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak'
     myUses = 0;
     myBuys = 1;
     assert.equal((await checkout({ voucherCode: 'TEMAN1K' })).status, 400);
+    myBuys = 0;
+    lockedUses = 1; // checkout paralel: pratinjau lolos, kunci baris melihat pemakaian lain.
+    const balapan = await checkout({ voucherCode: 'TEMAN1K' });
+    assert.equal(balapan.status, 409);
+    assert.match(JSON.stringify(await balapan.json()), /tidak dapat dipakai lagi/);
     assert.equal(charged.length, 1);
     assert.equal(redemptions, 1);
   } finally { await new Promise(resolve => server.close(resolve)); }
@@ -652,14 +668,16 @@ test('pemeriksaan nickname memakai layanan sesuai brand produk, menyimpan hasil,
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('hasil tersimpan yang masih segar menjawab tanpa provider dan tanpa tulis ulang', async () => {
+test('hasil tersimpan yang masih segar menjawab tanpa provider tetapi tetap dihitung ke kuota', async () => {
   const checkedAt = new Date('2026-10-10T09:30:00Z');
   const statements = [];
   let providerCalls = 0;
   const pool = { async query(sql) {
     statements.push(sql);
     if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 0 }] };
     if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [{ nickname: 'Purbaya Sadewa. RI', region: 'ID', checked_at: checkedAt }] };
+    if (sql.startsWith('INSERT INTO account_check_logs')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => { providerCalls++; return { ok: true, json: async () => ({}) }; }) });
@@ -670,6 +688,31 @@ test('hasil tersimpan yang masih segar menjawab tanpa provider dan tanpa tulis u
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { check: { nickname: 'Purbaya Sadewa. RI', region: 'ID', cached: true, checkedAt: checkedAt.toISOString() } });
     assert.equal(providerCalls, 0);
+    assert.equal(statements.filter(sql => sql.startsWith('INSERT INTO account_check_logs')).length, 1);
+    assert.equal(statements.filter(sql => sql.startsWith('INSERT INTO account_checks')).length, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('data tersimpan tidak menjawab saat kuota harian habis', async () => {
+  let providerCalls = 0;
+  const statements = [];
+  const pool = { async query(sql) {
+    statements.push(sql);
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 10 }] };
+    if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [{ nickname: 'Tidak Boleh Bocor', region: 'ID', checked_at: new Date() }] };
+    if (sql.startsWith('INSERT')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => { providerCalls++; return { ok: true, json: async () => ({}) }; }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    const body = await response.text();
+    assert.equal(response.status, 429);
+    assert.equal(providerCalls, 0);
+    assert.ok(!body.includes('Tidak Boleh Bocor'));
     assert.ok(statements.every(sql => !sql.startsWith('INSERT')));
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
@@ -1131,4 +1174,28 @@ test('penilaian hanya diterima untuk pesanan selesai dan dirangkum per layanan',
     assert.deepEqual((await ringkas.json()).rating, { count: 3, average: 4.7 });
     assert.equal((await fetch(`${base}/api/ratings`)).status, 400);
   } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('sitemap memuat halaman publik dan semua game aktif', async () => {
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT DISTINCT game FROM products')) return { rows: [{ game: 'MOBILE LEGENDS' }, { game: 'Free Fire' }] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/sitemap.xml`);
+    const body = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /application\/xml/);
+    assert.match(body, /<loc>http:\/\/localhost:5173\/privasi<\/loc>/);
+    assert.match(body, /\/game\/MOBILE%20LEGENDS/);
+    assert.match(body, /\/game\/Free%20Fire/);
+    assert.ok(!body.includes('/admin'));
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('production tanpa STORE_URL menolak start agar callback tidak jatuh ke localhost', () => {
+  assert.throws(() => createHandler({ pool: {}, env: { ...checkEnv, MIDTRANS_ENV: 'production', STORE_URL: '' } }), /STORE_URL/);
 });

@@ -30,7 +30,7 @@ melonbyte.biz.id {
 	# Berkas ber-hash dari Vite boleh disimpan lama di peramban; index.html tidak boleh.
 	@aset path /assets/*
 	header @aset Cache-Control "public, max-age=31536000, immutable"
-	@ikon path /favicon.svg /icon-192.png /apple-touch-icon.png /og.png /robots.txt /sitemap.xml
+	@ikon path /favicon.svg /icon-192.png /apple-touch-icon.png /og.png /robots.txt
 	header @ikon Cache-Control "public, max-age=86400"
 	@halaman path / /index.html
 	header @halaman Cache-Control "no-cache"
@@ -45,7 +45,12 @@ melonbyte.biz.id {
 		}
 	}
 
-	# Situs statis. Rute aplikasi memakai tanda pagar, jadi semua alamat dilayani index.html.
+	# Sitemap dinamis: daftar game aktif dibaca dari katalog server.
+	handle /sitemap.xml {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	# Situs statis. Rute aplikasi memakai URL path, jadi semua alamat dilayani index.html.
 	handle {
 		root * /srv/melonbyte/dist
 		try_files {path} /index.html

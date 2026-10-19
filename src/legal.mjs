@@ -2,9 +2,9 @@
 // bukan template pasal. Kontak diambil dari server (/api/contact) agar dapat diganti tanpa menyentuh kode.
 
 export const LEGAL_LINKS = [
-  { hash: '#syarat', label: 'Syarat & Ketentuan' },
-  { hash: '#privasi', label: 'Kebijakan Privasi' },
-  { hash: '#kontak', label: 'Bantuan & Kontak' },
+  { path: '/syarat', label: 'Syarat & Ketentuan' },
+  { path: '/privasi', label: 'Kebijakan Privasi' },
+  { path: '/kontak', label: 'Bantuan & Kontak' },
 ];
 
 export const LEGAL_PAGES = {

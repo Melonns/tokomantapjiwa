@@ -46,7 +46,7 @@ export function orderEmail(event, order, env = {}) {
   const spec = EVENTS[event];
   if (!spec || !order?.id) return null;
   const base = String(env.STORE_URL || '').trim().replace(/\/+$/, '');
-  const link = `${base || 'https://melonbyte.id'}/#struk/${encodeURIComponent(order.id)}`;
+  const link = `${(base || 'https://melonbyte.id').replace(/\/$/, '')}/struk/${encodeURIComponent(order.id)}`;
   const rows = [['Produk', order.productName]];
   if (order.userId) rows.push(['ID tujuan', `${order.userId}${order.zoneId ? ` (${order.zoneId})` : ''}`]);
   if (Number(order.discount) > 0) {

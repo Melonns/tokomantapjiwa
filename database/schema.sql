@@ -90,6 +90,19 @@ CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
 CREATE INDEX IF NOT EXISTS orders_environment_paid_at_idx ON orders (payment_environment, paid_at) WHERE paid_at IS NOT NULL;
 
+-- Jejak audit tindakan refund. Admin tidak dijadikan foreign key agar catatan tetap utuh bila akun admin dihapus.
+CREATE TABLE IF NOT EXISTS refund_events (
+  id bigserial PRIMARY KEY,
+  order_id uuid NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  admin_id uuid NOT NULL,
+  method text NOT NULL CHECK (method IN ('midtrans', 'manual')),
+  amount integer NOT NULL CHECK (amount >= 0),
+  note text CHECK (note IS NULL OR length(note) <= 200),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS refund_events_order_idx ON refund_events (order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS refund_events_admin_idx ON refund_events (admin_id, created_at DESC);
+
 
 -- Penilaian pembeli setelah pesanan selesai. Satu pesanan hanya punya satu penilaian,
 -- dan hanya pesanan berstatus fulfilled yang boleh dinilai.
@@ -168,3 +181,5 @@ REVOKE ALL ON account_checks, account_check_logs FROM anon, authenticated;
 ALTER TABLE vouchers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE voucher_redemptions ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON vouchers, voucher_redemptions FROM anon, authenticated;
+ALTER TABLE refund_events ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON refund_events FROM anon, authenticated;

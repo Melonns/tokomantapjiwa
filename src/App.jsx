@@ -90,22 +90,70 @@ async function authHeaders() {
   return { Authorization: `Bearer ${data.session.access_token}` }
 }
 
-function routeFromHash() {
+function currentPath() {
+  return window.location.pathname.replace(/\/+$/, '') || '/'
+}
+
+function migrateLegacyHash() {
   const hash = window.location.hash
-  if (hash === '#daftar') return { view: 'register', game: null, checkoutId: '' }
-  if (hash === '#akun') return { view: 'account', game: null, checkoutId: '' }
-  if (hash === '#admin/voucher') return { view: 'admin', adminPage: 'vouchers', game: null, checkoutId: '' }
-  if (hash === '#admin/ringkasan') return { view: 'admin', adminPage: 'summary', game: null, checkoutId: '' }
-  if (hash === '#syarat') return { view: 'terms', game: null, checkoutId: '' }
-  if (hash === '#privasi') return { view: 'privacy', game: null, checkoutId: '' }
-  if (hash === '#kontak') return { view: 'contact', game: null, checkoutId: '' }
-  if (hash === '#admin/refund') return { view: 'admin', adminPage: 'refunds', game: null, checkoutId: '' }
-  if (hash === '#admin' || hash === '#admin/produk') return { view: 'admin', adminPage: hash === '#admin/produk' ? 'products' : 'transactions', game: null, checkoutId: '' }
-  if (hash.startsWith('#game/')) return { view: 'game', game: decodeHash(hash.slice(6)), checkoutId: '' }
-  if (hash.startsWith('#beli/')) return { view: 'checkout', game: null, checkoutId: decodeHash(hash.slice(6)) }
-  if (hash.startsWith('#struk/')) return { view: 'receipt', game: null, checkoutId: '', orderId: decodeHash(hash.slice(7)) }
-  if (hash && hash !== '#' && hash !== '#main' && hash !== '#katalog') return { view: 'notfound', game: null, checkoutId: '' }
-  return { view: 'home', game: null, checkoutId: '' }
+  if (!hash || hash === '#' || hash === '#main') return
+  if (!/^#(katalog|daftar|akun|syarat|privasi|kontak|admin(?:$|\/)|game\/|beli\/|struk\/)/.test(hash)) return
+  window.history.replaceState(null, '', hash === '#katalog' ? '/katalog' : `/${hash.slice(1)}`)
+}
+
+if (typeof window !== 'undefined') migrateLegacyHash()
+
+function routeFromPath() {
+  const path = currentPath()
+  if (path === '/daftar') return { view: 'register', game: null, checkoutId: '' }
+  if (path === '/akun') return { view: 'account', game: null, checkoutId: '' }
+  if (path === '/admin/voucher') return { view: 'admin', adminPage: 'vouchers', game: null, checkoutId: '' }
+  if (path === '/admin/ringkasan') return { view: 'admin', adminPage: 'summary', game: null, checkoutId: '' }
+  if (path === '/syarat') return { view: 'terms', game: null, checkoutId: '' }
+  if (path === '/privasi') return { view: 'privacy', game: null, checkoutId: '' }
+  if (path === '/kontak') return { view: 'contact', game: null, checkoutId: '' }
+  if (path === '/admin/refund') return { view: 'admin', adminPage: 'refunds', game: null, checkoutId: '' }
+  if (path === '/admin' || path === '/admin/produk') return { view: 'admin', adminPage: path === '/admin/produk' ? 'products' : 'transactions', game: null, checkoutId: '' }
+  if (path.startsWith('/game/')) return { view: 'game', game: decodeHash(path.slice(6)), checkoutId: '' }
+  if (path.startsWith('/beli/')) return { view: 'checkout', game: null, checkoutId: decodeHash(path.slice(6)) }
+  if (path.startsWith('/struk/')) return { view: 'receipt', game: null, checkoutId: '', orderId: decodeHash(path.slice(7)) }
+  if (path === '/' || path === '/katalog') return { view: 'home', game: null, checkoutId: '' }
+  return { view: 'notfound', game: null, checkoutId: '' }
+}
+
+function go(path) {
+  if (path === window.location.pathname + window.location.search + window.location.hash) return
+  window.history.pushState(null, '', path)
+  window.dispatchEvent(new Event('melon:navigate'))
+}
+
+const PAGE_META = {
+  '/': ['Melonbyte | Top up Game, Pulsa, E-Money, dan Tagihan', 'Top up game, pulsa, e-money, dan tagihan dengan harga final. Pembayaran QRIS atau Virtual Account, status pesanan diperbarui otomatis.'],
+  '/katalog': ['Katalog layanan | Melonbyte', 'Daftar game, pulsa, e-money, dan tagihan yang tersedia di Melonbyte.'],
+  '/akun': ['Akun | Melonbyte', 'Kelola profil, riwayat pesanan, dan keamanan akun Melonbyte.'],
+  '/daftar': ['Daftar | Melonbyte', 'Buat akun Melonbyte untuk memesan top up game, pulsa, e-money, dan tagihan.'],
+  '/syarat': ['Syarat dan ketentuan | Melonbyte', 'Syarat dan ketentuan layanan Melonbyte.'],
+  '/privasi': ['Kebijakan privasi | Melonbyte', 'Kebijakan privasi dan pengelolaan data pengguna Melonbyte.'],
+  '/kontak': ['Kontak | Melonbyte', 'Hubungi dukungan Melonbyte.'],
+}
+const PRIVATE_VIEWS = new Set(['admin', 'account', 'register', 'receipt', 'checkout'])
+
+function applyPageMeta(route, path) {
+  const meta = PAGE_META[path] || (route.view === 'game' ? [`Top up ${route.game} | Melonbyte`, `Beli ${route.game} di Melonbyte. Harga final, proses otomatis.`] : null)
+  if (meta) {
+    document.title = meta[0]
+    const description = document.querySelector('meta[name="description"]')
+    if (description) description.setAttribute('content', meta[1])
+    const canonical = document.querySelector('link[rel="canonical"]')
+    if (canonical) canonical.setAttribute('href', window.location.origin + (path === '/katalog' ? '/' : path))
+  }
+  let robots = document.querySelector('meta[name="robots"]')
+  if (!robots) {
+    robots = document.createElement('meta')
+    robots.setAttribute('name', 'robots')
+    document.head.appendChild(robots)
+  }
+  robots.setAttribute('content', PRIVATE_VIEWS.has(route.view) ? 'noindex' : 'index, follow')
 }
 
 function decodeHash(value) {
@@ -180,7 +228,7 @@ function LegalPage({ view, info, state }) {
           <p className="field-hint">Sebutkan nomor pesanan (format #xxxxxxxx) agar penanganan lebih cepat. Kami tidak pernah meminta kata sandi, OTP, atau data kartu.</p>
         </section>}
       </div>
-      <p className="legal-back"><a className="secondary-button" href="#katalog">Kembali ke katalog</a><a className="secondary-button" href="#akun">Buka akun</a></p>
+      <p className="legal-back"><a className="secondary-button" href="/katalog">Kembali ke katalog</a><a className="secondary-button" href="/akun">Buka akun</a></p>
     </section>
   )
 }
@@ -298,17 +346,17 @@ function App() {
   const [checkError, setCheckError] = useState('')
   const [catalogState, setCatalogState] = useState('loading')
   const [catalogError, setCatalogError] = useState('')
-  const [game, setGame] = useState(() => routeFromHash().game)
+  const [game, setGame] = useState(() => routeFromPath().game)
   const [category, setCategory] = useState('game')
-  const [view, setView] = useState(() => routeFromHash().view)
-  const [adminPage, setAdminPage] = useState(() => routeFromHash().adminPage || 'transactions')
+  const [view, setView] = useState(() => routeFromPath().view)
+  const [adminPage, setAdminPage] = useState(() => routeFromPath().adminPage || 'transactions')
   const [voucher, setVoucher] = useState(null)
   const [voucherBusy, setVoucherBusy] = useState(false)
   const [voucherNotice, setVoucherNotice] = useState('')
   const [adminVouchers, setAdminVouchers] = useState([])
   const [voucherDraft, setVoucherDraft] = useState({ code: '', value: '1000', minOrder: '10000', quota: '50', perUser: '1', newBuyersOnly: false, days: '30' })
   const [voucherAdminNotice, setVoucherAdminNotice] = useState('')
-  const [checkoutId, setCheckoutId] = useState(() => routeFromHash().checkoutId)
+  const [checkoutId, setCheckoutId] = useState(() => routeFromPath().checkoutId)
 
   const [catalogSearch, setCatalogSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -363,7 +411,7 @@ function App() {
   const [ordersState, setOrdersState] = useState('idle')
   const [ordersError, setOrdersError] = useState('')
   const [ordersRetry, setOrdersRetry] = useState(0)
-  const [receiptId, setReceiptId] = useState(() => routeFromHash().orderId || '')
+  const [receiptId, setReceiptId] = useState(() => routeFromPath().orderId || '')
   const [receipt, setReceipt] = useState(null)
   const [receiptState, setReceiptState] = useState('idle')
   const [receiptError, setReceiptError] = useState('')
@@ -488,8 +536,9 @@ function App() {
 
   useEffect(() => { loadProducts() }, [])
   useEffect(() => {
+    applyPageMeta(routeFromPath(), currentPath())
     const navigate = () => {
-      const route = routeFromHash()
+      const route = routeFromPath()
       setView(route.view)
       setAdminPage(route.adminPage || 'transactions')
       setGame(route.game)
@@ -498,18 +547,36 @@ function App() {
       if (route.view === 'checkout') setCheckoutError('')
       setLoginState('idle')
       setLoginMessage('')
+      applyPageMeta(route, currentPath())
       requestAnimationFrame(() => {
-        const hash = window.location.hash
-        if (route.view === 'game' || route.view === 'checkout' || route.view === 'admin' || route.view === 'receipt' || route.view === 'terms' || route.view === 'privacy' || route.view === 'contact' || route.view === 'notfound' || hash === '#akun' || hash === '#daftar') window.scrollTo(0, 0)
+        if (['game', 'checkout', 'admin', 'receipt', 'terms', 'privacy', 'contact', 'notfound', 'account', 'register'].includes(route.view)) window.scrollTo(0, 0)
         else {
-          const target = hash === '#katalog' ? 'katalog' : 'main'
+          const target = currentPath() === '/katalog' ? 'katalog' : 'main'
           if (document.getElementById(target)) document.getElementById(target).scrollIntoView()
           else requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView())
         }
       })
     }
-    window.addEventListener('hashchange', navigate)
-    return () => window.removeEventListener('hashchange', navigate)
+    const onClick = (event) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+      const anchor = event.target.closest?.('a[href]')
+      if (!anchor || anchor.target || anchor.hasAttribute('download')) return
+      const raw = anchor.getAttribute('href')
+      if (!raw || raw.startsWith('#')) return
+      const url = new URL(anchor.href, window.location.href)
+      if (url.origin !== window.location.origin || url.pathname.startsWith('/api/')) return
+      if (url.pathname === window.location.pathname && url.search === window.location.search && url.hash === window.location.hash) return
+      event.preventDefault()
+      go(url.pathname + url.search + url.hash)
+    }
+    window.addEventListener('popstate', navigate)
+    window.addEventListener('melon:navigate', navigate)
+    document.addEventListener('click', onClick)
+    return () => {
+      window.removeEventListener('popstate', navigate)
+      window.removeEventListener('melon:navigate', navigate)
+      document.removeEventListener('click', onClick)
+    }
   }, [])
   useEffect(() => {
     if (!supabase) return
@@ -970,7 +1037,7 @@ function App() {
       setResendWait(0)
       setLoginState('idle')
       showToast('ok', 'Berhasil masuk', 'Anda berhasil masuk. Selamat datang di Melonbyte.')
-      window.location.hash = '#akun'
+      go('/akun')
     } catch (error) {
       setLoginState('error')
       setLoginMessage(authErrorMessage(error.message))
@@ -1000,7 +1067,7 @@ function App() {
       if (error) throw error
       setRegisterPassword('')
       if (data?.session) {
-        window.location.hash = '#akun'
+        go('/akun')
         setLoginState('idle')
         setLoginMessage('Akun berhasil dibuat. Anda langsung masuk.')
       } else if (Array.isArray(data?.user?.identities) && data.user.identities.length === 0) {
@@ -1383,7 +1450,7 @@ function App() {
       setConfirmOpen(false)
       setCheckoutState('idle')
       setReceipt(null)
-      window.location.hash = `#struk/${encodeURIComponent(data.orderId)}`
+      go(`/struk/${encodeURIComponent(data.orderId)}`)
     } catch (error) {
       setCheckoutError(error.message)
       setCheckoutState('error')
@@ -1578,7 +1645,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   function openCatalog(name) {
     setSearchOpen(false)
     setCatalogSearch('')
-    window.location.hash = `#game/${encodeURIComponent(name)}`
+    go(`/game/${encodeURIComponent(name)}`)
   }
   const pricingQuery = catalogQuery.trim().toLowerCase()
   const pricingItems = adminCatalog.filter((item) => (catalogShowUnsupported || item.supported) && (catalogFilter === 'semua' || Boolean((catalogDrafts[item.sku] || {}).enabled) === (catalogFilter === 'tampil')) && (!pricingQuery || [item.name, item.sku, item.game, item.category].some((value) => String(value || '').toLowerCase().includes(pricingQuery))))
@@ -1636,16 +1703,16 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
       </div>}
       <header className="site-header">
         <div className="wrap header-inner">
-          <a className="wordmark" href="#main" aria-label="Melonbyte, kembali ke awal"><span>melon</span>byte<span className="wordmark-dot">.</span></a>
+          <a className="wordmark" href="/" aria-label="Melonbyte, kembali ke awal"><span>melon</span>byte<span className="wordmark-dot">.</span></a>
           <form className="home-search" role="search" ref={searchBoxRef} onSubmit={(event) => { event.preventDefault(); const first = searchCatalogs[0]; if (first) openCatalog(first); else if (catalogSearch.trim()) setSearchOpen(true); else document.getElementById('katalog')?.scrollIntoView({ behavior: 'smooth' }) }}>
             <div className="home-search-controls"><input id="home-catalog-search" type="search" aria-label="Cari di katalog" autoComplete="off" aria-autocomplete="list" aria-expanded={searchOpen && Boolean(catalogSearch.trim())} aria-controls="home-search-suggest" value={catalogSearch} onChange={(event) => { setCatalogSearch(event.target.value); setSearchOpen(true) }} onFocus={() => { if (catalogSearch.trim()) setSearchOpen(true) }} onKeyDown={(event) => { if (event.key === 'Escape') setSearchOpen(false) }} placeholder="Cari di katalog" /><button type="submit">Cari</button>{searchOpen && catalogSearch.trim() && <div className="search-suggest" id="home-search-suggest">{searchCatalogs.length === 0 ? <p className="suggest-empty" role="status">Layanan tidak ditemukan. Coba kata lain.</p> : searchCatalogs.map((name) => <button key={name} type="button" onClick={() => openCatalog(name)}>{brandLogo(name) ? <span className={`suggest-art${brandLogo(name).cover ? ' suggest-art-foto' : ''}`} style={{ background: brandLogo(name).bg }} aria-hidden="true"><img src={brandLogo(name).src} alt="" loading="lazy" decoding="async" style={brandLogo(name).cover ? { objectFit: 'cover' } : brandLogo(name).invert ? { filter: 'brightness(0) invert(1)' } : undefined} /></span> : <span className="game-initial" aria-hidden="true">{name.slice(0, 2).toUpperCase()}</span>}<span className="suggest-text"><strong>{name}</strong><small>{products.filter((item) => item.game === name).length} nominal</small></span></button>)}</div>}</div>
           </form>
           <nav aria-label="Navigasi utama">
-            <a href="#katalog">Katalog</a>
-            {canManage && <a href="#admin" aria-current={view === 'admin' ? 'page' : undefined}>Admin</a>}
-            {session ? <a className="account-avatar" href="#akun" aria-label={`Akun ${accountName}`} title={accountName} aria-current={view === 'account' ? 'page' : undefined}>{accountInitial}</a> : <>
-              <a href="#akun" aria-current={view === 'account' ? 'page' : undefined}>Masuk</a>
-              <a href="#daftar" aria-current={view === 'register' ? 'page' : undefined}>Daftar</a>
+            <a href="/katalog">Katalog</a>
+            {canManage && <a href="/admin" aria-current={view === 'admin' ? 'page' : undefined}>Admin</a>}
+            {session ? <a className="account-avatar" href="/akun" aria-label={`Akun ${accountName}`} title={accountName} aria-current={view === 'account' ? 'page' : undefined}>{accountInitial}</a> : <>
+              <a href="/akun" aria-current={view === 'account' ? 'page' : undefined}>Masuk</a>
+              <a href="/daftar" aria-current={view === 'register' ? 'page' : undefined}>Daftar</a>
             </>}
           </nav>
         </div>
@@ -1656,9 +1723,9 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
         <section className="hero wrap" aria-labelledby="hero-title">
           <div className="hero-copy">
             <p className="eyebrow"><span className="eyebrow-line" /> MELONBYTE / LAYANAN DIGITAL</p>
-            <h1 id="hero-title">Top up game dan layanan digital,<br /><em>langsung diproses otomatis.</em></h1>
+            <h1 id="hero-title">Top up game dan layanan digital, <br /><em>langsung diproses otomatis.</em></h1>
             <p className="hero-description">Cari layanan digital di katalog. Harga dan ketersediaan mengikuti produk yang aktif.</p>
-            <a className="primary-link" href="#katalog">Lihat katalog layanan <span aria-hidden="true">↗</span></a>
+            <a className="primary-link" href="/katalog">Lihat katalog layanan <span aria-hidden="true">↗</span></a>
           </div>
           <div className="hero-graphic" aria-hidden="true">
             <div className="orbit orbit-one" /><div className="orbit orbit-two" />
@@ -1676,7 +1743,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             </div>
             {catalogState === 'loading' && <div className="notice" role="status">Memuat katalog...</div>}
             {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum dapat dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
-            {catalogState === 'ready' && (activeBrands.length === 0 ? <div className="notice" role="status"><strong>{activeType.label} belum tersedia.</strong><p>Belum ada layanan aktif dalam kategori ini. Periksa kembali nanti.</p></div> : <div className="game-grid poster-grid">{activeBrands.map((item) => { const logo = brandLogo(item); return <button key={item} type="button" className="game-card poster" style={{ '--brand': brandWarna(item) || '#3d5a35', '--brand-dark': brandGelap(item) || '#22331d' }} onClick={() => { window.location.hash = `#game/${encodeURIComponent(item)}` }}><span className="poster-art" aria-hidden="true">{logo ? <><img className="poster-blur" src={logo.src} alt="" loading="lazy" decoding="async" />{logo.cover ? <img className="poster-img poster-img-foto" src={logo.src} alt="" loading="lazy" decoding="async" /> : <span className="poster-chip"><img className="poster-img" src={logo.src} alt="" loading="lazy" decoding="async" /></span>}</> : <span className="poster-initial">{String(item).slice(0, 2).toUpperCase()}</span>}</span><span className="poster-text"><strong>{item}</strong><span className="poster-hint">Lihat nominal <span aria-hidden="true">›</span></span></span></button> })}</div>)}
+            {catalogState === 'ready' && (activeBrands.length === 0 ? <div className="notice" role="status"><strong>{activeType.label} belum tersedia.</strong><p>Belum ada layanan aktif dalam kategori ini. Periksa kembali nanti.</p></div> : <div className="game-grid poster-grid">{activeBrands.map((item) => { const logo = brandLogo(item); return <button key={item} type="button" className="game-card poster" style={{ '--brand': brandWarna(item) || '#3d5a35', '--brand-dark': brandGelap(item) || '#22331d' }} onClick={() => { go(`/game/${encodeURIComponent(item)}`) }}><span className="poster-art" aria-hidden="true">{logo ? <><img className="poster-blur" src={logo.src} alt="" loading="lazy" decoding="async" />{logo.cover ? <img className="poster-img poster-img-foto" src={logo.src} alt="" loading="lazy" decoding="async" /> : <span className="poster-chip"><img className="poster-img" src={logo.src} alt="" loading="lazy" decoding="async" /></span>}</> : <span className="poster-initial">{String(item).slice(0, 2).toUpperCase()}</span>}</span><span className="poster-text"><strong>{item}</strong><span className="poster-hint">Lihat nominal <span aria-hidden="true">›</span></span></span></button> })}</div>)}
           </div>
         </section>
 
@@ -1685,7 +1752,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
           {catalogState === 'loading' && <div className="notice" role="status">Memuat produk...</div>}
           {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum dapat dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
           {catalogState === 'ready' && view === 'game' && filtered.length === 0 && <div className="notice" role="status"><strong>Belum ada nominal aktif.</strong><p>Produk baru tampil setelah harga dan stok dikonfigurasi. Checkout belum tersedia.</p></div>}
-          {catalogState === 'ready' && view === 'checkout' && !selected && <div className="notice" role="status"><strong>Produk tidak ditemukan.</strong><p>Produk mungkin sudah tidak aktif. Pilih lagi dari katalog.</p><p><a href="#katalog">Kembali ke katalog</a></p></div>}
+          {catalogState === 'ready' && view === 'checkout' && !selected && <div className="notice" role="status"><strong>Produk tidak ditemukan.</strong><p>Produk mungkin sudah tidak aktif. Pilih lagi dari katalog.</p><p><a href="/katalog">Kembali ke katalog</a></p></div>}
           {catalogState === 'ready' && view === 'game' && filtered.length > 0 && allOutage(filtered) && <div className="notice notice-warn" role="status"><strong>Semua nominal layanan ini sedang gangguan.</strong><p>Penyedia layanan sedang mengalami kendala. Coba layanan lain, atau kembali lagi nanti.</p></div>}
           {catalogState === 'ready' && view === 'checkout' && selected && isOutage(selected) && <div className="notice notice-warn" role="status"><strong>Nominal ini sedang gangguan.</strong><p>{OUTAGE_NOTE}</p></div>}
           {catalogState === 'ready' && (view === 'game' ? filtered.length > 0 : selected) && <div className="checkout-layout">
@@ -1714,7 +1781,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">2</span><h3>Pilih nominal</h3></div>
                   {view === 'checkout' && <p className="field-hint">Ganti nominal kapan saja; ringkasan ikut diperbarui.</p>}
-                  {orderKinds.map((kind) => <Fragment key={kind.name}>{orderKinds.length > 1 && <p className="product-kind">{kind.name}<small className="product-kind-count">{kind.items.length} nominal</small></p>}<div className="product-grid">{kind.items.map((item) => <button key={item.id} type="button" className={isOutage(item) ? 'product is-outage' : item.id === selected?.id ? 'product selected' : 'product'} aria-current={item.id === selected?.id ? 'true' : undefined} disabled={isOutage(item)} title={isOutage(item) ? OUTAGE_NOTE : undefined} onClick={() => { window.location.hash = `#beli/${encodeURIComponent(item.id)}` }}><strong>{namaSingkat(item)}</strong>{isOutage(item) && <span className="product-flag">Gangguan</span>}<span className="product-bottom"><span className="product-price">{rupiah(item.price)}</span></span></button>)}</div></Fragment>)}
+                  {orderKinds.map((kind) => <Fragment key={kind.name}>{orderKinds.length > 1 && <p className="product-kind">{kind.name}<small className="product-kind-count">{kind.items.length} nominal</small></p>}<div className="product-grid">{kind.items.map((item) => <button key={item.id} type="button" className={isOutage(item) ? 'product is-outage' : item.id === selected?.id ? 'product selected' : 'product'} aria-current={item.id === selected?.id ? 'true' : undefined} disabled={isOutage(item)} title={isOutage(item) ? OUTAGE_NOTE : undefined} onClick={() => { go(`/beli/${encodeURIComponent(item.id)}`) }}><strong>{namaSingkat(item)}</strong>{isOutage(item) && <span className="product-flag">Gangguan</span>}<span className="product-bottom"><span className="product-price">{rupiah(item.price)}</span></span></button>)}</div></Fragment>)}
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">3</span><h3>Jumlah pembelian</h3><span className="step-tag">Terkunci</span></div>
@@ -1769,10 +1836,10 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
           </div>}
         </section> : view === 'receipt' ? <div className="invoice-page wrap" id="struk">
           <div className="invoice-head">
-            <div><a className="back-button" href="#akun">‹ Semua pesanan</a><h1>Invoice <span className="invoice-code">#{(receipt?.id || receiptId || '').slice(0, 8)}</span></h1>{receipt?.createdAt && <p className="invoice-meta">Dibuat {labelTanggalJam(receipt.createdAt)}</p>}</div>
+            <div><a className="back-button" href="/akun">‹ Semua pesanan</a><h1>Invoice <span className="invoice-code">#{(receipt?.id || receiptId || '').slice(0, 8)}</span></h1>{receipt?.createdAt && <p className="invoice-meta">Dibuat {labelTanggalJam(receipt.createdAt)}</p>}</div>
             {receipt && <span className={`receipt-status status-${receipt.status}`}>{statusLabel(receipt.status)}</span>}
           </div>
-          {!session ? <div className="notice" role="status"><p>Masuk terlebih dahulu untuk membuka invoice ini. Invoice terhubung ke akun pembeli.</p><a className="secondary-button" href="#akun">Masuk</a></div> : receiptState === 'error' ? <p role="alert">Gagal memuat invoice. {receiptError} <button type="button" onClick={() => setReceiptRetry((value) => value + 1)}>Coba lagi</button> <a href="#akun">Kembali ke akun</a></p> : !receipt ? <p role="status">Memuat invoice...</p> : <>
+          {!session ? <div className="notice" role="status"><p>Masuk terlebih dahulu untuk membuka invoice ini. Invoice terhubung ke akun pembeli.</p><a className="secondary-button" href="/akun">Masuk</a></div> : receiptState === 'error' ? <p role="alert">Gagal memuat invoice. {receiptError} <button type="button" onClick={() => setReceiptRetry((value) => value + 1)}>Coba lagi</button> <a href="/akun">Kembali ke akun</a></p> : !receipt ? <p role="status">Memuat invoice...</p> : <>
             <section className={`invoice-banner banner-${receipt.status}`} aria-label="Status pesanan">
               <div><h2>{statusLabel(receipt.status)}</h2><p>{statusHint(receipt.status)}</p></div>
               {receipt.status === 'pending' && receipt.paymentExpiresAt && <p className="invoice-timer">{invoiceRemaining > 0 ? <>Sisa waktu bayar <strong>{invoiceRemainingLabel}</strong></> : 'Waktu pembayaran habis. Buat pesanan baru untuk mencoba kembali.'}</p>}
@@ -1825,22 +1892,22 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 <button type="button" className="secondary-button" onClick={kirimPenilaian} disabled={ratingState === 'sending'}>{ratingState === 'sending' ? 'Mengirim...' : 'Kirim penilaian'}</button>
               </>}
             </section>}
-            <p className="receipt-links"><a href="#katalog">Belanja lagi</a><a href="#akun">Semua pesanan</a></p>
+            <p className="receipt-links"><a href="/katalog">Belanja lagi</a><a href="/akun">Semua pesanan</a></p>
           </>}
         </div> : view === 'notfound' ? (
           <section className="account-page wrap" id="tidak-ditemukan">
             <h1>Halaman tidak ditemukan</h1>
             <p className="auth-lead">Alamat yang Anda buka tidak tersedia atau sudah dipindahkan. Periksa kembali tautannya, atau mulai dari katalog.</p>
-            <p><a className="primary-button" href="#katalog">Buka katalog</a></p>
+            <p><a className="primary-button" href="/katalog">Buka katalog</a></p>
           </section>
 ) : <div className={view === 'admin' ? 'admin-page wrap' : 'account-page wrap'} id={view === 'admin' ? 'admin' : 'akun'}>
           {view === 'admin' ? <>
-            <div className="admin-heading"><div><h1>Panel admin</h1><p>Kelola pesanan toko dan harga produk.</p></div><a className="secondary-button" href="#katalog">Lihat toko</a></div>
+            <div className="admin-heading"><div><h1>Panel admin</h1><p>Kelola pesanan toko dan harga produk.</p></div><a className="secondary-button" href="/katalog">Lihat toko</a></div>
             {canManage && <nav className="admin-nav" aria-label="Navigasi admin">
-              <a href="#admin/ringkasan" aria-current={adminPage === 'summary' ? 'page' : undefined}>Ringkasan</a><a href="#admin" aria-current={adminPage === 'transactions' ? 'page' : undefined}>Transaksi</a>
-              <a href="#admin/produk" aria-current={adminPage === 'products' ? 'page' : undefined}>Produk &amp; harga</a><a href="#admin/voucher" aria-current={adminPage === 'vouchers' ? 'page' : undefined}>Voucher</a><a href="#admin/refund" aria-current={adminPage === 'refunds' ? 'page' : undefined}>Refund</a>
+              <a href="/admin/ringkasan" aria-current={adminPage === 'summary' ? 'page' : undefined}>Ringkasan</a><a href="/admin" aria-current={adminPage === 'transactions' ? 'page' : undefined}>Transaksi</a>
+              <a href="/admin/produk" aria-current={adminPage === 'products' ? 'page' : undefined}>Produk &amp; harga</a><a href="/admin/voucher" aria-current={adminPage === 'vouchers' ? 'page' : undefined}>Voucher</a><a href="/admin/refund" aria-current={adminPage === 'refunds' ? 'page' : undefined}>Refund</a>
             </nav>}
-            {!session ? <div className="notice" role="status"><p>Masuk dengan akun admin untuk mengelola toko.</p><a className="secondary-button" href="#akun">Masuk</a></div> : roleState === 'ready' && !canManage ? <div className="notice" role="status"><p>Halaman ini khusus admin toko.</p><a className="secondary-button" href="#akun">Kembali ke akun</a></div> : null}
+            {!session ? <div className="notice" role="status"><p>Masuk dengan akun admin untuk mengelola toko.</p><a className="secondary-button" href="/akun">Masuk</a></div> : roleState === 'ready' && !canManage ? <div className="notice" role="status"><p>Halaman ini khusus admin toko.</p><a className="secondary-button" href="/akun">Kembali ke akun</a></div> : null}
           </> : <h1>{view === 'register' && !session ? 'Daftar akun' : 'Akun saya'}</h1>}
           {view !== 'admin' && <>
           <section className="account-section" aria-labelledby="account-title">
@@ -1931,18 +1998,54 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
               </aside>}
             </div>
           </section>
-          {session && <section className="order-section" aria-labelledby="order-title"><div className="order-layout"><div><h2 id="order-title">Riwayat pesanan</h2><p>Klik pesanan untuk membuka invoice dan status terbarunya. Jangan membayar ulang sebelum memeriksa status.</p></div><div className="order-panel">{ordersState === 'loading' ? <p role="status">Memuat pesanan...</p> : ordersState === 'error' ? <p role="alert">Gagal memuat pesanan. {ordersError} <button type="button" onClick={() => setOrdersRetry((value) => value + 1)}>Coba lagi</button></p> : orders.length === 0 ? <p role="status">Belum ada pesanan di akun ini. <a href="#katalog">Lihat katalog</a></p> : <ul className="order-list">{orders.map((order) => <li key={order.id}><a href={`#struk/${encodeURIComponent(order.id)}`}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {statusLabel(order.status)}</span><small>{[tanggalWib(order.createdAt, true), `#${order.id}`].filter(Boolean).join(' · ')}</small></a></li>)}</ul>}</div></div></section>}
+          {session && <section className="order-section" aria-labelledby="order-title"><div className="order-layout"><div><h2 id="order-title">Riwayat pesanan</h2><p>Klik pesanan untuk membuka invoice dan status terbarunya. Jangan membayar ulang sebelum memeriksa status.</p></div><div className="order-panel">{ordersState === 'loading' ? <p role="status">Memuat pesanan...</p> : ordersState === 'error' ? <p role="alert">Gagal memuat pesanan. {ordersError} <button type="button" onClick={() => setOrdersRetry((value) => value + 1)}>Coba lagi</button></p> : orders.length === 0 ? <p role="status">Belum ada pesanan di akun ini. <a href="/katalog">Lihat katalog</a></p> : <ul className="order-list">{orders.map((order) => <li key={order.id}><a href={`/struk/${encodeURIComponent(order.id)}`}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {statusLabel(order.status)}</span><small>{[tanggalWib(order.createdAt, true), `#${order.id}`].filter(Boolean).join(' · ')}</small></a></li>)}</ul>}</div></div></section>}
           </>}
           {view === 'admin' && session && roleState === 'loading' && <p role="status">Memeriksa akses akun...</p>}
           {view === 'admin' && session && roleState === 'error' && <p role="alert">Akses pengelola belum dapat diperiksa. {roleError} <button type="button" onClick={() => setRoleRetry((value) => value + 1)}>Coba lagi</button></p>}
-          {view === 'admin' && canManage && adminPage === 'vouchers' && <section className="order-section admin-section" aria-labelledby="voucher-title"><div className="section-heading"><div><h2 id="voucher-title">Voucher</h2></div><p>Kuota, masa berlaku, dan batas per akun dijaga oleh server. Voucher pembeli baru tidak dapat dipakai oleh akun yang sudah pernah membeli.</p></div><div className="voucher-admin"><form className="voucher-form" onSubmit={createVoucher}><label>Kode<input type="text" autoComplete="off" placeholder="TEMAN1K" value={voucherDraft.code} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, code: event.target.value.toUpperCase() }))} /></label><label>Potongan (Rp)<input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.value} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, value: event.target.value }))} /></label><label>Minimum belanja (Rp)<input type="number" inputMode="numeric" min="0" autoComplete="off" value={voucherDraft.minOrder} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, minOrder: event.target.value }))} /></label><label>Kuota<input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.quota} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, quota: event.target.value }))} /></label><label>Batas per akun<input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.perUser} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, perUser: event.target.value }))} /></label><label>Berlaku (hari)<input type="number" inputMode="numeric" min="1" max="365" autoComplete="off" value={voucherDraft.days} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, days: event.target.value }))} /></label><label className="voucher-new"><input type="checkbox" autoComplete="off" checked={voucherDraft.newBuyersOnly} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, newBuyersOnly: event.target.checked }))} />Khusus pembeli baru</label><button type="submit" disabled={voucherBusy}>{voucherBusy ? 'Menyimpan...' : 'Simpan voucher'}</button></form>{voucherAdminNotice && <p className="catalog-sync-notice" role="status">{voucherAdminNotice}</p>}<ul className="voucher-list">{adminVouchers.length === 0 ? <li>Belum ada voucher.</li> : adminVouchers.map((item) => <li key={item.code}><strong>{item.code}</strong><span>{rupiah(item.value)} · min {rupiah(item.minOrder)} · dipakai {item.used}/{item.quota ?? '∞'}</span><small>{item.newBuyersOnly ? 'khusus pembeli baru · ' : ''}{item.active ? 'aktif' : 'nonaktif'}{item.endsAt ? ` · sampai ${new Date(item.endsAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })}` : ''}</small><button type="button" className="secondary-button" onClick={() => toggleVoucher(item)}>{item.active ? 'Matikan' : 'Nyalakan'}</button></li>)}</ul></div></section>}
-          {view === 'admin' && canManage && adminPage === 'refunds' && <section className="order-section admin-section" aria-labelledby="refund-title"><div className="section-heading"><div><h2 id="refund-title">Refund</h2></div><p>Pesanan yang dananya sudah masuk tetapi itemnya belum terkirim. Refund otomatis melalui Midtrans, atau tandai manual jika dana dikembalikan sendiri.</p></div>{adminRefundsState === 'loading' ? <p role="status">Memuat daftar refund...</p> : adminRefundsState === 'error' ? <p role="alert">Gagal memuat daftar refund. {adminRefundsError} <button type="button" onClick={() => setAdminRefundsRetry((value) => value + 1)}>Coba lagi</button></p> : <>{adminRefunds.orders.length === 0 ? <p role="status">Tidak ada pesanan yang menunggu refund.</p> : <ul className="refund-list">{adminRefunds.orders.map((order) => <li key={order.id} className="refund-card"><div className="refund-info"><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.userId}{order.zoneId ? ` (${order.zoneId})` : ''}</span><small>#{order.id} · {statusLabel(order.status)}{order.fulfillmentNote ? ` · ${order.fulfillmentNote}` : ''}</small></div><div className="refund-actions"><button type="button" className="secondary-button" onClick={() => processRefund(order, false)} disabled={Boolean(refundBusy)}>{refundBusy === order.id ? 'Memproses...' : 'Refund melalui Midtrans'}</button><button type="button" className="secondary-button" onClick={() => processRefund(order, true)} disabled={Boolean(refundBusy)}>Tandai manual</button></div>{refundNotice.id === order.id && <p className={refundNotice.error ? 'price-hint refund-error' : 'price-hint'} role={refundNotice.error ? 'alert' : 'status'}>{refundNotice.text}</p>}</li>)}</ul>}{adminRefunds.refunded.length > 0 && <div className="refund-done"><h3>Sudah direfund</h3><ul className="order-list">{adminRefunds.refunded.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.refundNote || 'refund'}</span><small>#{order.id}{order.refundedAt ? ` · ${new Date(order.refundedAt).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}</small></li>)}</ul></div>}</>}</section>}
+          {view === 'admin' && canManage && adminPage === 'vouchers' && <section className="order-section admin-section" aria-labelledby="voucher-title"><div className="section-heading"><div><h2 id="voucher-title">Voucher</h2></div><p>Kuota, masa berlaku, dan batas per akun dijaga oleh server. Voucher pembeli baru tidak dapat dipakai oleh akun yang sudah pernah membeli.</p></div><div className="voucher-admin"><form className="voucher-form" onSubmit={createVoucher}>
+  <div className="voucher-form-head"><div><h3>Buat voucher baru</h3><p>Potongan bernilai tetap. Server memeriksa kuota, masa berlaku, dan batas akun saat checkout.</p></div></div>
+  <div className="voucher-fields">
+    <label className="voucher-field"><span>Kode voucher</span><input type="text" autoComplete="off" maxLength="24" placeholder="TEMAN1K" value={voucherDraft.code} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, code: event.target.value.toUpperCase() }))} /><small>Tanpa spasi, otomatis huruf kapital.</small></label>
+    <label className="voucher-field"><span>Potongan (Rp)</span><input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.value} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, value: event.target.value }))} /><small>Nominal tetap, bukan persentase.</small></label>
+    <label className="voucher-field"><span>Minimum belanja (Rp)</span><input type="number" inputMode="numeric" min="0" autoComplete="off" value={voucherDraft.minOrder} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, minOrder: event.target.value }))} /><small>Dihitung dari harga sebelum potongan.</small></label>
+    <label className="voucher-field"><span>Kuota pemakaian</span><input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.quota} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, quota: event.target.value }))} /><small>Kosongkan untuk tanpa batas.</small></label>
+    <label className="voucher-field"><span>Batas per akun</span><input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.perUser} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, perUser: event.target.value }))} /><small>Jumlah pemakaian oleh satu akun.</small></label>
+    <label className="voucher-field"><span>Berlaku (hari)</span><input type="number" inputMode="numeric" min="1" max="365" autoComplete="off" value={voucherDraft.days} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, days: event.target.value }))} /><small>Dihitung sejak voucher dibuat.</small></label>
+  </div>
+  <label className="voucher-new"><input type="checkbox" autoComplete="off" checked={voucherDraft.newBuyersOnly} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, newBuyersOnly: event.target.checked }))} /><span><strong>Khusus pembeli baru</strong><small>Hanya berlaku untuk akun yang belum pernah menyelesaikan pembelian.</small></span></label>
+  <div className="voucher-form-foot">
+    <p className="voucher-preview">{`Potongan ${rupiah(Number(voucherDraft.value) || 0)} untuk belanja minimum ${rupiah(Number(voucherDraft.minOrder) || 0)}. ${voucherDraft.quota === '' ? 'Tanpa batas kuota' : `Kuota ${voucherDraft.quota} pemakaian`}, ${voucherDraft.perUser || 1} kali per akun, berlaku ${voucherDraft.days || 1} hari.`}</p>
+    <button type="submit" disabled={voucherBusy}>{voucherBusy ? 'Menyimpan...' : 'Simpan voucher'}</button>
+  </div>
+</form>{voucherAdminNotice && <p className="voucher-form-notice" role="status">{voucherAdminNotice}</p>}<ul className="voucher-list">{adminVouchers.length === 0 ? <li>Belum ada voucher.</li> : adminVouchers.map((item) => <li key={item.code}>
+<div className="voucher-item-info"><strong>{item.code}</strong><span>{rupiah(item.value)} · min {rupiah(item.minOrder)} · dipakai {item.used}/{item.quota ?? '∞'}</span><small>{item.newBuyersOnly ? 'khusus pembeli baru · ' : ''}{item.active ? 'aktif' : 'nonaktif'}{item.endsAt ? ` · sampai ${new Date(item.endsAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })}` : ''}</small></div>
+<button type="button" className="secondary-button" onClick={() => toggleVoucher(item)}>{item.active ? 'Matikan' : 'Nyalakan'}</button>
+</li>)}</ul></div></section>}
+          {view === 'admin' && canManage && adminPage === 'refunds' && <section className="order-section admin-section" aria-labelledby="refund-title"><div className="section-heading"><div><h2 id="refund-title">Refund</h2></div><p>Pesanan yang dananya sudah masuk tetapi itemnya belum terkirim. Refund otomatis melalui Midtrans, atau tandai manual jika dana dikembalikan sendiri.</p></div>{adminRefundsState === 'loading' ? <p role="status">Memuat daftar refund...</p> : adminRefundsState === 'error' ? <p role="alert">Gagal memuat daftar refund. {adminRefundsError} <button type="button" onClick={() => setAdminRefundsRetry((value) => value + 1)}>Coba lagi</button></p> : <>{adminRefunds.orders.length === 0 ? <p role="status">Tidak ada pesanan yang menunggu refund.</p> : <ul className="refund-list">{adminRefunds.orders.map((order) => <li key={order.id} className="refund-card"><div className="refund-info"><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.userId}{order.zoneId ? ` (${order.zoneId})` : ''}</span><small>#{order.id} · {statusLabel(order.status)}{order.fulfillmentNote ? ` · ${order.fulfillmentNote}` : ''}</small></div><div className="refund-actions"><button type="button" className="secondary-button" onClick={() => processRefund(order, false)} disabled={Boolean(refundBusy)}>{refundBusy === order.id ? 'Memproses...' : 'Refund melalui Midtrans'}</button><button type="button" className="secondary-button" onClick={() => processRefund(order, true)} disabled={Boolean(refundBusy)}>Tandai manual</button></div>{refundNotice.id === order.id && <p className={refundNotice.error ? 'price-hint refund-error' : 'price-hint'} role={refundNotice.error ? 'alert' : 'status'}>{refundNotice.text}</p>}</li>)}</ul>}{adminRefunds.refunded.length > 0 && <div className="refund-done"><h3>Sudah direfund</h3><ul className="order-list">{adminRefunds.refunded.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {order.refundNote || 'refund'}</span><small>#{order.id}{order.refundedAt ? ` · ${new Date(order.refundedAt).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}{order.refundedBy ? ` · oleh ${order.refundedBy}` : ''}</small></li>)}</ul></div>}</>}</section>}
           {view === 'admin' && canManage && adminPage === 'summary' && <section className="order-section admin-section sales-dashboard" aria-labelledby="sales-title"><div className="section-heading"><div><h2 id="sales-title">Ringkasan penjualan</h2><p>{adminSales?.environment === 'production' ? 'Data pembayaran dari lingkungan produksi.' : 'Lingkungan sandbox. Angka di bawah bukan penjualan nyata.'}</p></div><div className="sales-controls"><div className="sales-range" role="group" aria-label="Rentang ringkasan"><button type="button" aria-pressed={adminSalesDays === 7} onClick={() => setAdminSalesDays(7)}>7 hari</button><button type="button" aria-pressed={adminSalesDays === 30} onClick={() => setAdminSalesDays(30)}>30 hari</button></div><button type="button" className="secondary-button" onClick={() => setAdminSalesRetry((value) => value + 1)} disabled={adminSalesState === 'loading'}>Perbarui</button></div></div>{adminSalesState === 'loading' ? <p role="status">Memuat ringkasan pembayaran...</p> : adminSalesState === 'error' ? <p role="alert">Ringkasan belum dapat dimuat. {adminSalesError} <button type="button" onClick={() => setAdminSalesRetry((value) => value + 1)}>Coba lagi</button></p> : adminSalesState === 'ready' && adminSales ? <><div className="sales-metrics"><article className="sales-metric"><span>Pendapatan bersih</span><strong>{rupiah(salesTotals.paid - salesTotals.refunded)}</strong><small>Pembayaran terverifikasi dikurangi refund</small></article><article className="sales-metric"><span>Pembayaran terverifikasi</span><strong>{salesTotals.paidCount}</strong><small>{rupiah(salesTotals.paid)} diterima pada periode ini</small></article><article className="sales-metric"><span>Perlu pemenuhan</span><strong>{adminSales.pendingFulfillment}</strong><small>Pesanan dibayar, belum selesai</small></article><article className="sales-metric"><span>Refund</span><strong>{salesTotals.refundCount}</strong><small>{rupiah(salesTotals.refunded)} dikembalikan pada periode ini</small></article></div><p className="sales-pending">Pembayaran menunggu: <strong>{adminSales.pendingPayments}</strong>. Pembayaran ini tidak masuk pendapatan.</p>{adminSales.daily.length === 0 ? <p role="status">Belum ada data pembayaran terverifikasi pada periode ini.</p> : <div className="sales-charts"><section className="sales-chart" aria-labelledby="sales-revenue-title"><h3 id="sales-revenue-title">Pembayaran dan refund harian</h3><p>Nominal dalam rupiah. Refund ditampilkan pada tanggal dana dikembalikan.</p><div className="sales-legend"><span><i className="sales-legend-paid" />Pembayaran</span><span><i className="sales-legend-refund" />Refund</span></div><div className="sales-bars-scroll"><div className="sales-bars" style={{ minWidth: adminSalesDays === 30 ? '660px' : '100%' }} role="list" aria-label="Grafik pembayaran dan refund harian">{adminSales.daily.map((day) => <div className="sales-day" key={day.date} role="listitem" aria-label={`${day.date}: pembayaran ${rupiah(day.paid)}, refund ${rupiah(day.refunded)}`}><div className="sales-day-bars"><span className="sales-bar sales-bar-paid" style={{ height: `${Math.max(day.paid ? 3 : 0, day.paid / salesRevenueMax * 100)}%` }} /><span className="sales-bar sales-bar-refund" style={{ height: `${Math.max(day.refunded ? 3 : 0, day.refunded / salesRevenueMax * 100)}%` }} /></div><small>{new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', timeZone: 'Asia/Jakarta' }).format(new Date(`${day.date}T12:00:00+07:00`))}</small></div>)}</div></div></section><section className="sales-chart" aria-labelledby="sales-count-title"><h3 id="sales-count-title">Jumlah pembayaran per hari</h3><p>Jumlah transaksi ditampilkan terpisah dari nominal.</p><div className="sales-bars-scroll"><div className="sales-bars sales-count-bars" style={{ minWidth: adminSalesDays === 30 ? '660px' : '100%' }} role="list" aria-label="Grafik jumlah pembayaran per hari">{adminSales.daily.map((day) => <div className="sales-day" key={day.date} role="listitem" aria-label={`${day.date}: ${day.paidCount} pembayaran`}><div className="sales-day-bars"><span className="sales-bar sales-bar-count" style={{ height: `${Math.max(day.paidCount ? 3 : 0, day.paidCount / salesCountMax * 100)}%` }} /></div><small>{new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', timeZone: 'Asia/Jakarta' }).format(new Date(`${day.date}T12:00:00+07:00`))}</small></div>)}</div></div></section></div>}<p className="sales-footnote">Periode dihitung berdasarkan waktu pembayaran terverifikasi, bukan waktu pesanan dibuat. Data lama tanpa catatan waktu bayar tidak disertakan.</p></> : null}</section>}
           {view === 'admin' && canManage && adminPage === 'transactions' && <section className="order-section admin-section" aria-labelledby="admin-title"><div className="order-layout"><div><h2 id="admin-title">Transaksi</h2><p>Pesanan terbaru toko, dari seluruh pembeli.</p></div><div className="order-panel">{adminState === 'loading' ? <p role="status">Memuat pesanan toko...</p> : adminState === 'error' ? <p role="alert">Gagal memuat pesanan toko. {adminError} <button type="button" onClick={() => setAdminRetry((value) => value + 1)}>Coba lagi</button></p> : adminOrders.length === 0 ? <p role="status">Belum ada pesanan toko.</p> : <ul className="order-list">{adminOrders.map((order) => <li key={order.id}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {statusLabel(order.status)}</span><small>{[tanggalWib(order.createdAt, true), `#${order.id}`].filter(Boolean).join(' · ')}</small>{(order.contactEmail || order.contactPhone) && <small className="order-contact">{order.contactEmail}{order.contactEmail && order.contactPhone ? ' · ' : ''}{order.contactPhone && <a href={`https://wa.me/${order.contactPhone.replace(/[^0-9]/g, '').replace(/^0/, '62')}`} target="_blank" rel="noreferrer">{order.contactPhone}</a>}</small>}</li>)}</ul>}</div></div></section>}
           {view === 'admin' && canManage && adminPage === 'products' && <section className="order-section admin-section" aria-labelledby="pricing-title"><div className="section-heading"><div><h2 id="pricing-title">Harga jual</h2></div><p>Harga supplier adalah modal dan tidak ditampilkan ke pembeli. Simpan harga jual sebelum menampilkan produk.</p></div><div className="catalog-sync"><span className="catalog-sync-state">{adminCatalogFetchedAt ? `Katalog supplier · sinkron ${new Date(adminCatalogFetchedAt).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Katalog supplier belum disinkronkan.'}</span><button type="button" className="secondary-button" onClick={syncCatalog} disabled={catalogSyncing}>{catalogSyncing ? 'Menyinkron...' : 'Perbarui katalog'}</button></div>{catalogSyncNotice && <p className="catalog-sync-notice" role="status">{catalogSyncNotice}</p>}<div className="catalog-sync"><span className="catalog-sync-state">Gambar game diambil dari App Store Indonesia. Perbarui bila ada kolaborasi atau ulang tahun baru.</span><button type="button" className="secondary-button" onClick={refreshGameImages} disabled={gambarBusy}>{gambarBusy ? 'Memperbarui...' : 'Perbarui gambar game'}</button></div>{gambarNotice && <p className="catalog-sync-notice" role="status">{gambarNotice}</p>}{adminCatalogState === 'loading' ? <p role="status">Memuat katalog supplier...</p> : adminCatalogState === 'error' ? <p role="alert">Katalog supplier belum dapat dimuat. {adminCatalogError} <button type="button" onClick={() => setAdminCatalogRetry((value) => value + 1)}>Coba lagi</button></p> : adminCatalog.length === 0 ? <p role="status">Katalog supplier kosong. Tekan Perbarui katalog.</p> : <><div className="pricing-toolbar"><input type="text" aria-label="Cari produk supplier" placeholder="Cari nama, kode, atau brand" autoComplete="off" value={catalogQuery} onChange={(event) => { setCatalogQuery(event.target.value) }} /><div className="category-filter" role="group" aria-label="Saring produk"><button type="button" className={catalogFilter === 'semua' ? 'active' : ''} aria-pressed={catalogFilter === 'semua'} onClick={() => { setCatalogFilter('semua') }}>Semua</button><button type="button" className={catalogFilter === 'tampil' ? 'active' : ''} aria-pressed={catalogFilter === 'tampil'} onClick={() => { setCatalogFilter('tampil') }}>Tampil</button><button type="button" className={catalogFilter === 'draf' ? 'active' : ''} aria-pressed={catalogFilter === 'draf'} onClick={() => { setCatalogFilter('draf') }}>Draf</button></div></div><div className="pricing-meta"><div className="pricing-meta-actions">{adminCatalogStale && <span className="pricing-stale" role="status">Katalog sudah lama tidak disinkronkan.</span>}{batchNotice && <span role="status">{batchNotice}</span>}<label className="pricing-unsupported"><input type="checkbox" checked={catalogShowUnsupported} onChange={(event) => { setCatalogShowUnsupported(event.target.checked) }} />Tampilkan yang belum didukung checkout</label><button type="button" className="secondary-button" onClick={exportCatalogCsv}>Ekspor CSV</button><label className="secondary-button csv-import">Impor CSV<input type="file" accept=".csv,text/csv" autoComplete="off" onChange={importCatalogCsv} /></label>{pricingDirty > 0 && <button type="button" className="secondary-button" onClick={saveAllChanges} disabled={Boolean(catalogBusy)}>Simpan semua ({pricingDirty})</button>}</div></div>{pricingItems.length === 0 ? <p className="pricing-empty" role="status">Tidak ada produk yang cocok. Ubah kata kunci atau penyaring.</p> : <><div className="price-groups">{pricingGroups.map((category) => { const categoryShown = category.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <section key={category.name} className="price-group"><label className="switch price-category-switch" title={`Aktifkan atau nonaktifkan semua produk kategori ${category.name}`}><input type="checkbox" role="switch" checked={categoryShown === category.items.length} ref={(el) => { if (el) el.indeterminate = categoryShown > 0 && categoryShown < category.items.length }} aria-label={`Tampilkan semua produk kategori ${category.name}`} onChange={(event) => toggleGroup(category.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label><details className="price-category" open={Boolean(catalogQuery.trim())}><summary className="price-cat-head"><h3 className="price-cat-title">{category.name}<small className="price-group-count">{category.items.length} produk · {categoryShown} tampil</small></h3></summary>{category.brands.map((brand) => { const brandShown = brand.items.filter((item) => (catalogDrafts[item.sku] || {}).enabled === true).length; return <div key={brand.name} className="price-brand"><label className="switch price-brand-switch" title={`Aktifkan atau nonaktifkan semua produk ${brand.name}`}><input type="checkbox" role="switch" checked={brandShown === brand.items.length} ref={(el) => { if (el) el.indeterminate = brandShown > 0 && brandShown < brand.items.length }} aria-label={`Tampilkan semua produk ${brand.name}`} onChange={(event) => toggleGroup(brand.items, event.target.checked)} /><span className="switch-track" aria-hidden="true" /></label><details className="price-brand-details" open={Boolean(catalogQuery.trim())}><summary className="price-brand-head"><span className="price-brand-cover"><GameCover name={brand.name} /></span><h4 className="price-brand-title">{brand.name}<small className="price-group-count">{brand.items.length} produk · {brandShown} tampil</small></h4></summary><div className="price-margin"><label className="price-margin-field"><span>Margin</span><input type="number" inputMode="decimal" min="0" max="500" step="0.5" placeholder="8" autoComplete="off" aria-label={`Margin harga ${brand.name} (%)`} value={marginDrafts[brand.name] || ''} onChange={(event) => setMarginDrafts((drafts) => ({ ...drafts, [brand.name]: event.target.value }))} /><span>%</span></label><button type="button" className="secondary-button" onClick={() => applyBrandMargin(brand)} disabled={Boolean(catalogBusy)}>Terapkan</button><span className="price-margin-hint">Modal × (1 + %), sudah termasuk biaya QRIS, dibulatkan ke atas.</span></div>{brand.kinds.map((kind) => <div key={kind.name} className="price-kind">{brand.kinds.length > 1 && <h5 className="price-kind-head">{kind.name}<small className="price-group-count">{kind.items.length} produk</small></h5>}<ul className="price-grid">{kind.items.map((item) => { const draft = catalogDrafts[item.sku] || { price: '', enabled: false, priceMode: 'auto' }; const health = priceHealth(draft.price, item.cost, item.category); const saran = suggestPrice(item.cost, item.category); return <li key={item.sku} className="price-card"><div className="price-head"><strong>{item.name || item.sku}</strong>{item.gangguan === true ? <span className="product-flag">Gangguan</span> : null}<small>{item.game || item.sku}{item.variant ? ` · ${item.variant}` : ''}{item.category ? ` · ${item.category}` : ''}</small></div><div className="price-row"><span className="price-cost">{item.cost == null ? 'Tidak ada di katalog supplier aktif.' : `Modal ${rupiah(item.cost)}`}</span><label className="price-toggle"><input type="checkbox" checked={draft.enabled} disabled={!item.supported} aria-label={`Tampil di katalog: ${item.name || item.sku}`} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, enabled: event.target.checked } }))} />Tampil</label></div><div className="price-row price-actions"><input type="number" inputMode="numeric" min="1" step="1" placeholder="Harga jual (Rp)" autoComplete="off" aria-label={`Harga jual ${item.name || item.sku}`} value={draft.price} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: event.target.value } }))} onKeyDown={(event) => { if (event.key === 'Enter') saveSellingPrice(item.sku) }} /><button type="button" className="secondary-button" onClick={() => saveSellingPrice(item.sku)} disabled={Boolean(catalogBusy)}>{catalogBusy === item.sku ? 'Menyimpan...' : 'Simpan'}</button><button type="button" className={item.gangguan === true ? 'secondary-button outage-on' : 'secondary-button'} onClick={() => toggleOutage(item)} disabled={Boolean(outageBusy)}>{outageBusy === item.sku ? 'Menyimpan...' : item.gangguan === true ? 'Gangguan aktif' : 'Tandai gangguan'}</button><label className="price-mode" title="Otomatis: harga mengikuti aturan modal dan biaya pada setiap sinkron katalog. Manual: harga dikunci."><input type="checkbox" autoComplete="off" aria-label={`Kunci harga manual: ${item.name || item.sku}`} checked={draft.priceMode === 'manual'} onChange={(event) => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, priceMode: event.target.checked ? 'manual' : 'auto' } }))} />Kunci manual</label></div>{!item.supported && <p className="price-hint">Belum didukung checkout, sehingga belum dapat ditampilkan.</p>}{item.cost != null && health && <p className={`price-warning price-health-${health.level}`} role="status">{health.level === 'rugi' ? `Rugi ${rupiah(Math.abs(health.netRp))} setelah biaya QRIS.` : health.level === 'tipis' ? `Margin tipis: sisa ${rupiah(health.netRp)} (${health.marginPct}%).` : `Margin aman: sisa ${rupiah(health.netRp)} (${health.marginPct}%).`}{health.level !== 'rugi' && !health.vaSafe ? ' Belum cukup untuk biaya VA.' : ''}</p>}{item.cost != null && saran != null && <p className="price-suggest-row"><button type="button" className="secondary-button" onClick={() => setCatalogDrafts((drafts) => ({ ...drafts, [item.sku]: { ...draft, price: String(saran) } }))}>Gunakan saran {rupiah(saran)}</button><span className="price-suggest-note">target margin {marginBand(item.category, Number(item.cost) || 0).pct}%</span></p>}{catalogNotice.sku === item.sku && <p className="price-hint" role={catalogNotice.error ? 'alert' : 'status'}>{catalogNotice.text}</p>}</li>; })}</ul></div>)}</details></div>; })}</details></section>; })}</div></>}</>}</section>}
         </div>}
       </main>
-      <footer className="footer"><div className="wrap footer-inner"><span className="wordmark"><span>melon</span>byte<span className="wordmark-dot">.</span></span><p>Layanan digital otomatis: game, pulsa, e-money, dan tagihan. Harga dan ketersediaan mengikuti katalog aktif.</p><p className="footer-note">Nama, logo, dan gambar layanan adalah milik pemiliknya masing-masing. Melonbyte tidak berafiliasi resmi dengan penerbit game, operator seluler, atau penyedia dompet digital.</p><nav className="footer-links" aria-label="Informasi layanan">{LEGAL_LINKS.map((link) => <a key={link.hash} href={link.hash}>{link.label}</a>)}</nav><a href="#main">Kembali ke atas ↑</a></div></footer>
+      <footer className="footer">
+        <div className="wrap footer-main">
+          <div className="footer-brand">
+            <a className="wordmark" href="/" aria-label="Melonbyte, beranda"><span>melon</span>byte<span className="wordmark-dot">.</span></a>
+            <p>Layanan digital otomatis: game, pulsa, e-money, dan tagihan. Harga dan ketersediaan mengikuti katalog aktif.</p>
+          </div>
+          <nav className="footer-nav" aria-label="Tautan footer">
+            <div className="footer-col"><h2 className="footer-heading">Layanan</h2><a href="/katalog">Katalog</a><a href="/akun">Akun</a></div>
+            <div className="footer-col"><h2 className="footer-heading">Informasi</h2>{LEGAL_LINKS.map((link) => <a key={link.path} href={link.path}>{link.label}</a>)}</div>
+          </nav>
+        </div>
+        <div className="wrap footer-bottom">
+          <div className="footer-legal">
+            <p>© {new Date().getFullYear()} Melonbyte. Seluruh hak cipta dilindungi.</p>
+            <p className="footer-note">Nama, logo, dan gambar layanan adalah milik pemiliknya masing-masing. Melonbyte tidak berafiliasi resmi dengan penerbit game, operator seluler, atau penyedia dompet digital.</p>
+          </div>
+          <button type="button" className="footer-top" onClick={() => { window.scrollTo({ top: 0 }); document.getElementById('main')?.focus({ preventScroll: true }) }}>Kembali ke atas <span aria-hidden="true">↑</span></button>
+        </div>
+      </footer>
     </div>
   )
 }

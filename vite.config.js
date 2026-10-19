@@ -15,4 +15,14 @@ export default defineConfig({
         },
     }],
     server: { allowedHosts: ['.trycloudflare.com'], proxy: { '/api': 'http://localhost:3001' } },
+    build: {
+        rollupOptions: {
+            output: {
+                manualChunks: {
+                    react: ['react', 'react-dom'],
+                    supabase: ['@supabase/supabase-js'],
+                },
+            },
+        },
+    },
 })
