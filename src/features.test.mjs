@@ -55,7 +55,7 @@ test('halaman legal, footer, dan kontak terhubung ke rute yang nyata', () => {
   assert.match(source, /if \(path === '\/privasi'\) return \{ view: 'privacy'/);
   assert.match(source, /if \(path === '\/kontak'\) return \{ view: 'contact'/);
   assert.match(source, /<LegalPage view=\{view\} info=\{contactInfo\} state=\{contactState\} \/>/);
-  assert.match(source, /className="footer-links"/);
+  assert.match(source, /className="footer-nav"/);
   assert.match(source, /request\('\/api\/contact'\)/);
   assert.match(css, /\.legal-page\{/);
 });

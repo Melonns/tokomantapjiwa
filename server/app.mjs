@@ -89,6 +89,11 @@ function send(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
+function sendXml(res, status, value) {
+  res.writeHead(status, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600', 'x-content-type-options': 'nosniff' });
+  res.end(value);
+}
+
 async function readJson(req) {
   if (!req.headers['content-type']?.toLowerCase().startsWith('application/json')) throw error(415, 'Gunakan JSON.');
   let text = '';
@@ -373,7 +378,15 @@ function whatsappLink(input) {
   return normalized.length >= 9 && normalized.length <= 15 ? `https://wa.me/${normalized}` : null;
 }
 
+function storeBaseUrl(env) {
+  const configured = String(env.STORE_URL || '').trim().replace(/\/+$/, '');
+  if (configured) return configured;
+  if (env.NODE_ENV === 'production' || env.MIDTRANS_ENV === 'production') throw new Error('STORE_URL wajib diisi di production.');
+  return 'http://localhost:5173';
+}
+
 export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
+  const storeUrl = storeBaseUrl(env);
   // ponytail: Pembatas percobaan per IP untuk endpoint yang mudah disalahgunakan. Batas dapat diubah lewat env.
   const limit = (name, fallback, windowMs) => createRateLimiter({ windowMs, max: Number(env[`RATE_LIMIT_${name}_MAX`]) > 0 ? Number(env[`RATE_LIMIT_${name}_MAX`]) : fallback });
   const limits = {
@@ -394,6 +407,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
     };
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
+      if ((req.method === 'GET' || req.method === 'HEAD') && path === '/sitemap.xml') {
+        const { rows } = await pool.query("SELECT DISTINCT game FROM products WHERE enabled = true AND game <> '' ORDER BY game");
+        const pages = ['/', '/katalog', '/syarat', '/privasi', '/kontak', ...rows.map((row) => `/game/${encodeURIComponent(row.game)}`)];
+        const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${pages.map((page) => `<url><loc>${escapeHtml(storeUrl + page)}</loc></url>`).join('')}</urlset>`;
+        return sendXml(res, 200, xml);
+      }
       // ponytail: titik kesehatan untuk pemantauan uptime, memastikan API dan basis data benar-benar hidup.
       if ((req.method === 'GET' || req.method === 'HEAD') && path === '/api/health') {
         try {
@@ -606,7 +625,6 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
           throw error(409, 'Voucher tidak dapat dipakai lagi. Periksa kode voucher lalu coba kembali.');
         }
-        const storeUrl = (env.STORE_URL || 'http://localhost:5173').replace(/\/+$/, '');
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas (4xx) menutup pesanan;
         // kegagalan ambigu (5xx/timeout) dibiarkan pending untuk rekonsiliasi dan order_id tidak pernah digunakan ulang.
 
@@ -661,12 +679,15 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (!checkReady(env)) throw error(503, 'Fitur periksa nickname belum aktif di server ini.');
         try { buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         const brand = String(product.game || '').toUpperCase();
-        if (body?.force !== true) {
-          const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '30 days'", [brand, input.userId, input.zoneId]);
-          if (cached.rows[0]) return send(res, 200, { check: { nickname: cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
-        }
         const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
         if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
+        if (body?.force !== true) {
+          const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '30 days'", [brand, input.userId, input.zoneId]);
+          if (cached.rows[0]) {
+            await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
+            return send(res, 200, { check: { nickname: cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
+          }
+        }
         let payload;
         try {
           const provider = checkRequest(env, checkGame, input);
@@ -799,12 +820,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       if (req.method === 'GET' && path === '/api/admin/refunds') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, user_id AS "userId", zone_id AS "zoneId", fulfillment_note AS "fulfillmentNote", refunded_at AS "refundedAt", refund_note AS "refundNote", created_at AS "createdAt" FROM orders WHERE status IN ${refundableSql} ORDER BY updated_at ASC, id ASC LIMIT 100`);
-        const { rows: refunded } = await pool.query("SELECT id, product_name AS \"productName\", price, refunded_at AS \"refundedAt\", refund_note AS \"refundNote\" FROM orders WHERE status = 'refunded' ORDER BY refunded_at DESC NULLS LAST, id DESC LIMIT 20");
+        const { rows: refunded } = await pool.query(`SELECT o.id, o.product_name AS "productName", o.price, o.refunded_at AS "refundedAt", o.refund_note AS "refundNote", e.method AS "refundMethod", e.note AS "refundAuditNote", (SELECT email FROM auth.users u WHERE u.id = e.admin_id) AS "refundedBy" FROM orders o LEFT JOIN LATERAL (SELECT admin_id, method, note FROM refund_events WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1) e ON true WHERE o.status = 'refunded' ORDER BY o.refunded_at DESC NULLS LAST, o.id DESC LIMIT 20`);
         return send(res, 200, { orders: rows, refunded });
       }
       if (req.method === 'POST' && /^\/api\/admin\/orders\/[^/]+\/refund$/.test(path)) {
         const id = path.split('/')[4];
-        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const adminId = await authenticatedAdmin(req, pool, fetchImpl, env);
         if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
         let body;
         try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
@@ -830,7 +851,15 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
             throw error(502, 'Midtrans menolak refund ini. Periksa dashboard Midtrans, atau gunakan penandaan manual dengan catatan.');
           }
         }
-        const { rows: done } = await pool.query(`UPDATE orders SET status = 'refunded', refunded_at = now(), refund_note = $2, updated_at = now() WHERE id = $1 AND status IN ${refundableSql} RETURNING id`, [id, manual ? `Manual: ${note}` : 'Refund otomatis melalui Midtrans']);
+        const refundNote = manual ? `Manual: ${note}` : 'Refund otomatis melalui Midtrans';
+        const { rows: done } = await pool.query(`WITH updated AS (
+          UPDATE orders SET status = 'refunded', refunded_at = now(), refund_note = $2, updated_at = now()
+          WHERE id = $1 AND status IN ${refundableSql}
+          RETURNING id, price
+        )
+        INSERT INTO refund_events (order_id, admin_id, method, amount, note)
+        SELECT id, $3, $4, price, $5 FROM updated
+        RETURNING order_id`, [id, refundNote, adminId, manual ? 'manual' : 'midtrans', manual ? note : refundNote]);
         if (!done[0]) throw error(409, 'Status pesanan berubah; muat ulang halaman.');
         await releaseVoucher(pool, id);
         notifyOrder(pool, fetchImpl, env, 'refunded', id);

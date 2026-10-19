@@ -130,7 +130,7 @@ test('admin melihat daftar pesanan yang menunggu refund', async () => {
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: [{ user_id: ownerId }] };
     if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id: orderId, status: 'fulfillment_failed', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100', fulfillmentNote: 'Stok habis', refundedAt: null, refundNote: null, createdAt: '2026-10-15T00:00:00Z' }] };
-    if (sql.startsWith('SELECT id, product_name')) return { rows: [{ id: '22222222-2222-4222-8222-222222222222', productName: '5 Diamonds', price: 12000, refundedAt: '2026-10-15T02:00:00Z', refundNote: 'Manual: transfer bank' }] };
+    if (sql.startsWith('SELECT o.id, o.product_name')) return { rows: [{ id: '22222222-2222-4222-8222-222222222222', productName: '5 Diamonds', price: 12000, refundedAt: '2026-10-15T02:00:00Z', refundNote: 'Manual: transfer bank' }] };
     throw Error(`unexpected SQL: ${sql.slice(0, 40)}`);
   } };
   const handler = createHandler({ pool, env, fetchImpl: withAuth(() => { throw Error('net touched'); }) });
@@ -156,6 +156,7 @@ test('refund manual menandai pesanan, menyimpan catatan, dan mengembalikan kuota
   assert.equal(status, 200);
   assert.deepEqual(payload, { refunded: true, manual: true });
   assert.equal(statements.some((sql) => /voucher/i.test(sql)), true);
+  assert.equal(statements.some((sql) => sql.includes('INSERT INTO refund_events')), true);
 });
 
 test('refund manual tanpa catatan ditolak agar jejaknya jelas', async () => {
