@@ -8,6 +8,7 @@ export const GAME_ICONS = [
   { slug: 'free-fire', cari: 'free fire' },
   { slug: 'genshin-impact', cari: 'genshin impact' },
   { slug: 'honkai-star-rail', cari: 'honkai star rail' },
+  { slug: 'speed-drifters', cari: 'speed drifters' },
 ]
 
 // ponytail: satu gambar gagal tidak boleh membatalkan gambar lain, jadi tiap game dicatat sendiri.

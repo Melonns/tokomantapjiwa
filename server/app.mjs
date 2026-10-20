@@ -21,7 +21,22 @@ const customerFormats = {
   'DANA': 'plain', 'GO PAY': 'plain', 'OVO': 'plain', 'SHOPEE PAY': 'plain',
   'PLN': 'plain', 'K-VISION DAN GOL': 'plain',
 };
-const formatFor = game => customerFormats[String(game || '').toUpperCase()] || null;
+// Blueprint kategori: brand baru di kategori ini otomatis memakai input nomor/ID polos,
+// jadi kategori produk baru tidak perlu ditambahkan satu per satu di customerFormats.
+const categoryFormats = {
+  'Voucher': 'plain',
+  'Pulsa': 'plain',
+  'Data': 'plain',
+  'Masa Aktif': 'plain',
+  'Paket SMS & Telpon': 'plain',
+  'Aktivasi Voucher': 'plain',
+  'Aktivasi Perdana': 'plain',
+  'E-Money': 'plain',
+  'TV': 'plain',
+  'PLN': 'plain',
+  'Gas': 'plain',
+};
+const formatFor = (game, category) => customerFormats[String(game || '').toUpperCase()] || categoryFormats[String(category || '').trim()] || null;
 const error = (status, message) => Object.assign(new Error(message), { status });
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const ready = env => Boolean(env.DATABASE_URL && env.MIDTRANS_SERVER_KEY && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((env.MIDTRANS_ENV === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (env.MIDTRANS_ENV === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
@@ -119,6 +134,12 @@ async function authenticatedAdmin(req, pool, fetchImpl, env) {
   const { rows } = await pool.query('SELECT user_id FROM admin_users WHERE user_id = $1', [ownerId]);
   if (!rows[0]) throw error(403, 'Akses admin diperlukan.');
   return ownerId;
+}
+
+// ponytail: harga modal hanya dipakai untuk akun admin; server yang menentukan, bukan browser.
+function modalAdmin(row, fallback) {
+  const cost = Number(row?.admin_cost);
+  return row?.admin === true && Number.isSafeInteger(cost) && cost > 0 ? cost : fallback;
 }
 
 async function authenticatedOwner(req, fetchImpl, env) {
@@ -427,10 +448,24 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         }
       }
       if (req.method === 'GET' && path === '/api/products') {
-        const { rows } = await pool.query(`SELECT p.id, p.name, p.game, p.price, p.customer_format AS "format", p.gangguan, s.category FROM products p
+        // ponytail: katalog tetap publik; token admin hanya dipakai untuk mengembalikan harga modal.
+        // ?harga=user hanya mengubah tampilan untuk admin; checkout tetap memakai harga modal.
+        let ownerId = null;
+        if (req.headers.authorization) {
+          try { ownerId = await authenticatedOwner(req, fetchImpl, env); } catch {}
+        }
+        const { rows } = await pool.query(`SELECT p.id, p.name, p.game, p.price, p.customer_format AS "format", p.gangguan, s.category, s.price AS admin_cost,
+          EXISTS(SELECT 1 FROM admin_users a WHERE a.user_id = $1) AS admin FROM products p
           JOIN supplier_products s ON s.sku = p.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products)
-          WHERE p.enabled = true AND s.category <> '' ORDER BY p.game, p.id`);
-        return send(res, 200, { products: rows.map(({ gangguan, ...p }) => ({ ...p, id: String(p.id), category: String(p.category || ''), checkable: Boolean(checkableGame(p.game)), ...(gangguan === true ? { gangguan: true } : {}) })), checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env) });
+          WHERE p.enabled = true AND s.category <> '' ORDER BY p.game, p.id`, [ownerId]);
+        const userView = new URL(req.url, 'http://localhost').searchParams.get('harga') === 'user';
+        return send(res, 200, {
+          products: rows.map(({ gangguan, admin, admin_cost, ...p }) => {
+            const price = userView ? p.price : modalAdmin({ admin, admin_cost }, p.price)
+            return { ...p, id: String(p.id), price, category: String(p.category || ''), checkable: Boolean(checkableGame(p.game)), ...(gangguan === true ? { gangguan: true } : {}) }
+          }),
+          checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env)
+        });
       }
       // ponytail: kontak dukungan dibaca dari env agar dapat diganti tanpa menyentuh kode.
       if (req.method === 'GET' && path === '/api/contact') {
@@ -489,18 +524,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const match = (name, game, sku) => !q || name.toLowerCase().includes(q) || game.toLowerCase().includes(q) || sku.toLowerCase().includes(q);
         const products = catalog.filter(item => match(item.name, item.game, item.id)).map(item => ({
           sku: item.id, name: item.name, game: item.game, category: item.category, variant: item.variant, cost: item.price,
-          supported: Boolean(formatFor(item.game)),
+          supported: Boolean(formatFor(item.game, item.category)),
           price: saved.get(item.id)?.price ?? null,
           enabled: saved.get(item.id)?.enabled ?? false,
           priceMode: saved.get(item.id)?.price_mode === 'manual' ? 'manual' : 'auto',
         }));
-        const catalogIds = new Set(catalog.map(item => item.id));
-        const missing = rows.filter(row => !catalogIds.has(row.id) && match(row.name, row.game, row.id)).map(row => ({
-          sku: row.id, name: row.name, game: row.game, category: null, variant: null, cost: null,
-          supported: Boolean(formatFor(row.game)), missing: true, price: row.price, enabled: row.enabled,
-          priceMode: row.price_mode === 'manual' ? 'manual' : 'auto',
-        }));
-        return send(res, 200, { products: products.concat(missing), catalogFetchedAt: syncedAt ? syncedAt.toISOString() : null, catalogStale: !syncedAt || Date.now() - syncedAt.getTime() > 10 * 60 * 1000 });
+        return send(res, 200, { products, catalogFetchedAt: syncedAt ? syncedAt.toISOString() : null, catalogStale: !syncedAt || Date.now() - syncedAt.getTime() > 10 * 60 * 1000 });
       }
       if (req.method === 'POST' && path === '/api/admin/supplier-products/sync') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
@@ -529,16 +558,16 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const { rows: supplierRows } = await pool.query(`SELECT name, game, category, variant, price FROM supplier_products WHERE sku = $1 AND ${supplierRowWhere}`, [sku]);
         const item = supplierRows[0];
         if (!item && enabled) throw error(409, 'SKU tidak ada di katalog supplier aktif.');
-        if (item && enabled && !formatFor(item.game)) throw error(422, 'Format tujuan produk ini belum didukung checkout.');
+        if (item && enabled && !formatFor(item.game, item.category)) throw error(422, 'Format tujuan produk ini belum didukung checkout.');
         const { rows } = item
           ? await pool.query(`INSERT INTO products (id, name, game, price, digi_sku, customer_format, enabled, price_mode) VALUES ($1, $2, $3, $4, $1, $6, $5, $7)
             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, game = EXCLUDED.game, price = EXCLUDED.price, digi_sku = EXCLUDED.digi_sku, enabled = EXCLUDED.enabled, price_mode = EXCLUDED.price_mode
-            RETURNING id, name, game, price, enabled, price_mode, gangguan`, [sku, item.name, item.game, price, enabled, formatFor(item.game), mode])
+            RETURNING id, name, game, price, enabled, price_mode, gangguan`, [sku, item.name, item.game, price, enabled, formatFor(item.game, item.category), mode])
           : await pool.query('UPDATE products SET price = $2, enabled = false, price_mode = $3 WHERE id = $1 RETURNING id, name, game, price, enabled, price_mode, gangguan', [sku, price, mode]);
         if (!rows[0]) throw error(404, 'Produk tidak ditemukan.');
         return send(res, 200, { product: {
           sku: rows[0].id, name: rows[0].name, game: rows[0].game, category: item?.category ?? null, variant: item?.variant ?? null, cost: item?.price ?? null,
-          supported: Boolean(formatFor(item ? item.game : rows[0].game)),
+          supported: Boolean(formatFor(item ? item.game : rows[0].game, item?.category ?? null)),
           missing: !item, price: rows[0].price, enabled: rows[0].enabled, priceMode: rows[0].price_mode === 'manual' ? 'manual' : 'auto', ...(rows[0].gangguan === true ? { gangguan: true } : {}),
         } });
       }
@@ -594,13 +623,17 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
         const code = String(body?.code || '').trim().toUpperCase();
         if (!/^[A-Z0-9_-]{3,24}$/.test(code)) throw error(400, 'Kode voucher tidak valid.');
-        const { rows } = await pool.query('SELECT id, name, price, gangguan FROM products WHERE id = $1 AND enabled = true', [body?.productId]);
+        const { rows } = await pool.query(`SELECT id, name, price, gangguan,
+          (SELECT s.price FROM supplier_products s WHERE s.sku = products.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products) LIMIT 1) AS admin_cost,
+          EXISTS(SELECT 1 FROM admin_users a WHERE a.user_id = $2) AS admin
+          FROM products WHERE id = $1 AND enabled = true`, [body?.productId, ownerId]);
         if (!rows[0]) throw error(404, 'Produk tidak tersedia.');
         if (rows[0].gangguan === true) throw error(409, 'Produk ini sedang mengalami gangguan. Pilih nominal lain atau coba kembali beberapa saat lagi.');
-        const picked = await voucherFor(pool, code, ownerId, rows[0].price);
+        const harga = modalAdmin(rows[0], rows[0].price);
+        const picked = await voucherFor(pool, code, ownerId, harga);
         if (!picked) throw error(400, 'Kode voucher tidak valid.');
         if (picked.error) throw error(400, picked.error);
-        return send(res, 200, { voucher: { code: picked.voucher.code, label: picked.voucher.label, discount: picked.discount, total: rows[0].price - picked.discount } });
+        return send(res, 200, { voucher: { code: picked.voucher.code, label: picked.voucher.label, discount: picked.discount, total: harga - picked.discount } });
       }
       if (req.method === 'POST' && path === '/api/checkout') {
         guard('checkout');
@@ -608,16 +641,21 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         let input;
         try { input = validateCheckout(await readJson(req)); } catch (err) { throw err.status ? err : error(400, err.message); }
         if (!checkoutReady(env)) throw error(503, 'Checkout belum siap.');
-        const { rows } = await pool.query('SELECT id, name, price, digi_sku, customer_format, gangguan FROM products WHERE id = $1 AND enabled = true', [input.productId]);
+        const { rows } = await pool.query(`SELECT id, name, price, digi_sku, customer_format, gangguan,
+          (SELECT s.price FROM supplier_products s WHERE s.sku = products.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products) LIMIT 1) AS admin_cost,
+          EXISTS(SELECT 1 FROM admin_users a WHERE a.user_id = $2) AS admin
+          FROM products WHERE id = $1 AND enabled = true`, [input.productId, ownerId]);
         const product = rows[0];
         if (!product) throw error(404, 'Produk tidak tersedia.');
         if (product.gangguan === true) throw error(409, 'Produk ini sedang mengalami gangguan. Pilih nominal lain atau coba kembali beberapa saat lagi.');
         if (!Object.values(customerFormats).includes(product.customer_format)) throw error(422, 'Format tujuan belum didukung.');
-        const picked = input.voucherCode ? await voucherFor(pool, input.voucherCode, ownerId, product.price) : null;
+        // ponytail: admin membeli dengan harga modal supplier, pembeli biasa tetap memakai harga jual.
+        const harga = modalAdmin(product, product.price);
+        const picked = input.voucherCode ? await voucherFor(pool, input.voucherCode, ownerId, harga) : null;
         if (picked?.error) throw error(400, picked.error);
         const discount = picked?.discount ?? 0;
         // ponytail: price = jumlah yang benar-benar ditagih (setelah potongan) karena webhook mencocokkan gross_amount dengan price.
-        const amount = product.price - discount;
+        const amount = harga - discount;
         const methodId = input.paymentMethod || 'qris';
         const method = PAYMENT_METHODS[methodId];
         if (!method) throw error(400, 'Metode pembayaran tidak dikenal.');

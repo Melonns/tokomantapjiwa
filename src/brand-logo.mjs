@@ -1,6 +1,6 @@
 // Logo merek disimpan sebagai SVG di public/logo supaya tetap tajam di ukuran layar apa pun.
-// Sumber: Simple Icons, Arcticons, dan Wikimedia Commons. Merek tanpa berkas di sini memakai
-// inisial bergradasi bawaan GameCover.
+// Sumber: Simple Icons, Arcticons, Wikimedia Commons, dan App Store Indonesia.
+// Merek tanpa berkas di sini memakai inisial bergradasi bawaan GameCover.
 // Logo satu warna ditampilkan putih di atas kotak bergradasi warna merek; logo berwarna asli
 // ditampilkan apa adanya di atas kotak terang.
 const TERANG = '#f4f7ef'
@@ -13,7 +13,11 @@ const LOGOS = {
   'free fire': ikon('/logo/game/free-fire.jpg'),
   'genshin impact': ikon('/logo/game/genshin-impact.jpg'),
   'honkai star rail': ikon('/logo/game/honkai-star-rail.jpg'),
+  'speed drifters': ikon('/logo/game/speed-drifters.jpg'),
   valorant: berwarna('/logo/valorant.svg'),
+  'steam wallet': ikon('/logo/steam-wallet.svg'),
+  steam: ikon('/logo/steam-wallet.svg'),
+  playstation: ikon('/logo/playstation-wallet.svg'),
   'go pay': berwarna('/logo/gopay.svg'),
   gopay: berwarna('/logo/gopay.svg'),
   'shopee pay': berwarna('/logo/shopeepay.svg'),
@@ -47,7 +51,11 @@ const WARNA = {
   'free fire': '#ff6a00',
   'genshin impact': '#4b7bb5',
   'honkai star rail': '#5b3fa8',
+  'speed drifters': '#f15a24',
   valorant: '#ff4655',
+  'steam wallet': '#1b2838',
+  steam: '#1b2838',
+  playstation: '#003791',
   'go pay': '#00aed6',
   gopay: '#00aed6',
   'shopee pay': '#ee4d2d',

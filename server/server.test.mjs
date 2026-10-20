@@ -383,6 +383,40 @@ test('public products and owned order expose only frontend contract fields', asy
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('admin memakai harga modal tanpa margin, pembeli biasa tetap harga jual', async () => {
+  let insertedPrice, charged;
+  const row = { id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat', category: 'Games', admin_cost: 18000, admin: true };
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT p.id, p.name, p.game')) return { rows: [row] };
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [row] };
+    if (sql.startsWith('INSERT INTO orders')) { insertedPrice = params[3]; return { rows: [] }; }
+    if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
+    charged = JSON.parse(options.body).transaction_details.gross_amount;
+    return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
+  }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const products = await (await fetch(base + '/api/products', { headers: authHeaders })).json();
+    assert.equal(products.products[0].price, 18000);
+    const userProducts = await (await fetch(base + '/api/products?harga=user', { headers: authHeaders })).json();
+    assert.equal(userProducts.products[0].price, 25000);
+    const response = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 201);
+    assert.equal(insertedPrice, 18000);
+    assert.equal(charged, 18000);
+    // Mode tampilan user tidak boleh mengubah tagihan admin: server tetap memakai harga modal.
+    const userResponse = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', priceView: 'user' }) });
+    assert.equal(userResponse.status, 201);
+    assert.equal(insertedPrice, 18000);
+    assert.equal(charged, 18000);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('pending Digi response stays pending and duplicate webhook never retries', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   let claimed = false, status = 'pending', calls = 0;
@@ -505,8 +539,7 @@ test('supplier costs stay behind the admin role and the panel reads them from th
       { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', variant: 'Indonesia', cost: 3057, supported: true, price: 22000, enabled: true, priceMode: 'manual' },
       { sku: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', category: 'Games', variant: 'Umum', cost: 1605, supported: true, price: null, enabled: false, priceMode: 'auto' },
       { sku: 'ax10', name: 'AXIS 10.000', game: 'AXIS', category: 'Pulsa', variant: 'Umum', cost: 10000, supported: true, price: null, enabled: false, priceMode: 'auto' },
-      { sku: 'stm50', name: 'Steam Wallet 50.000', game: 'STEAM', category: 'Voucher', variant: 'Umum', cost: 50000, supported: false, price: null, enabled: false, priceMode: 'auto' },
-      { sku: 'done1', name: 'Produk lama', game: 'MOBILE LEGENDS', category: null, variant: null, cost: null, supported: true, missing: true, price: 5000, enabled: true, priceMode: 'auto' },
+      { sku: 'stm50', name: 'Steam Wallet 50.000', game: 'STEAM', category: 'Voucher', variant: 'Umum', cost: 50000, supported: true, price: null, enabled: false, priceMode: 'auto' },
     ]);
     // inti perubahan: membuka panel tidak menyentuh Digiflazz sama sekali.
     assert.equal(supplierCalls, 0);
@@ -560,6 +593,7 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
     { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', variant: 'Indonesia', price: 3057 },
     { sku: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', category: 'Games', variant: 'Umum', price: 1605 },
     { sku: 'stm50', name: 'Steam Wallet 50.000', game: 'STEAM', category: 'Voucher', variant: 'Umum', price: 50000 },
+    { sku: 'unk1', name: 'Produk Baru', game: 'BRAND BARU', category: 'Games', variant: 'Umum', price: 10000 },
   ];
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: isAdmin ? [{ user_id: ownerId }] : [] };
@@ -575,7 +609,7 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
     const put = (sku, payload) => fetch(`${base}/api/admin/products/${sku}`, { method: 'PUT', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify(payload) });
     assert.equal((await put('ml10', { price: 12.5, enabled: true })).status, 400);
     assert.equal(supplierCalls, 0);
-    assert.equal((await put('stm50', { price: 55000, enabled: true })).status, 422);
+    assert.equal((await put('unk1', { price: 55000, enabled: true })).status, 422);
     const ok = await put('ml10', { price: 22000, enabled: true });
     assert.equal(ok.status, 200);
     assert.deepEqual((await ok.json()).product, { sku: 'ml10', name: '10 Diamond', game: 'MOBILE LEGENDS', category: 'Games', variant: 'Indonesia', cost: 3057, supported: true, missing: false, price: 22000, enabled: true, priceMode: 'auto' });

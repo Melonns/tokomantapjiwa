@@ -8,6 +8,13 @@ test('merek yang punya logo mengembalikan berkas gambar', () => {
   assert.equal(brandLogo('MOBILE LEGENDS').cover, true)
   assert.equal(brandLogo('Free Fire').src, '/logo/game/free-fire.jpg')
   assert.equal(brandLogo('FREE FIRE MAX').src, '/logo/game/free-fire.jpg')
+  assert.equal(brandLogo('Speed Drifters').src, '/logo/game/speed-drifters.jpg')
+  assert.equal(brandLogo('Steam Wallet (IDR)').src, '/logo/steam-wallet.svg')
+  assert.equal(brandLogo('Steam Wallet (IDR)').cover, true)
+  assert.equal(brandLogo('Steam Wallet (IDR)').invert, false)
+  assert.equal(brandLogo('PlayStation').src, '/logo/playstation-wallet.svg')
+  assert.equal(brandLogo('PlayStation').cover, true)
+  assert.equal(brandLogo('PlayStation').invert, false)
   assert.equal(brandLogo('GO PAY').src, '/logo/gopay.svg')
   assert.equal(brandLogo('GO PAY').cover, undefined)
   assert.equal(brandLogo('Shopee Pay').src, '/logo/shopeepay.svg')
@@ -22,7 +29,7 @@ test('merek yang punya logo mengembalikan berkas gambar', () => {
 
 test('setiap logo yang dirujuk benar-benar ada dan berkasnya sehat', () => {
   const publik = new URL('../public/', import.meta.url)
-  for (const nama of ['MOBILE LEGENDS', 'FREE FIRE', 'Genshin Impact', 'Honkai Star Rail', 'Valorant', 'GO PAY', 'SHOPEE PAY', 'DANA', 'OVO', 'TELKOMSEL', 'INDOSAT', 'XL', 'AXIS', 'SMARTFREN', 'by.U', 'PLN', 'Pertamina Gas']) {
+  for (const nama of ['MOBILE LEGENDS', 'FREE FIRE', 'Genshin Impact', 'Honkai Star Rail', 'Speed Drifters', 'Valorant', 'Steam Wallet (IDR)', 'PlayStation', 'GO PAY', 'SHOPEE PAY', 'DANA', 'OVO', 'TELKOMSEL', 'INDOSAT', 'XL', 'AXIS', 'SMARTFREN', 'by.U', 'PLN', 'Pertamina Gas']) {
     const logo = brandLogo(nama)
     assert.ok(logo, `logo ${nama} belum dipetakan`)
     const berkas = new URL(logo.src.replace(/^\//, ''), publik)

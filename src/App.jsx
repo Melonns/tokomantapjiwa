@@ -74,8 +74,22 @@ const CATALOG_TYPES = [
   { id: 'tagihan', label: 'Tagihan', categories: ['PLN'], targetTitle: 'Nomor pelanggan', targetLabel: 'Nomor meter / ID pelanggan', targetHint: 'Nomor meter atau ID pelanggan dari tagihan.', targetPlaceholder: 'Nomor meter' },
 ]
 const OTHER_CATALOG_TYPE = { id: 'lainnya', label: 'Lainnya', categories: [], targetTitle: 'ID tujuan', targetLabel: 'ID tujuan', targetHint: 'Isi ID atau nomor tujuan sesuai layanan.', targetPlaceholder: 'ID tujuan' }
-const ALL_CATALOG_TYPES = [...CATALOG_TYPES, OTHER_CATALOG_TYPE]
-const catalogTypeOf = (item) => CATALOG_TYPES.find((type) => type.categories.includes(item && item.category)) || OTHER_CATALOG_TYPE
+// Blueprint untuk kategori baru: cukup muncul di katalog, tanpa menambah tab satu per satu.
+const GENERIC_CATALOG_BLUEPRINT = { targetTitle: 'Tujuan pesanan', targetLabel: 'Nomor / ID tujuan', targetHint: 'Isi nomor atau ID tujuan sesuai layanan. Jangan masukkan kata sandi.', targetPlaceholder: 'Nomor / ID tujuan' }
+const genericCatalogType = (category) => ({ id: `kategori:${category}`, label: category, categories: [category], ...GENERIC_CATALOG_BLUEPRINT })
+const catalogTypesFor = (products = []) => {
+  const known = new Set(CATALOG_TYPES.flatMap((type) => type.categories))
+  const extras = [...new Set(products.map((item) => String(item.category || '').trim()).filter((category) => category && !known.has(category)))]
+    .sort((a, b) => a.localeCompare(b, 'id')).map(genericCatalogType)
+  const types = [...CATALOG_TYPES, ...extras]
+  if (products.some((item) => !String(item.category || '').trim())) types.push(OTHER_CATALOG_TYPE)
+  return types
+}
+const catalogTypeOf = (item, types = CATALOG_TYPES) => {
+  const category = String(item && item.category || '').trim()
+  if (!category) return OTHER_CATALOG_TYPE
+  return types.find((type) => type.categories.includes(category)) || genericCatalogType(category)
+}
 
 async function request(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } })
@@ -339,6 +353,7 @@ function PilihanServer({ nilai, onPilih }) {
 
 function App() {
   const [products, setProducts] = useState([])
+  const [hargaView, setHargaView] = useState('admin')
   const [checkoutAvailable, setCheckoutAvailable] = useState(false)
   const [checkAvailable, setCheckAvailable] = useState(false)
   const [checkState, setCheckState] = useState('idle')
@@ -518,23 +533,33 @@ function App() {
     return () => document.removeEventListener('pointerdown', closeSearch)
   }, [searchOpen])
 
+  const loadSeq = useRef(0)
   async function loadProducts() {
+    const seq = ++loadSeq.current
     setCatalogState('loading')
     setCheckoutAvailable(false)
     setCatalogError('')
     try {
-      const data = await request('/api/products')
+      let headers = {}
+      if (session) { try { headers = await authHeaders() } catch {} }
+      const url = canManage && hargaView === 'user' ? '/api/products?harga=user' : '/api/products'
+      const data = await request(url, { headers })
+      if (seq !== loadSeq.current) return
       setProducts(Array.isArray(data.products) ? data.products : [])
       setCheckoutAvailable(data.checkoutAvailable === true)
       setCheckAvailable(data.checkAvailable === true)
       setCatalogState('ready')
     } catch (error) {
+      if (seq !== loadSeq.current) return
       setCatalogError(error.message)
       setCatalogState('error')
     }
   }
 
-  useEffect(() => { loadProducts() }, [])
+  useEffect(() => { setHargaView('admin') }, [session?.user?.id])
+  useEffect(() => { setVoucher(null); setVoucherNotice(''); setPromoCode('') }, [hargaView])
+  useEffect(() => { if (view === 'checkout' && canManage && hargaView === 'user') setHargaView('admin') }, [view, canManage, hargaView])
+  useEffect(() => { loadProducts() }, [session?.access_token, hargaView, canManage])
   useEffect(() => {
     applyPageMeta(routeFromPath(), currentPath())
     const navigate = () => {
@@ -1587,9 +1612,10 @@ function App() {
   }
 
 const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
-  const activeType = ALL_CATALOG_TYPES.find((type) => type.id === category) || CATALOG_TYPES[0]
-  const typeTabs = products.some((item) => catalogTypeOf(item) === OTHER_CATALOG_TYPE) ? [...CATALOG_TYPES, OTHER_CATALOG_TYPE] : CATALOG_TYPES
-  const activeBrands = [...new Set(products.filter((item) => catalogTypeOf(item).id === activeType.id).map((item) => item.game).filter(Boolean))]
+  const catalogTypes = catalogTypesFor(products)
+  const activeType = catalogTypes.find((type) => type.id === category) || CATALOG_TYPES[0]
+  const typeTabs = catalogTypes
+  const activeBrands = [...new Set(products.filter((item) => catalogTypeOf(item, catalogTypes).id === activeType.id).map((item) => item.game).filter(Boolean))]
   const searchCatalogs = catalogSearch.trim() ? games.filter((name) => products.some((item) => item.game === name && matchesCatalog(item, catalogSearch))) : []
   const accountName = session?.user.user_metadata?.name || session?.user.user_metadata?.full_name || session?.user.user_metadata?.username || session?.user.email?.split('@')[0] || 'Akun'
   const accountInitial = String(accountName).trim().charAt(0).toLocaleUpperCase('id-ID') || 'A'
@@ -1600,7 +1626,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   // ponytail: nominal di halaman pembeli dikelompokkan per jenis (diamond biasa, weekly pass, bundle) supaya tidak perlu menyisir daftar panjang.
   const orderKinds = groupByKind([...orderItems].sort((a, b) => a.price - b.price))
   const orderFormat = selected?.format || orderItems[0]?.format || 'plain'
-  const orderType = catalogTypeOf(selected || orderItems[0] || {})
+  const orderType = catalogTypeOf(selected || orderItems[0] || {}, catalogTypes)
 
   const checkRunRef = useRef(0)
 
@@ -1737,6 +1763,12 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
         <section className="shop-section" id="katalog" aria-labelledby="catalog-title">
           <div className="wrap shop-inner">
             <div className="section-heading"><div><h2 id="catalog-title">Katalog</h2></div><p>Pilih kategori dan layanan yang Anda butuhkan.</p></div>
+            {canManage && <div className="admin-price-view" role="group" aria-label="Tampilan harga katalog">
+              <span className="admin-price-view-label">Tampilan harga</span>
+              <button type="button" className={hargaView === 'admin' ? 'active' : ''} aria-pressed={hargaView === 'admin'} onClick={() => setHargaView('admin')}>Katalog admin</button>
+              <button type="button" className={hargaView === 'user' ? 'active' : ''} aria-pressed={hargaView === 'user'} onClick={() => setHargaView('user')}>Katalog user</button>
+            </div>}
+            {canManage && hargaView === 'user' && <p className="admin-price-note" role="status">Mode lihat harga user: checkout tetap memakai harga modal admin.</p>}
 
             <div className="category-filter" role="group" aria-label="Kategori katalog">
               {typeTabs.map((type) => <button key={type.id} type="button" className={activeType.id === type.id ? 'active' : ''} aria-pressed={activeType.id === type.id} onClick={() => { setCategory(type.id); setCatalogSearch('') }}>{type.label}</button>)}
@@ -1748,7 +1780,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
         </section>
 
         </> : view === 'game' || view === 'checkout' ? <section className="checkout-section wrap" id={view === 'game' ? 'game-detail' : 'data-akun'} aria-labelledby="order-title">
-          <div className={`section-heading brand-head${view === 'checkout' ? ' brand-head-kecil' : ''}`}><div><a className="back-button" href={view === 'game' ? '#katalog' : selected ? `#game/${encodeURIComponent(selected.game)}` : '#katalog'}>‹ {view === 'game' ? 'Semua layanan' : 'Kembali'}</a><div className="brand-banner" style={{ '--brand': brandWarna(gameAktif) || '#3d5a35', '--brand-dark': brandGelap(gameAktif) || '#22331d' }}><div className="brand-ident">{brandLogo(gameAktif) ? <span className={`brand-art${brandLogo(gameAktif).cover ? ' brand-art-foto' : ''}`} style={{ background: brandLogo(gameAktif).bg }}><img src={brandLogo(gameAktif).src} alt="" decoding="async" style={brandLogo(gameAktif).cover ? { objectFit: 'cover' } : brandLogo(gameAktif).invert ? { filter: 'brightness(0) invert(1)' } : undefined} /></span> : null}<div className="brand-copy"><h2 id="order-title">{gameAktif || 'Checkout'}</h2>{view === 'checkout' && <p>Periksa pesanan, lalu lanjut ke pembayaran.</p>}</div></div>{view === 'game' ? <p className={`brand-stat${ratingRingkas && ratingRingkas.count > 0 ? '' : ' brand-stat-kosong'}`}>{ratingRingkas && ratingRingkas.count > 0 ? <><strong>★ {String(ratingRingkas.average ?? 0).replace('.', ',')}</strong><span>{ratingRingkas.count} penilaian</span></> : <><strong aria-hidden="true">★</strong><span>belum ada penilaian</span></>}</p> : null}</div></div></div>
+          <div className={`section-heading brand-head${view === 'checkout' ? ' brand-head-kecil' : ''}`}><div><a className="back-button" href={view === 'game' ? '/katalog' : selected ? `/game/${encodeURIComponent(selected.game)}` : '/katalog'}>‹ {view === 'game' ? 'Semua layanan' : 'Kembali'}</a><div className="brand-banner" style={{ '--brand': brandWarna(gameAktif) || '#3d5a35', '--brand-dark': brandGelap(gameAktif) || '#22331d' }}><div className="brand-ident">{brandLogo(gameAktif) ? <span className={`brand-art${brandLogo(gameAktif).cover ? ' brand-art-foto' : ''}`} style={{ background: brandLogo(gameAktif).bg }}><img src={brandLogo(gameAktif).src} alt="" decoding="async" style={brandLogo(gameAktif).cover ? { objectFit: 'cover' } : brandLogo(gameAktif).invert ? { filter: 'brightness(0) invert(1)' } : undefined} /></span> : null}<div className="brand-copy"><h2 id="order-title">{gameAktif || 'Checkout'}</h2>{view === 'checkout' && <p>Periksa pesanan, lalu lanjut ke pembayaran.</p>}</div></div>{view === 'game' ? <p className={`brand-stat${ratingRingkas && ratingRingkas.count > 0 ? '' : ' brand-stat-kosong'}`}>{ratingRingkas && ratingRingkas.count > 0 ? <><strong>★ {String(ratingRingkas.average ?? 0).replace('.', ',')}</strong><span>{ratingRingkas.count} penilaian</span></> : <><strong aria-hidden="true">★</strong><span>belum ada penilaian</span></>}</p> : null}</div></div></div>
           {catalogState === 'loading' && <div className="notice" role="status">Memuat produk...</div>}
           {catalogState === 'error' && <div className="notice" role="alert"><p>Katalog belum dapat dimuat. {catalogError}</p><button type="button" onClick={loadProducts}>Coba muat lagi</button></div>}
           {catalogState === 'ready' && view === 'game' && filtered.length === 0 && <div className="notice" role="status"><strong>Belum ada nominal aktif.</strong><p>Produk baru tampil setelah harga dan stok dikonfigurasi. Checkout belum tersedia.</p></div>}
@@ -1825,7 +1857,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 </div>
               </div>
             </div>}
-            <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga</span><strong>{rupiah(selected.price)}</strong></div><div className="summary-total"><span>Jumlah</span><strong>1 item</strong></div>{voucherCut() > 0 && <div className="summary-total summary-cut"><span>Potongan {voucher.code}</span><strong>−{rupiah(voucherCut())}</strong></div>}<div className="summary-total"><span>Total</span><strong>{rupiah(selected.price - voucherCut())}</strong></div><p className="summary-inclusive">Harga sudah termasuk biaya pembayaran.</p></> : <p>Belum ada item produk yang dipilih.</p>}</aside>
+            <aside className="summary" aria-label="Ringkasan pesanan"><p className="eyebrow">RINGKASAN</p>{selected ? <><div className="summary-item"><span>{selected.game}</span><strong>{selected.name}</strong></div><div className="summary-total"><span>Harga</span><strong>{rupiah(selected.price)}</strong></div><div className="summary-total"><span>Jumlah</span><strong>1 item</strong></div>{voucherCut() > 0 && <div className="summary-total summary-cut"><span>Potongan {voucher.code}</span><strong>−{rupiah(voucherCut())}</strong></div>}<div className="summary-total"><span>Total</span><strong>{rupiah(selected.price - voucherCut())}</strong></div>{canManage && <p className="summary-inclusive" role="status">Harga modal admin: tanpa margin.</p>}<p className="summary-inclusive">Harga sudah termasuk biaya pembayaran.</p></> : <p>Belum ada item produk yang dipilih.</p>}</aside>
           </div>}
         </section> : view === 'receipt' ? <div className="invoice-page wrap" id="struk">
           <div className="invoice-head">
@@ -1985,7 +2017,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
               {!session && <aside className="auth-aside">
                 <p className="form-title">{view === 'register' ? 'Sudah punya akun?' : 'Belum punya akun?'}</p>
                 <p className="form-note">{view === 'register' ? 'Masuk dengan email atau nomor HP dan kata sandi.' : 'Daftar dengan email, kata sandi, nomor HP, dan username.'}</p>
-                <a className="secondary-button" href={view === 'register' ? '#akun' : '#daftar'}>{view === 'register' ? 'Masuk' : 'Daftar akun'}</a>
+                <a className="secondary-button" href={view === 'register' ? '/akun' : '/daftar'}>{view === 'register' ? 'Masuk' : 'Daftar akun'}</a>
               </aside>}
             </div>
           </section>

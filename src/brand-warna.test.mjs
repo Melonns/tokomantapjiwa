@@ -19,7 +19,7 @@ test('warna merek dikenali walau penulisan namanya berbeda', () => {
 })
 
 test('setiap merek yang punya logo juga punya warna', () => {
-  for (const nama of ['MOBILE LEGENDS', 'FREE FIRE', 'GENSHIN IMPACT', 'HONKAI STAR RAIL', 'VALORANT', 'GO PAY', 'SHOPEE PAY', 'DANA', 'OVO', 'TELKOMSEL', 'INDOSAT', 'XL', 'AXIS', 'SMARTFREN', 'BY.U', 'PLN', 'PERTAMINA GAS']) {
+  for (const nama of ['MOBILE LEGENDS', 'FREE FIRE', 'GENSHIN IMPACT', 'HONKAI STAR RAIL', 'SPEED DRIFTERS', 'VALORANT', 'STEAM WALLET (IDR)', 'PLAYSTATION', 'GO PAY', 'SHOPEE PAY', 'DANA', 'OVO', 'TELKOMSEL', 'INDOSAT', 'XL', 'AXIS', 'SMARTFREN', 'BY.U', 'PLN', 'PERTAMINA GAS']) {
     assert.ok(brandLogo(nama), `logo ${nama} tidak ada`)
     assert.match(brandWarna(nama) || '', /^#[0-9a-f]{6}$/, `warna ${nama} tidak ada`)
   }

@@ -33,6 +33,16 @@ test('catalog search suggests entries in a dropdown and opens the game page', ()
 });
 ;
 
+test('katalog admin punya tombol tampilan harga modal dan harga user', () => {
+  assert.match(source, /const \[hargaView, setHargaView\] = useState\('admin'\)/);
+  assert.match(source, /Tampilan harga/);
+  assert.match(source, /Katalog admin/);
+  assert.match(source, /Katalog user/);
+  assert.match(source, /harga=user/);
+  assert.match(source, /Mode lihat harga user: checkout tetap memakai harga modal admin/);
+  assert.match(source, /view === 'checkout' && canManage && hargaView === 'user'/);
+});
+
 test('admin summary is a routed page with a real-data range control and honest environment label', () => {
   assert.match(source, /if \(path === '\/admin\/ringkasan'\) return \{ view: 'admin', adminPage: 'summary'/);
   assert.match(source, /if \(path === '\/admin' \|\| path === '\/admin\/produk'\) return \{ view: 'admin'/);
@@ -90,4 +100,11 @@ test('halaman tidak dikenal, jeda struk bertingkat, dan pengajuan hapus akun ter
   assert.match(source, /\/api\/account\/deletion-request/);
   assert.match(source, /Ajukan penghapusan akun/);
   assert.match(source, /account-danger/);
+});
+
+test('navigasi internal memakai path, bukan hash legacy', () => {
+  assert.match(source, /back-button" href=\{view === 'game' \? '\/katalog' : selected \? `\/game\/\$\{encodeURIComponent\(selected\.game\)\}` : '\/katalog'\}/);
+  assert.doesNotMatch(source, /href=\{view === 'game' \? '#katalog'/);
+  assert.doesNotMatch(source, /href=\{view === 'register' \? '#akun'/);
+  assert.equal([...source.matchAll(/href="(#[^"]*)"/g)].map((match) => match[1]).join(','), '#main');
 });

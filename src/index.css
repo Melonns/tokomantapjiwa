@@ -1,5 +1,5 @@
 :root {
-  font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  font-family: 'Fira Sans', 'Trebuchet MS', 'Segoe UI', sans-serif;
   color: #edf1e9;
   background: #0b110e;
   font-synthesis: none;
@@ -14,4 +14,5 @@ button { cursor: pointer; }
 a { color: inherit; text-decoration: none; }
 :focus-visible { outline: 3px solid #b8ef72; outline-offset: 3px; }
 ::selection { background: #b8ef72; color: #0b110e; }
+@media (max-width: 620px) { :root { font-weight: 500; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
