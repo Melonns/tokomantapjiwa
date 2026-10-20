@@ -368,7 +368,7 @@ test('plain format checkout sends the user id alone as customer number', async (
 test('public products and owned order expose only frontend contract fields', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   const pool = { async query(sql) {
-    if (sql.startsWith('SELECT p.id, p.name, p.game')) { assert.match(sql, /LEFT JOIN supplier_products/); return { rows: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000, format: 'ml_concat', category: 'Games' }] }; }
+    if (sql.startsWith('SELECT p.id, p.name, p.game')) { assert.match(sql, /JOIN supplier_products/); assert.match(sql, /s\.synced_at = \(SELECT max\(synced_at\)/); assert.match(sql, /s\.category <> ''/); return { rows: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000, format: 'ml_concat', category: 'Games' }] }; }
     if (sql.startsWith('SELECT id, status, product_name')) { assert.match(sql, /WHERE owner_id = \$1 AND id = \$2/); return { rows: [{ id, status: 'pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] }; }
     throw Error('unexpected SQL');
   } };
@@ -450,7 +450,7 @@ const supplierFetch = (catalog, onCall) => withAuth(async url => {
 
 test('empty public catalog never exposes supplier costs', async () => {
   let supplierCalls = 0;
-  const pool = { async query(sql) { if (sql.startsWith('SELECT p.id, p.name, p.game')) { assert.match(sql, /LEFT JOIN supplier_products/); return { rows: [] }; } throw Error('unexpected SQL: ' + sql); } };
+  const pool = { async query(sql) { if (sql.startsWith('SELECT p.id, p.name, p.game')) { assert.match(sql, /JOIN supplier_products/); return { rows: [] }; } throw Error('unexpected SQL: ' + sql); } };
   const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async url => { supplierCalls++; throw Error('supplier touched: ' + url); }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
