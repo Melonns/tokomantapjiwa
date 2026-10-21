@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
+import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
 import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
@@ -66,7 +66,7 @@ const PAYMENT_METHODS = {
   shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
 };
 // ponytail: satu daftar kolom dipakai pembacaan struk dan rekonsiliasi supaya bentuk respons selalu sama.
-const PAYMENT_DETAIL_COLUMNS = 'payment_channel AS "paymentChannel", payment_detail AS "paymentDetail", payment_expires_at AS "paymentExpiresAt", redirect_url AS "redirectUrl", created_at AS "createdAt"';
+const PAYMENT_DETAIL_COLUMNS = 'payment_channel AS "paymentChannel", payment_detail AS "paymentDetail", payment_expires_at AS "paymentExpiresAt", redirect_url AS "redirectUrl", created_at AS "createdAt", paid_at AS "paidAt"';
 
 // ponytail: simpan hanya field yang dipakai halaman invoice; URL dari Midtrans divalidasi supaya tidak ada tautan asing yang dirender.
 function paymentDetail(method, charge) {
@@ -268,8 +268,8 @@ async function releaseVoucher(pool, orderId) {
 }
 
 async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
-  const paid = await pool.query(`UPDATE orders SET status = CASE WHEN status = 'pending' THEN 'payment_paid' ELSE status END, paid_at = COALESCE(paid_at, now()), updated_at = now()
-    WHERE id = $1 AND price = $2 AND status NOT IN ('payment_failed') RETURNING id, price`, [orderId, grossAmount]);
+  const paid = await pool.query(`UPDATE orders SET status = CASE WHEN status = 'pending' OR (status = 'manual_review' AND paid_at IS NULL) THEN 'payment_paid' ELSE status END, paid_at = COALESCE(paid_at, now()), updated_at = now()
+    WHERE id = $1 AND price = $2 AND status IN ('pending', 'manual_review') AND (status = 'pending' OR paid_at IS NULL) RETURNING id, price`, [orderId, grossAmount]);
   if (!paid.rows[0]) return false;
   await claimAndFulfill(pool, fetchImpl, env, orderId);
   return true;
@@ -277,7 +277,7 @@ async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
 
 // ponytail: pembayaran yang kedaluwarsa, ditolak, atau dibatalkan menutup pesanan dan mengembalikan kuota voucher; satu tempat untuk webhook dan rekonsiliasi.
 async function failPayment(pool, orderId, grossAmount) {
-  const { rows } = await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND price = $2 AND status = 'pending' RETURNING voucher_code", [orderId, grossAmount]);
+  const { rows } = await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND price = $2 AND status IN ('pending', 'manual_review') AND paid_at IS NULL RETURNING voucher_code", [orderId, grossAmount]);
   if (!rows[0]) return false;
   if (rows[0].voucher_code) await releaseVoucher(pool, orderId);
   return true;
@@ -286,17 +286,34 @@ async function failPayment(pool, orderId, grossAmount) {
 // ponytail: Jaring pengaman saat notifikasi Midtrans tak sampai (tunnel mati, server sempat down): status ditarik langsung dari Midtrans
 // tiap kali struk pesanan pending dibuka/di-poll. Best-effort: error apa pun dikembalikan sebagai status tersimpan agar struk tetap tampil.
 export async function reconcilePending(pool, fetchImpl, env, order) {
-  if (!['pending', 'payment_paid', 'fulfillment_pending'].includes(order.status) || !ready(env)) return order;
+  if (!['pending', 'payment_paid', 'fulfillment_pending', 'manual_review'].includes(order.status) || !ready(env)) return order;
+  if (order.status === 'manual_review' && order.paidAt) return order;
   try {
-    if (order.status === 'pending') {
+    if (order.status === 'pending' || order.status === 'manual_review') {
       const status = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/${order.id}/status`, {
         method: 'GET', headers: { accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` }
       });
+      const statusCode = String(status?.status_code || '');
+      if (status?.order_id && String(status.order_id) !== String(order.id)) return order;
+      if (statusCode === '404') {
+        const failed = await failPayment(pool, order.id, order.price);
+        return failed ? { ...order, status: 'payment_failed' } : order;
+      }
+      if (statusCode !== '200') return order;
       const notice = String(status?.transaction_status || '');
-      if (Number(status?.gross_amount) !== order.price) return order;
-      if (['settlement', 'capture'].includes(notice)) await applyPaid(pool, fetchImpl, env, order.id, Number(status.gross_amount));
-      else if (['expire', 'deny', 'cancel'].includes(notice)) await failPayment(pool, order.id, Number(status.gross_amount));
-      else return order;
+      if (Number(status?.gross_amount) !== order.price) {
+        alertPayment(fetchImpl, env, order.id, 'Nominal status Midtrans tidak cocok', `status=${notice || '-'} gross=${status?.gross_amount || '-'}`);
+        return order;
+      }
+      if (paidStatus(status)) {
+        if (!await applyPaid(pool, fetchImpl, env, order.id, Number(status.gross_amount))) return order;
+      } else if (['expire', 'deny', 'cancel'].includes(notice)) {
+        await failPayment(pool, order.id, Number(status.gross_amount));
+      } else {
+        // ponytail: capture dengan fraud challenge/deny bukan lunas; jangan pernah memicu pengiriman dari sini.
+        if (notice === 'capture') console.error('[reconcile] capture belum lunas:', order.id, status?.fraud_status || '-');
+        return order;
+      }
       console.error('[reconcile] midtrans:', order.id, notice, 'diterapkan');
     } else if (order.status === 'payment_paid') {
       if (!await claimAndFulfill(pool, fetchImpl, env, order.id)) return order; // sudah diklaim; jangan kirim ulang
@@ -389,6 +406,19 @@ function notifyOrder(pool, fetchImpl, env, event, orderId) {
       console.error('[mail]', event, orderId, err?.message || String(err));
     }
   })();
+}
+
+// ponytail: kegagalan pembayaran yang butuh manusia harus meninggalkan jejak di log dan email support.
+// Jangan pernah menaruh detail kartu/charge di sini; cukup nomor pesanan dan alasan operasional.
+function alertPayment(fetchImpl, env, orderId, reason, detail = '') {
+  const text = `${reason}${orderId ? ` · pesanan ${orderId}` : ''}${detail ? ` · ${detail}` : ''}`;
+  console.error('[alert][pembayaran]', text);
+  const to = String(env.ALERT_EMAIL || env.SUPPORT_EMAIL || '').trim();
+  if (!mailReady(env) || !to) return;
+  void sendOrderEmail(fetchImpl, env, to, {
+    subject: `[Melonbyte] ${reason}`,
+    html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6"><p>${escapeHtml(text)}</p><p>Periksa dashboard Midtrans dan riwayat pesanan sebelum mengambil tindakan.</p></div>`,
+  }).catch((err) => console.error('[alert][mail]', err?.message || String(err)));
 }
 
 // ponytail: nomor WhatsApp support opsional - kosong berarti tombol WA tidak ditampilkan, email tetap ada.
@@ -501,7 +531,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           SELECT days.day, COALESCE(SUM(movements.paid), 0)::bigint AS paid, COALESCE(SUM(movements.refunded), 0)::bigint AS refunded, COALESCE(SUM(movements.paid_count), 0)::int AS paid_count, COALESCE(SUM(movements.refund_count), 0)::int AS refund_count
           FROM days LEFT JOIN movements USING (day) GROUP BY days.day
         ), current_orders AS (
-          SELECT COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_payments, COUNT(*) FILTER (WHERE status IN ('payment_paid', 'fulfillment_pending', 'fulfillment_failed', 'manual_review'))::int AS pending_fulfillment FROM orders WHERE payment_environment = $2
+          SELECT COUNT(*) FILTER (WHERE status = 'pending' OR (status = 'manual_review' AND paid_at IS NULL))::int AS pending_payments, COUNT(*) FILTER (WHERE status IN ('payment_paid', 'fulfillment_pending', 'fulfillment_failed') OR (status = 'manual_review' AND paid_at IS NOT NULL))::int AS pending_fulfillment FROM orders WHERE payment_environment = $2
         )
         SELECT to_char(daily.day, 'YYYY-MM-DD') AS date, daily.paid, daily.refunded, daily.paid_count AS "paidCount", daily.refund_count AS "refundCount", current_orders.pending_payments AS "pendingPayments", current_orders.pending_fulfillment AS "pendingFulfillment"
         FROM daily CROSS JOIN current_orders ORDER BY daily.day`, [days, env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox']);
@@ -669,17 +699,18 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
           throw error(409, 'Voucher tidak dapat dipakai lagi. Periksa kode voucher lalu coba kembali.');
         }
-        // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas (4xx) menutup pesanan;
-        // kegagalan ambigu (5xx/timeout) dibiarkan pending untuk rekonsiliasi dan order_id tidak pernah digunakan ulang.
+        // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas tanpa
+        // percobaan ambigu menutup pesanan; kegagalan ambigu (5xx/timeout) masuk manual review untuk rekonsiliasi.
 
         let charge;
         let chargeError;
+        let ambiguous = false;
         const kandidat = methodId === 'qris'
           ? qrisAcquirers(env).map((acquirer) => ({ payment_type: 'qris', qris: { acquirer } }))
           : [method(id, storeUrl, env)];
         // ponytail: coba kanal berurutan dan berhenti pada kanal pertama yang berhasil. order_id tidak berubah,
-        // jadi percobaan ulang tidak dapat membuat tagihan dobel. Kegagalan ambigu (tanpa status atau 5xx) dibiarkan
-        // untuk rekonsiliasi, sedangkan 406 berarti kanal tersebut memang tidak tersedia.
+        // jadi percobaan ulang tidak dapat membuat tagihan dobel. Kegagalan ambigu (tanpa status, timeout, atau 5xx)
+        // tidak boleh menutup pesanan: tagihan mungkin sudah terlanjur dibuat di Midtrans.
         for (const [urutan, kanal] of kandidat.entries()) {
           try {
             charge = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/charge`, {
@@ -691,20 +722,36 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           } catch (err) {
             chargeError = err;
             const status = Number(err?.upstreamStatus);
-            const layakUlang = urutan < kandidat.length - 1 && (!status || status >= 500 || status === 406);
+            const ambigu = !Number.isInteger(status) || status <= 0 || status === 408 || status === 429 || status >= 500;
+            if (ambigu) ambiguous = true;
+            const layakUlang = urutan < kandidat.length - 1 && (ambigu || status === 406);
             console.error('[checkout] charge gagal:', kanal?.qris?.acquirer ? `acquirer ${kanal.qris.acquirer}` : '', status ? `HTTP ${status}` : '', err?.message || String(err));
             if (!layakUlang) break;
           }
         }
         if (!charge) {
-          const err = chargeError;
-          if (Number(err?.upstreamStatus) >= 400 && Number(err?.upstreamStatus) < 500) await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
-          if (picked) await releaseVoucher(pool, id);
-          throw error(502, 'Pembayaran belum dapat dibuat. Coba lagi atau pilih metode lain.');
+          const status = Number(chargeError?.upstreamStatus);
+          const definitive = [400, 401, 402, 403, 404, 406].includes(status);
+          if (definitive && !ambiguous) {
+            await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
+            if (picked) await releaseVoucher(pool, id);
+            throw error(502, 'Pembayaran belum dapat dibuat. Coba lagi atau pilih metode lain.');
+          }
+          // ponytail: status tagihan tidak pasti. Jangan tutup pesanan atau lepas voucher; biarkan admin/rekonsiliasi
+          // memeriksa apakah Midtrans sudah membuat tagihan sebelum pembeli mencoba lagi dan membuat tagihan kedua.
+          const note = 'Status tagihan belum pasti. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+          await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = NULL, payment_expires_at = NULL, fulfillment_note = $3, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, note]);
+          alertPayment(fetchImpl, env, id, 'Charge ambigu tanpa detail', status ? `HTTP ${status}` : 'tanpa status');
+          return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true });
         }
         const detail = paymentDetail(methodId, charge);
-        if (!detail) throw error(502, 'Respons pembayaran tidak valid.');
         const expiresAt = expiryDate(charge?.expiry_time);
+        if (!detail) {
+          const note = 'Tagihan sudah dibuat, tetapi instruksi pembayaran belum tersedia. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+          await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = NULL, payment_expires_at = $3, fulfillment_note = $4, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, expiresAt, note]);
+          alertPayment(fetchImpl, env, id, 'Tagihan dibuat tanpa detail', `metode=${methodId}`);
+          return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, manualReview: true });
+        }
         await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = $3, payment_expires_at = $4, updated_at = now() WHERE id = $1', [id, methodId, detail, expiresAt]);
         notifyOrder(pool, fetchImpl, env, 'created', id);
         return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null });
@@ -789,9 +836,16 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (!sah) throw error(401, 'Notifikasi tidak sah.');
         // ponytail: notifikasi sah selalu dijawab 200 supaya Midtrans berhenti mengulang kirim dan berhenti mengirim surel peringatan; id di luar pola pesanan toko cukup diabaikan tanpa menyentuh basis data.
         if (['settlement', 'capture'].includes(noticeStatus)) {
-          if (!verifiedPayment(notice, env.MIDTRANS_SERVER_KEY) || !idToko) return send(res, 200, { received: true, applied: false });
+          if (!verifiedPayment(notice, env.MIDTRANS_SERVER_KEY)) {
+            if (idToko) alertPayment(fetchImpl, env, notice.order_id, 'Notifikasi pembayaran tidak lolos verifikasi', `status=${noticeStatus} fraud=${notice.fraud_status || '-'}`);
+            return send(res, 200, { received: true, applied: false });
+          }
+          if (!idToko) return send(res, 200, { received: true, applied: false });
           if (!ready(env)) throw error(503, 'Webhook belum siap.');
-          if (!await applyPaid(pool, fetchImpl, env, notice.order_id, Number(notice.gross_amount))) return send(res, 200, { received: true, applied: false });
+          if (!await applyPaid(pool, fetchImpl, env, notice.order_id, Number(notice.gross_amount))) {
+            alertPayment(fetchImpl, env, notice.order_id, 'Pembayaran sah tidak dapat diterapkan', `status=${noticeStatus} gross=${notice.gross_amount}`);
+            return send(res, 200, { received: true, applied: false });
+          }
         } else if (['expire', 'deny', 'cancel'].includes(noticeStatus) && idToko) {
           await failPayment(pool, notice.order_id, Number(notice.gross_amount));
         }
@@ -863,7 +917,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       // ponytail: refund hanya untuk pesanan yang sudah dibayar tetapi itemnya belum terkirim; 'manual' menandai dana yang dikembalikan di luar sistem.
       if (req.method === 'GET' && path === '/api/admin/refunds') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
-        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, user_id AS "userId", zone_id AS "zoneId", fulfillment_note AS "fulfillmentNote", refunded_at AS "refundedAt", refund_note AS "refundNote", created_at AS "createdAt" FROM orders WHERE status IN ${refundableSql} ORDER BY updated_at ASC, id ASC LIMIT 100`);
+        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, user_id AS "userId", zone_id AS "zoneId", fulfillment_note AS "fulfillmentNote", refunded_at AS "refundedAt", refund_note AS "refundNote", created_at AS "createdAt" FROM orders WHERE status IN ${refundableSql} AND paid_at IS NOT NULL ORDER BY updated_at ASC, id ASC LIMIT 100`);
         const { rows: refunded } = await pool.query(`SELECT o.id, o.product_name AS "productName", o.price, o.refunded_at AS "refundedAt", o.refund_note AS "refundNote", e.method AS "refundMethod", e.note AS "refundAuditNote", (SELECT email FROM auth.users u WHERE u.id = e.admin_id) AS "refundedBy" FROM orders o LEFT JOIN LATERAL (SELECT admin_id, method, note FROM refund_events WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1) e ON true WHERE o.status = 'refunded' ORDER BY o.refunded_at DESC NULLS LAST, o.id DESC LIMIT 20`);
         return send(res, 200, { orders: rows, refunded });
       }
@@ -876,11 +930,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const manual = body?.manual === true;
         const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 200) : '';
         if (manual && note.length < 3) throw error(400, 'Isi catatan refund manual (contoh: transfer bank BCA).');
-        const { rows } = await pool.query('SELECT id, status, price FROM orders WHERE id = $1', [id]);
+        const { rows } = await pool.query('SELECT id, status, price, paid_at AS "paidAt" FROM orders WHERE id = $1', [id]);
         const order = rows[0];
         if (!order) throw error(404, 'Pesanan tidak ditemukan.');
         if (order.status === 'refunded') throw error(409, 'Pesanan ini sudah direfund.');
         if (!REFUNDABLE_STATUSES.includes(order.status)) throw error(409, 'Status pesanan ini tidak dapat direfund.');
+        if (!order.paidAt) throw error(409, 'Pembayaran belum terkonfirmasi; refund belum dapat diproses.');
         if (!manual) {
           if (!env.MIDTRANS_SERVER_KEY) throw error(503, 'Refund otomatis belum dikonfigurasi. Gunakan penandaan manual.');
           try {
@@ -898,7 +953,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const refundNote = manual ? `Manual: ${note}` : 'Refund otomatis melalui Midtrans';
         const { rows: done } = await pool.query(`WITH updated AS (
           UPDATE orders SET status = 'refunded', refunded_at = now(), refund_note = $2, updated_at = now()
-          WHERE id = $1 AND status IN ${refundableSql}
+          WHERE id = $1 AND status IN ${refundableSql} AND paid_at IS NOT NULL
           RETURNING id, price
         )
         INSERT INTO refund_events (order_id, admin_id, method, amount, note)

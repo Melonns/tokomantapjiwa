@@ -691,10 +691,11 @@ function App() {
   }, [view, session?.access_token, receiptId, receiptRetry])
 
   useEffect(() => {
-    if (view !== 'receipt' || receiptState !== 'ready' || !ACTIVE_STATUSES.includes(receipt?.status)) return
+    const aktif = ACTIVE_STATUSES.includes(receipt?.status) || (receipt?.status === 'manual_review' && !receipt?.paidAt)
+    if (view !== 'receipt' || receiptState !== 'ready' || !aktif) return
     const timer = setTimeout(() => setReceiptRetry((value) => value + 1), receiptDelay(receiptRetry))
     return () => clearTimeout(timer)
-  }, [view, receiptState, receipt?.status, receiptRetry])
+  }, [view, receiptState, receipt?.status, receipt?.paidAt, receiptRetry])
 
   // ponytail: ringkasan penilaian per layanan dipakai di kepala halaman game dan struk.
   useEffect(() => {
@@ -1709,12 +1710,12 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   })()
   const invoiceSteps = (() => {
     const status = receipt?.status || 'pending'
-    const paid = ['payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded'].includes(status)
-    const processing = ['fulfillment_pending', 'fulfillment_failed', 'manual_review'].includes(status)
+    const paid = status === 'manual_review' ? Boolean(receipt?.paidAt) : ['payment_paid', 'fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'refunded'].includes(status)
+    const processing = ['fulfillment_pending', 'fulfillment_failed'].includes(status) || (status === 'manual_review' && paid)
     return [
       { key: 'created', label: 'Pesanan dibuat', hint: 'Data pesanan sudah tercatat.', state: 'done' },
-      { key: 'payment', label: 'Pembayaran', hint: status === 'payment_failed' ? 'Pembayaran gagal atau kedaluwarsa.' : paid ? 'Pembayaran diterima.' : 'Selesaikan pembayaran sesuai instruksi di atas.', state: status === 'payment_failed' ? 'failed' : paid ? 'done' : 'active' },
-      { key: 'process', label: 'Diproses otomatis', hint: status === 'refunded' ? 'Pesanan tidak dapat diproses. Dana dikembalikan.' : status === 'fulfilled' ? 'Pesanan telah dikirim ke akun Anda.' : processing ? 'Pesanan sedang dikirim otomatis ke penyedia.' : 'Menunggu pembayaran.', state: status === 'refunded' || status === 'fulfillment_failed' ? 'failed' : status === 'fulfilled' ? 'done' : processing ? 'active' : 'idle' },
+      { key: 'payment', label: 'Pembayaran', hint: status === 'payment_failed' ? 'Pembayaran gagal atau kedaluwarsa.' : status === 'manual_review' && !paid ? 'Pembayaran sedang diperiksa admin.' : paid ? 'Pembayaran diterima.' : 'Selesaikan pembayaran sesuai instruksi di atas.', state: status === 'payment_failed' ? 'failed' : paid ? 'done' : 'active' },
+      { key: 'process', label: 'Diproses otomatis', hint: status === 'refunded' ? 'Pesanan tidak dapat diproses. Dana dikembalikan.' : status === 'fulfilled' ? 'Pesanan telah dikirim ke akun Anda.' : processing ? 'Pesanan sedang dikirim otomatis ke penyedia.' : status === 'manual_review' ? 'Menunggu konfirmasi pembayaran.' : 'Menunggu pembayaran.', state: status === 'refunded' || status === 'fulfillment_failed' ? 'failed' : status === 'fulfilled' ? 'done' : processing ? 'active' : 'idle' },
       { key: 'done', label: status === 'refunded' ? 'Dana dikembalikan' : 'Selesai', hint: status === 'refunded' ? 'Dana dikembalikan penuh ke metode pembayaran awal.' : 'Terima kasih atas pembelian Anda di Melonbyte.', state: status === 'fulfilled' || status === 'refunded' ? 'done' : 'idle' },
     ]
   })()

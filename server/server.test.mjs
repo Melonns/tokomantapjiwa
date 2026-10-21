@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { validateCheckout, verifiedPayment, customerNo } from './core.mjs';
-import { createHandler, digiRequest } from './app.mjs';
+import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './core.mjs';
+import { createHandler, digiRequest, reconcilePending } from './app.mjs';
 import { checkGames } from './check.mjs';
 
 // Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
@@ -36,6 +36,15 @@ test('customer number follows the destination format of the product', () => {
   assert.equal(customerNo('uid_server', { userId: '800123456', zoneId: 'os_asia' }), '800123456|os_asia');
   assert.throws(() => customerNo('uid_server', { userId: '800123456', zoneId: '' }), /Server wajib/);
   assert.equal(customerNo('riot', { userId: 'NamaAnda#1234', zoneId: '' }), 'NamaAnda#1234');
+});
+
+test('paid predicate requires success code, terminal status, accepted fraud, and amount', () => {
+  assert.equal(paidStatus({ status_code: '200', transaction_status: 'settlement', gross_amount: '25000.00' }), true);
+  assert.equal(paidStatus({ status_code: 200, transaction_status: 'capture', fraud_status: 'accept', gross_amount: '25000.00' }), true);
+  assert.equal(paidStatus({ status_code: '201', transaction_status: 'settlement', gross_amount: '25000.00' }), false);
+  assert.equal(paidStatus({ status_code: '200', transaction_status: 'capture', fraud_status: 'challenge', gross_amount: '25000.00' }), false);
+  assert.equal(paidStatus({ status_code: '200', transaction_status: 'pending', gross_amount: '25000.00' }), false);
+  assert.equal(paidStatus({ status_code: '200', transaction_status: 'settlement', gross_amount: '25000' }), false);
 });
 
 test('signed settlement validates amount and rejects forged capture', () => {
@@ -134,6 +143,31 @@ test('notifikasi lunas untuk pesanan tak dikenal dijawab 200 tanpa pengiriman', 
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('notifikasi sah dengan nominal yang tidak dapat diterapkan memicu alert', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const logs = [];
+  const originalError = console.error;
+  console.error = (...args) => logs.push(args.join(' '));
+  const pool = { async query(sql) {
+    if (sql.includes('SET status = CASE')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: async () => { throw Error('api touched'); } });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const notice = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
+    notice.signature_key = createHash('sha512').update(id + notice.status_code + notice.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+    const res = await fetch('http://127.0.0.1:' + server.address().port + '/api/webhooks/midtrans', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notice) });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).applied, false);
+    assert.ok(logs.some(line => line.includes('[alert][pembayaran]')), 'alert pembayaran harus tercatat');
+  } finally {
+    console.error = originalError;
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('invalid checkout returns useful 400 JSON without touching DB', async () => {
   let calls = 0;
   const server = createServer(createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, env, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(portAman(), '127.0.0.1');
@@ -202,6 +236,40 @@ test('QRIS memakai acquirer cadangan saat kanal pertama menolak', async () => {
     assert.deepEqual(acquirers, ['airpay shopee', 'gopay']);
     assert.deepEqual((await response.json()).paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' });
   } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('status pull capture tanpa fraud accept tidak memicu pengiriman', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let paidUpdates = 0, failedUpdates = 0;
+  const pool = { async query(sql) {
+    if (sql.includes('SET status = CASE')) { paidUpdates++; return { rows: [] }; }
+    if (sql.includes("status = 'payment_failed'")) { failedUpdates++; return { rows: [] }; }
+    if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status: 'pending', price: 25000 }] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({
+    status_code: '200', order_id: id, gross_amount: '25000.00', transaction_status: 'capture', fraud_status: 'challenge',
+  }) });
+  const order = await reconcilePending(pool, fetchImpl, env, { id, status: 'pending', price: 25000 });
+  assert.equal(order.status, 'pending');
+  assert.equal(paidUpdates, 0);
+  assert.equal(failedUpdates, 0);
+});
+
+test('status pull settlement memulihkan pesanan manual review yang tagihannya sempat tak jelas', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  let status = 'manual_review';
+  const pool = { async query(sql) {
+    if (sql.includes('SET status = CASE')) { status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes('digiflazz_claimed_at = now()')) { status = 'fulfillment_pending'; return { rows: [{ id, digi_sku: 'ml10', customer_no: '123100', price: 25000 }] }; }
+    if (sql.includes('SET status = $2')) { status = 'fulfilled'; return { rows: [] }; }
+    if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status, price: 25000 }] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ status_code: '200', order_id: id, gross_amount: '25000.00', transaction_status: 'settlement' }) });
+  const order = await reconcilePending(pool, fetchImpl, env, { id, status: 'manual_review', price: 25000, paidAt: null });
+  assert.equal(order.status, 'fulfilled');
+  assert.equal(status, 'fulfilled');
 });
 
 test('picked payment method charges that channel through Core API and unknown ones are rejected', async () => {
@@ -343,6 +411,65 @@ test('a rejected charge closes the pending order instead of leaving it dangling'
     assert.match((await response.json()).error, /belum dapat dibuat/);
     assert.equal(updates.length, 1);
     assert.match(updates[0][0], /^[0-9a-f-]{36}$/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('charge ambigu setelah fallback tidak menutup pesanan', async () => {
+  let attempts = 0, manualUpdates = 0, failedUpdates = 0;
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
+    if (sql.includes("status = 'manual_review'")) { manualUpdates++; return { rows: [] }; }
+    if (sql.includes("status = 'payment_failed'")) { failedUpdates++; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => {
+    attempts++;
+    if (attempts === 1) throw Error('timeout tanpa respons');
+    const duplicate = Error('order_id sudah dipakai');
+    duplicate.upstreamStatus = 406;
+    throw duplicate;
+  }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }),
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.manualReview, true);
+    assert.equal(body.paymentDetail, null);
+    assert.equal(manualUpdates, 1);
+    assert.equal(failedUpdates, 0);
+    assert.equal(attempts, 2);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('charge sukses tanpa detail masuk manual review, bukan gagal senyap', async () => {
+  let manualUpdates = 0, failedUpdates = 0;
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
+    if (sql.includes("status = 'manual_review'")) { manualUpdates++; return { rows: [] }; }
+    if (sql.includes("status = 'payment_failed'")) { failedUpdates++; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async () => ({ ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07' }) })) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }),
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.manualReview, true);
+    assert.equal(body.paymentDetail, null);
+    assert.equal(manualUpdates, 1);
+    assert.equal(failedUpdates, 0);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
@@ -984,7 +1111,7 @@ test('receipt read pulls Midtrans status when the webhook never arrived', async 
   const seen = [];
   const fetchImpl = withAuth(async url => {
     seen.push(url);
-    if (url === `https://api.sandbox.midtrans.com/v2/${id}/status`) return { ok: true, status: 200, json: async () => ({ order_id: id, transaction_status: 'settlement', gross_amount: '25000.00' }) };
+    if (url === `https://api.sandbox.midtrans.com/v2/${id}/status`) return { ok: true, status: 200, json: async () => ({ status_code: '200', order_id: id, transaction_status: 'settlement', gross_amount: '25000.00' }) };
     if (url === 'https://api.digiflazz.com/v1/transaction') return { ok: true, status: 200, json: async () => ({ data: { ref_id: id, buyer_sku_code: 'ml10', customer_no: '123100', status: 'Sukses', rc: '00' } }) };
     throw Error('unexpected external request: ' + url);
   });
@@ -1008,7 +1135,7 @@ test('receipt read never flips an order on pending and closes expired ones', asy
     throw Error('unexpected SQL: ' + sql);
   } };
   const fetchImpl = withAuth(async url => {
-    if (url.endsWith('/status')) return { ok: true, status: 200, json: async () => ({ order_id: id, transaction_status: midtransStatus, gross_amount: '25000.00' }) };
+    if (url.endsWith('/status')) return { ok: true, status: 200, json: async () => ({ status_code: '200', order_id: id, transaction_status: midtransStatus, gross_amount: '25000.00' }) };
     throw Error('unexpected external request: ' + url);
   });
   const server = createServer(createHandler({ pool, env, fetchImpl })).listen(portAman(), '127.0.0.1');

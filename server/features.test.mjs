@@ -146,7 +146,7 @@ test('refund manual menandai pesanan, menyimpan catatan, dan mengembalikan kuota
   const pool = { async query(sql, params) {
     statements.push(sql);
     if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: [{ user_id: ownerId }] };
-    if (sql.startsWith('SELECT id, status, price')) return { rows: [{ id: orderId, status: 'payment_paid', price: 25000 }] };
+    if (sql.startsWith('SELECT id, status, price')) return { rows: [{ id: orderId, status: 'payment_paid', price: 25000, paidAt: new Date() }] };
     if (sql.includes("SET status = 'refunded'")) { assert.match(params[1], /^Manual: transfer bank/); return { rows: [{ id: orderId }] } };
     if (/voucher/i.test(sql)) return { rows: [] };
     throw Error(`unexpected SQL: ${sql.slice(0, 60)}`);

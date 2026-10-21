@@ -39,11 +39,19 @@ export function paymentSignature(body, key) {
   return timingSafeEqual(actual, Buffer.from(body.signature_key, 'hex'));
 }
 
+// ponytail: predikat lunas dipakai jalur webhook dan tarik-status. Status API tidak punya tanda tangan,
+// jadi status_code, status transaksi, hasil fraud, dan bentuk nominal tetap wajib diperiksa di kedua jalur.
+export function paidStatus(body) {
+  if (!body || typeof body !== 'object') return false;
+  if (String(body.status_code ?? '') !== '200') return false;
+  if (body.transaction_status !== 'settlement' && body.transaction_status !== 'capture') return false;
+  if (body.transaction_status === 'capture' && body.fraud_status !== 'accept') return false;
+  if (body.fraud_status && body.fraud_status !== 'accept') return false;
+  const gross = typeof body.gross_amount === 'string' || typeof body.gross_amount === 'number' ? String(body.gross_amount) : '';
+  return /^\d+\.00$/.test(gross);
+}
+
 // ponytail: hanya notifikasi lunas yang boleh memicu pengiriman barang.
 export function verifiedPayment(body, key) {
-  return paymentSignature(body, key) && body.status_code === '200' &&
-    typeof body.transaction_status === 'string' && ['settlement', 'capture'].includes(body.transaction_status) &&
-    (body.transaction_status !== 'capture' || body.fraud_status === 'accept') &&
-    (!body.fraud_status || body.fraud_status === 'accept') &&
-    /^\d+\.00$/.test(body.gross_amount);
+  return paymentSignature(body, key) && paidStatus(body);
 }
