@@ -101,8 +101,6 @@ const HERO_SLIDES = [
     eyebrow: 'MELONBYTE / LAYANAN DIGITAL',
     title: ['Top up game dan', 'layanan digital,', 'langsung diproses otomatis.'],
     description: 'Cari layanan digital di katalog. Harga dan ketersediaan mengikuti produk yang aktif.',
-    cta: 'Lihat katalog layanan',
-    category: 'game',
     caption: 'GAME / PULSA / E-MONEY / TAGIHAN',
   },
   {
@@ -110,8 +108,6 @@ const HERO_SLIDES = [
     eyebrow: 'MELONBYTE / PULSA & DATA',
     title: ['Pulsa dan paket data, ', 'pilih sesuai kebutuhan.'],
     description: 'Isi pulsa, paket data, atau masa aktif dari operator yang aktif di katalog.',
-    cta: 'Lihat pulsa & data',
-    category: 'pulsa',
     caption: 'PULSA / DATA',
   },
   {
@@ -119,8 +115,6 @@ const HERO_SLIDES = [
     eyebrow: 'MELONBYTE / E-MONEY',
     title: ['Saldo e-money, ', 'top up dari satu halaman.'],
     description: 'Top up saldo e-money. Pilih nominal yang tersedia dan isi nomor akun tujuan.',
-    cta: 'Lihat e-money',
-    category: 'ewallet',
     caption: 'E-MONEY',
   },
   {
@@ -128,8 +122,6 @@ const HERO_SLIDES = [
     eyebrow: 'MELONBYTE / TAGIHAN',
     title: ['Tagihan listrik, ', 'bayar tanpa antre.'],
     description: 'Bayar tagihan listrik dari satu halaman. Nomor meter dipakai untuk memproses pesanan.',
-    cta: 'Lihat tagihan',
-    category: 'tagihan',
     caption: 'TAGIHAN',
   },
 ]
@@ -216,7 +208,7 @@ function applyPageMeta(route, path) {
 function decodeHash(value) {
   try { return decodeURIComponent(value) } catch { return value }
 }
-const COVER_PALETTES = [['#b8ef72', '#5c9a3c'], ['#7cd3e0', '#2f7d92'], ['#f0c267', '#a9742a'], ['#b9a0ee', '#5f48a8'], ['#ef9a94', '#a44a4a'], ['#93b6f0', '#43639f']]
+const COVER_PALETTES = [['#c6e643', '#5c9a3c'], ['#7cd3e0', '#2f7d92'], ['#f0c267', '#a9742a'], ['#b9a0ee', '#5f48a8'], ['#ef9a94', '#a44a4a'], ['#93b6f0', '#43639f']]
 const COVER_OVERRIDES = { 'mobile legends': 5 }
 
 function coverSeed(name) {
@@ -1731,20 +1723,6 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
     setCatalogSearch('')
     go(`/game/${encodeURIComponent(name)}`)
   }
-
-  function openHeroCatalog(event, slide) {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
-    event.preventDefault()
-    setCategory(slide.category)
-    setCatalogSearch('')
-    setSearchOpen(false)
-    if (currentPath() === '/katalog') {
-      document.getElementById('katalog')?.scrollIntoView({ behavior: 'smooth' })
-      return
-    }
-    go('/katalog')
-    window.setTimeout(() => document.getElementById('katalog')?.scrollIntoView({ behavior: 'smooth' }), 0)
-  }
   const pricingQuery = catalogQuery.trim().toLowerCase()
   const pricingItems = adminCatalog.filter((item) => (catalogShowUnsupported || item.supported) && (catalogFilter === 'semua' || Boolean((catalogDrafts[item.sku] || {}).enabled) === (catalogFilter === 'tampil')) && (!pricingQuery || [item.name, item.sku, item.game, item.category].some((value) => String(value || '').toLowerCase().includes(pricingQuery))))
   const pricingGroups = (() => {
@@ -1801,7 +1779,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
       </div>}
       <header className="site-header">
         <div className="wrap header-inner">
-          <a className="wordmark" href="/" aria-label="Melonbyte, kembali ke awal"><img className="wordmark-logo" src="/melonbyte-lockup.png" alt="" width="734" height="144" decoding="async" /></a>
+          <a className="wordmark" href="/" aria-label="Melonbyte, kembali ke awal"><img className="wordmark-logo" src="/melonbyte-lockup.png" alt="" width="700" height="144" decoding="async" /></a>
           <form className="home-search" role="search" ref={searchBoxRef} onSubmit={(event) => { event.preventDefault(); const first = searchCatalogs[0]; if (first) openCatalog(first); else if (catalogSearch.trim()) setSearchOpen(true); else document.getElementById('katalog')?.scrollIntoView({ behavior: 'smooth' }) }}>
             <div className="home-search-controls"><input id="home-catalog-search" type="search" aria-label="Cari di katalog" autoComplete="off" aria-autocomplete="list" aria-expanded={searchOpen && Boolean(catalogSearch.trim())} aria-controls="home-search-suggest" value={catalogSearch} onChange={(event) => { setCatalogSearch(event.target.value); setSearchOpen(true) }} onFocus={() => { if (catalogSearch.trim()) setSearchOpen(true) }} onKeyDown={(event) => { if (event.key === 'Escape') setSearchOpen(false) }} placeholder="Cari di katalog" /><button type="submit">Cari</button>{searchOpen && catalogSearch.trim() && <div className="search-suggest" id="home-search-suggest">{searchCatalogs.length === 0 ? <p className="suggest-empty" role="status">Layanan tidak ditemukan. Coba kata lain.</p> : searchCatalogs.map((name) => <button key={name} type="button" onClick={() => openCatalog(name)}>{brandLogo(name) ? <span className={`suggest-art${brandLogo(name).cover ? ' suggest-art-foto' : ''}`} style={{ background: brandLogo(name).bg }} aria-hidden="true"><img src={brandLogo(name).src} alt="" loading="lazy" decoding="async" style={brandLogo(name).cover ? { objectFit: 'cover' } : brandLogo(name).invert ? { filter: 'brightness(0) invert(1)' } : undefined} /></span> : <span className="game-initial" aria-hidden="true">{name.slice(0, 2).toUpperCase()}</span>}<span className="suggest-text"><strong>{name}</strong><small>{products.filter((item) => item.game === name).length} nominal</small></span></button>)}</div>}</div>
           </form>
@@ -1840,11 +1818,9 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                     <p className="eyebrow"><span className="eyebrow-line" /> {slide.eyebrow}</p>
                     <h2 className="hero-title">{slide.title.map((line, lineIndex) => <Fragment key={lineIndex}>{lineIndex === slide.title.length - 1 ? <em>{line}</em> : line}{lineIndex < slide.title.length - 1 ? <br /> : null}</Fragment>)}</h2>
                     <p className="hero-description">{slide.description}</p>
-                    <a className="primary-link" href="/katalog" onClick={(event) => openHeroCatalog(event, slide)}>{slide.cta} <span aria-hidden="true">↗</span></a>
                   </div>
                   <div className="hero-graphic" aria-hidden="true">
-                    <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-                    <span className="graphic-text">m<span className="graphic-dot">.</span></span>
+                    <img className="hero-mark" src="/melonbyte-mark.png" alt="" width="512" height="512" decoding="async" />
                     <span className="graphic-caption">{slide.caption}</span>
                   </div>
                 </article>
@@ -2157,7 +2133,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
       <footer className="footer">
         <div className="wrap footer-main">
           <div className="footer-brand">
-            <a className="wordmark" href="/" aria-label="Melonbyte, beranda"><img className="wordmark-logo" src="/melonbyte-lockup.png" alt="" width="734" height="144" decoding="async" /></a>
+            <a className="wordmark" href="/" aria-label="Melonbyte, beranda"><img className="wordmark-logo" src="/melonbyte-lockup.png" alt="" width="700" height="144" decoding="async" /></a>
             <p>Layanan digital otomatis: game, pulsa, e-money, dan tagihan. Harga dan ketersediaan mengikuti katalog aktif.</p>
           </div>
           <nav className="footer-nav" aria-label="Tautan footer">

@@ -83,7 +83,7 @@ test('checkout meminta Zone ID hanya untuk produk ml_concat dan pilih server unt
 test('zona 2 langkah: baris aksi rapat dan tombol nonaktif jelas', () => {
   assert.match(css, /\.two-step-zone \.code-actions\{display:flex;flex-wrap:wrap;align-items:center;gap:4px 20px\}/)
   assert.match(css, /\.two-step-zone \.code-actions \.link-button\{margin-top:0\}/)
-  assert.match(css, /\.link-button:disabled,\.secondary-button:disabled\{color:#849e80;cursor:not-allowed\}/)
+  assert.match(css, /\.link-button:disabled,\.secondary-button:disabled\{color:var\(--muted\);cursor:not-allowed\}/)
 })
 
 test('form profil tidak melar mengikuti tinggi kolom kanan', () => {

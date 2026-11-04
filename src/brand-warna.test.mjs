@@ -25,6 +25,13 @@ test('setiap merek yang punya logo juga punya warna', () => {
   }
 })
 
+test('teks utama terang dan hijau hanya aksen', () => {
+  assert.match(css, /--text:#edf1e9;/)
+  assert.match(css, /--muted:#bbcabc;/)
+  assert.match(css, /--lime:#c6e643;/)
+  assert.equal(/color:#72de0f|--text:#72de0f/.test(css), false)
+})
+
 test('poster memakai warna merek dan chip logo yang terang', () => {
   assert.match(app, /'--brand': brandWarna\(item\) \|\| '#3d5a35'/)
   assert.match(app, /'--brand-dark': brandGelap\(item\) \|\| '#22331d'/)
