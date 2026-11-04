@@ -9,8 +9,11 @@ Node ESM + `pg` + HTTP bawaan Node. Jalankan skema `database/schema.sql` di Supa
 - `SUPABASE_ANON_KEY`: public anon key Supabase. Backend memvalidasi access token lewat `GET /auth/v1/user` Supabase setiap permintaan pelanggan; jangan gunakan service-role key di browser.
 - `MIDTRANS_SERVER_KEY`: server key untuk mode yang dipilih.
 - `MIDTRANS_ENV`: **wajib** `sandbox` atau `production`.
+- `PAYMENT_PROVIDER`: `midtrans` (default) atau `sumopod`. Sumopod hanya QRIS dan tetap memakai `SUMOPOD_ENV` terpisah dari Midtrans.
+- `SUMOPOD_ENV`, `SUMOPOD_SANDBOX_KEY`, `SUMOPOD_PRODUCTION_KEY`: lingkungan dan key Sumopod.
+- `SUMOPOD_WEBHOOK_TOKEN`: token verifikasi header `X-Webhook-Token`; wajib agar checkout Sumopod aktif.
 - `DIGIFLAZZ_USERNAME`, `DIGIFLAZZ_API_KEY`: kredensial buyer mode sesuai lingkungan.
-- `DIGIFLAZZ_TESTING`: **wajib** `true` bila Midtrans sandbox; **wajib** `false` bila production. Setelan lain menutup checkout/webhook.
+- `DIGIFLAZZ_TESTING`: **wajib** `true` bila mode sandbox provider (Midtrans/Sumopod); **wajib** `false` bila production. Setelan lain menutup checkout/webhook.
 - `CHECK_API_URL`, `CHECK_API_KEY`: penyedia cek nickname (opsional). Kosong = fitur cek nonaktif (`checkAvailable: false`). Bentuk permintaan dan parse respons ada di `server/check.mjs`: satu fungsi untuk diganti bila provider cek berganti.
 - `CHECKOUT_ENABLED`: default nonaktif; isi `true` hanya setelah akun, IP, Midtrans sandbox, Digiflazz testing, dan alur end-to-end teruji. Tidak perlu mengubah `.env` saat ini; tetap nonaktif.
 - `PORT`: opsional, default `3001`.
@@ -31,6 +34,7 @@ Untuk database yang sudah ada, jalankan bagian `CREATE TABLE IF NOT EXISTS admin
 - `GET /api/orders` dengan bearer access token → `{ "orders": [...] }`, hanya pesanan milik pengguna, terbaru dahulu.
 - `GET /api/orders/:id` dengan bearer access token → `{ "order": { "id": "uuid", "status": "pending", "productName": "...", "price": 25000, "userId": "...", "zoneId": "..." } }`. Pesanan pengguna lain dan ID yang tidak ada sama-sama 404. Status: `pending`, `payment_paid`, `fulfillment_pending`, `fulfilled`, `fulfillment_failed`, `manual_review`. Token hilang/kedaluwarsa ditolak 401; email belum terverifikasi ditolak 403; Supabase Auth tidak tersedia ditolak 502. Jangan jadikan ID pesanan sebagai bukti kepemilikan.
 - `POST /api/webhooks/midtrans`: URL publik HTTPS untuk notifikasi Midtrans (atur persis tanpa redirect pada dashboard). Hanya signature SHA-512 sah, jumlah sesuai harga DB, status `settlement`/`capture`, kode 200, dan fraud `accept` bila ada. `capture` butuh `accept`. Notifikasi duplikat tidak memulai topup kedua; klaim DB atomik, satu `ref_id` = ID pesanan.
+- `POST /api/webhooks/sumopod`: URL publik HTTPS untuk notifikasi Sumopod. Wajib menyertakan header `X-Webhook-Token` yang sama dengan `SUMOPOD_WEBHOOK_TOKEN`; event `payment.completed` dengan nominal sama menandai lunas dan memicu fulfillment satu kali. Event `payment.failed`/`payment.expired` menutup pembayaran. Token salah ditolak 401; token belum diisi menutup endpoint.
 - `POST /api/admin/orders/:id/check-digiflazz` dengan bearer access token akun admin: cek transaksi pending setelah jeda minimal lima menit memakai *ref_id yang sama*. Jangan jadwalkan cek otomatis tanpa pengawasan. Ini mengirim ulang permintaan API sesuai dokumentasi Digiflazz, bukan membuat `ref_id` baru.
 - Kesalahan: `{ "error": "Pesan singkat" }`, status HTTP sesuai.
 

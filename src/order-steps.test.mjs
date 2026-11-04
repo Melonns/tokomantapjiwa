@@ -100,7 +100,8 @@ test('id kanal bayar di klien sama dengan id kanal di server', async () => {
 });
 test('kanal VA disembunyikan di pesanan kecil dan dipaksa aman saat checkout', () => {
   assert.match(source, /function activePaymentMethod\(price\)/);
-  assert.match(source, /availablePaymentMethods\(PAYMENT_METHODS, selected \? selected\.price - voucherCut\(\) : 0\)\.map\(\(method, index, options\)/);
+  assert.match(source, /const paymentMethods = paymentProvider === 'sumopod' \? SUMOPOD_PAYMENT_METHODS : PAYMENT_METHODS/);
+  assert.match(source, /availablePaymentMethods\(paymentMethods, selected \? selected\.price - voucherCut\(\) : 0\)\.map\(\(method, index, options\)/);
   assert.match(source, /Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai \{rupiah\(VA_MIN_ORDER\)\}/);
   assert.match(source, /paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code, contactEmail: contactEmail\.trim\(\)/);
   assert.match(css, /\.pay-note\{color:var\(--muted\)/);

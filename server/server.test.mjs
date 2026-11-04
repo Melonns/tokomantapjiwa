@@ -704,11 +704,14 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     assert.equal(insert.params.length, 1 + 3 * 6);
     const cleanup = statements.find(statement => statement.sql.startsWith('DELETE FROM supplier_products'));
     assert.deepEqual(cleanup.params, [insert.params[0]]);
-    // ponytail: aturan harga berjalan sendiri pada setiap sinkron: ml10 (modal 28343) naik ke 30600, ff12 tetap 1800.
-    assert.equal(body.autoPriced, 1);
-    assert.deepEqual(body.priceChanges, [{ sku: 'ml10', from: 20000, to: 30600 }]);
+    // ponytail: aturan harga berjalan sendiri pada setiap sinkron: biaya QRIS 0,7% + Rp300 ikut tertutup.
+    assert.equal(body.autoPriced, 2);
+    assert.deepEqual(body.priceChanges, [
+      { sku: 'ml10', from: 20000, to: 30900 },
+      { sku: 'ff12', from: 1800, to: 2100 },
+    ]);
     const repriced = statements.filter(statement => statement.sql.startsWith('UPDATE products SET price = $2'));
-    assert.deepEqual(repriced.map(statement => statement.params), [['ml10', 30600]]);
+    assert.deepEqual(repriced.map(statement => statement.params), [['ml10', 30900], ['ff12', 2100]]);
     const autoSelect = statements.find(statement => statement.sql.startsWith('SELECT p.id, p.price'));
     assert.match(autoSelect.sql, /WHERE p\.price_mode = 'auto'/);
   } finally { await new Promise(resolve => server.close(resolve)); }
@@ -1388,4 +1391,69 @@ test('sitemap memuat halaman publik dan semua game aktif', async () => {
 
 test('production tanpa STORE_URL menolak start agar callback tidak jatuh ke localhost', () => {
   assert.throws(() => createHandler({ pool: {}, env: { ...checkEnv, MIDTRANS_ENV: 'production', STORE_URL: '' } }), /STORE_URL/);
+});
+
+const sumoWebhookEnv = { ...checkEnv, PAYMENT_PROVIDER: 'sumopod', SUMOPOD_ENV: 'sandbox', SUMOPOD_SANDBOX_KEY: 'sumo-sandbox-key', SUMOPOD_WEBHOOK_TOKEN: 'whtok_uji', MIDTRANS_SERVER_KEY: '' };
+
+test('webhook sumopod menolak token salah tanpa menyentuh database', async () => {
+  let calls = 0;
+  const handler = createHandler({ pool: { query() { calls++; throw Error('db touched'); } }, env: sumoWebhookEnv, fetchImpl: async () => { calls++; throw Error('external touched'); } });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/sumopod`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-token': 'salah' },
+      body: JSON.stringify({ event_type: 'payment.completed', data: { order_id: '11111111-1111-4111-8111-111111111111', amount: 25000, status: 'completed' } })
+    });
+    assert.equal(response.status, 401);
+    assert.equal(calls, 0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('webhook sumopod menerima test event dengan token yang benar', async () => {
+  const handler = createHandler({ pool: { query() { throw Error('db touched'); } }, env: sumoWebhookEnv, fetchImpl: async () => { throw Error('external touched'); } });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/sumopod`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-token': 'whtok_uji' },
+      body: JSON.stringify({ event_type: 'payment.test', data: {} })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { received: true, applied: false });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('checkout sumopod membuat tautan QRIS dan menyimpan detail tagihan', async () => {
+  let inserts = 0, stored, chargeUrl, chargeBody;
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('INSERT INTO orders')) { inserts++; assert.equal(params[3], 25000); return { rows: [] }; }
+    if (sql.startsWith('UPDATE orders SET payment_channel')) { stored = params; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: { ...sumoWebhookEnv, CHECKOUT_ENABLED: 'true', STORE_URL: 'https://melonbyte.biz.id' }, fetchImpl: withAuth(async (url, options) => {
+    chargeUrl = url;
+    chargeBody = JSON.parse(options.body);
+    return { ok: true, status: 201, json: async () => ({ payment_id: '33333333-3333-4333-8333-333333333333', order_id: chargeBody.order_id, amount: 25000, fee: 475, net_amount: 24525, payment_link_url: 'https://sumo.sandbox.pymnt.global/abc', status: 'pending', expires_at: '2026-11-05T09:00:00Z' }) };
+  }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', price: 1 }) });
+    const body = await response.json();
+    assert.equal(response.status, 201);
+    assert.equal(chargeUrl, 'https://api-pay-sandbox.sumopod.com/api/v1/payments');
+    assert.deepEqual(chargeBody, {
+      order_id: body.orderId, amount: 25000, currency: 'IDR', expires_in_hours: 24, payment_method_type_code: 'QRIS',
+      success_return_url: 'https://melonbyte.biz.id/struk/' + body.orderId, cancel_return_url: 'https://melonbyte.biz.id/struk/' + body.orderId
+    });
+    assert.equal(body.redirectUrl, 'https://sumo.sandbox.pymnt.global/abc');
+    assert.equal(body.paymentDetail.provider, 'sumopod');
+    assert.equal(body.paymentChannel, 'qris');
+    assert.equal(inserts, 1);
+    assert.equal(stored[1], 'qris');
+    assert.equal(stored[2].provider, 'sumopod');
+    assert.equal(stored[4], 'https://sumo.sandbox.pymnt.global/abc');
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });

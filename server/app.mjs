@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
+import { paymentProvider, sumopodBody, sumopodConfig, sumopodExpiresAt, sumopodMethods, sumopodPaymentDetail, sumopodReady, sumopodTokenValid, sumopodWebhook } from './sumopod.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
 import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
@@ -39,7 +40,11 @@ const categoryFormats = {
 const formatFor = (game, category) => customerFormats[String(game || '').toUpperCase()] || categoryFormats[String(category || '').trim()] || null;
 const error = (status, message) => Object.assign(new Error(message), { status });
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const ready = env => Boolean(env.DATABASE_URL && env.MIDTRANS_SERVER_KEY && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((env.MIDTRANS_ENV === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (env.MIDTRANS_ENV === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
+const paymentEnvironment = env => paymentProvider(env) === 'sumopod'
+  ? (env.SUMOPOD_ENV === 'production' ? 'production' : 'sandbox')
+  : (env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox');
+const providerReady = env => paymentProvider(env) === 'sumopod' ? sumopodReady(env) : Boolean(env.MIDTRANS_SERVER_KEY);
+const ready = env => Boolean(env.DATABASE_URL && providerReady(env) && env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && ((paymentEnvironment(env) === 'sandbox' && env.DIGIFLAZZ_TESTING === 'true') || (paymentEnvironment(env) === 'production' && env.DIGIFLAZZ_TESTING === 'false')));
 const checkoutReady = env => env.CHECKOUT_ENABLED === 'true' && ready(env);
 // ponytail: Kanal pembayaran spesifik memakai Core API /v2/charge. Halaman invoice ini sendiri yang menampilkan QR/VA, bukan pengalihan ke Snap.
 // Semua id di bawah sudah diverifikasi 200 di /v2/charge sandbox; samakan dengan PAYMENT_METHODS di src/App.jsx dan kanal aktif di dashboard Midtrans.
@@ -267,10 +272,14 @@ async function releaseVoucher(pool, orderId) {
   return true;
 }
 
-async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
+async function markPaid(pool, orderId, grossAmount) {
   const paid = await pool.query(`UPDATE orders SET status = CASE WHEN status = 'pending' OR (status = 'manual_review' AND paid_at IS NULL) THEN 'payment_paid' ELSE status END, paid_at = COALESCE(paid_at, now()), updated_at = now()
     WHERE id = $1 AND price = $2 AND status IN ('pending', 'manual_review') AND (status = 'pending' OR paid_at IS NULL) RETURNING id, price`, [orderId, grossAmount]);
-  if (!paid.rows[0]) return false;
+  return Boolean(paid.rows[0]);
+}
+
+async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
+  if (!await markPaid(pool, orderId, grossAmount)) return false;
   await claimAndFulfill(pool, fetchImpl, env, orderId);
   return true;
 }
@@ -288,6 +297,11 @@ async function failPayment(pool, orderId, grossAmount) {
 export async function reconcilePending(pool, fetchImpl, env, order) {
   if (!['pending', 'payment_paid', 'fulfillment_pending', 'manual_review'].includes(order.status) || !ready(env)) return order;
   if (order.status === 'manual_review' && order.paidAt) return order;
+  const provider = order?.provider === 'sumopod' || order?.paymentDetail?.provider === 'sumopod' ? 'sumopod' : 'midtrans';
+  if (provider === 'sumopod' && (order.status === 'pending' || order.status === 'manual_review')) {
+    // ponytail: Sumopod tidak menyediakan tarik-status di sandbox; webhook adalah sumber utama.
+    return order;
+  }
   try {
     if (order.status === 'pending' || order.status === 'manual_review') {
       const status = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/${order.id}/status`, {
@@ -331,7 +345,7 @@ export async function reconcilePending(pool, fetchImpl, env, order) {
     const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", ${PAYMENT_DETAIL_COLUMNS} FROM orders WHERE id = $1`, [order.id]);
     return rows[0] || order;
   } catch (err) {
-    console.error('[reconcile] midtrans gagal:', order.id, err?.message || String(err));
+    console.error('[reconcile] status gagal:', order.id, err?.message || String(err));
     return order;
   }
 }
@@ -432,7 +446,7 @@ function whatsappLink(input) {
 function storeBaseUrl(env) {
   const configured = String(env.STORE_URL || '').trim().replace(/\/+$/, '');
   if (configured) return configured;
-  if (env.NODE_ENV === 'production' || env.MIDTRANS_ENV === 'production') throw new Error('STORE_URL wajib diisi di production.');
+  if (env.NODE_ENV === 'production' || paymentEnvironment(env) === 'production') throw new Error('STORE_URL wajib diisi di production.');
   return 'http://localhost:5173';
 }
 
@@ -494,7 +508,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
             const price = userView ? p.price : modalAdmin({ admin, admin_cost }, p.price)
             return { ...p, id: String(p.id), price, category: String(p.category || ''), checkable: Boolean(checkableGame(p.game)), ...(gangguan === true ? { gangguan: true } : {}) }
           }),
-          checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env)
+          checkoutAvailable: checkoutReady(env), checkAvailable: checkReady(env),
+          ...(paymentProvider(env) === 'sumopod' ? { paymentProvider: 'sumopod' } : {})
         });
       }
       // ponytail: kontak dukungan dibaca dari env agar dapat diganti tanpa menyentuh kode.
@@ -534,9 +549,9 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           SELECT COUNT(*) FILTER (WHERE status = 'pending' OR (status = 'manual_review' AND paid_at IS NULL))::int AS pending_payments, COUNT(*) FILTER (WHERE status IN ('payment_paid', 'fulfillment_pending', 'fulfillment_failed') OR (status = 'manual_review' AND paid_at IS NOT NULL))::int AS pending_fulfillment FROM orders WHERE payment_environment = $2
         )
         SELECT to_char(daily.day, 'YYYY-MM-DD') AS date, daily.paid, daily.refunded, daily.paid_count AS "paidCount", daily.refund_count AS "refundCount", current_orders.pending_payments AS "pendingPayments", current_orders.pending_fulfillment AS "pendingFulfillment"
-        FROM daily CROSS JOIN current_orders ORDER BY daily.day`, [days, env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox']);
+        FROM daily CROSS JOIN current_orders ORDER BY daily.day`, [days, paymentEnvironment(env)]);
         const daily = rows.map(row => ({ date: row.date, paid: Number(row.paid), refunded: Number(row.refunded), paidCount: Number(row.paidCount), refundCount: Number(row.refundCount) }));
-        return send(res, 200, { days, environment: env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox', daily, pendingPayments: Number(rows[0]?.pendingPayments || 0), pendingFulfillment: Number(rows[0]?.pendingFulfillment || 0) });
+        return send(res, 200, { days, environment: paymentEnvironment(env), daily, pendingPayments: Number(rows[0]?.pendingPayments || 0), pendingFulfillment: Number(rows[0]?.pendingFulfillment || 0) });
       }
       if (req.method === 'GET' && path === '/api/admin/orders') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
@@ -687,17 +702,63 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         // ponytail: price = jumlah yang benar-benar ditagih (setelah potongan) karena webhook mencocokkan gross_amount dengan price.
         const amount = harga - discount;
         const methodId = input.paymentMethod || 'qris';
-        const method = PAYMENT_METHODS[methodId];
+        const provider = paymentProvider(env);
+        const method = provider === 'sumopod' ? sumopodMethods[methodId] : PAYMENT_METHODS[methodId];
         if (!method) throw error(400, 'Metode pembayaran tidak dikenal.');
-        if (VA_METHOD_IDS.has(methodId) && amount < VA_MIN_ORDER) throw error(400, `Virtual Account & Mandiri Bill tersedia untuk pesanan mulai Rp ${new Intl.NumberFormat('id-ID').format(VA_MIN_ORDER)}.`);
+        if (provider === 'midtrans' && VA_METHOD_IDS.has(methodId) && amount < VA_MIN_ORDER) throw error(400, `Virtual Account & Mandiri Bill tersedia untuk pesanan mulai Rp ${new Intl.NumberFormat('id-ID').format(VA_MIN_ORDER)}.`);
         const id = randomUUID();
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
-        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone, payment_environment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null, env.MIDTRANS_ENV === 'production' ? 'production' : 'sandbox']);
+        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone, payment_environment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null, paymentEnvironment(env)]);
         if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) {
           // Voucher gagal dipakai (misalnya kalah balapan dengan checkout lain): tutup pesanan yang belum ditagih.
           await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
           throw error(409, 'Voucher tidak dapat dipakai lagi. Periksa kode voucher lalu coba kembali.');
+        }
+        if (provider === 'sumopod') {
+          const config = sumopodConfig(env);
+          if (!config?.key) throw error(503, 'Pembayaran belum siap.');
+          let charge;
+          try {
+            charge = await externalJson(fetchImpl, `${config.apiBase}/api/v1/payments`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json', 'X-Api-Key': config.key },
+              body: JSON.stringify(sumopodBody({
+                orderId: id, amount, methodId,
+                returnUrl: /^https:\/\//i.test(storeUrl) ? `${storeUrl.replace(/\/$/, '')}/struk/${id}` : undefined
+              }))
+            });
+          } catch (err) {
+            const status = Number(err?.upstreamStatus);
+            const definitive = [400, 401, 402, 403, 404, 406, 409, 422].includes(status);
+            console.error('[checkout] sumopod charge gagal:', status ? `HTTP ${status}` : '', err?.message || String(err));
+            if (definitive) {
+              await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
+              if (picked) await releaseVoucher(pool, id);
+              throw error(502, 'Pembayaran belum dapat dibuat. Coba lagi atau pilih metode lain.');
+            }
+            const note = 'Status tagihan belum pasti. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+            await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = $3, payment_expires_at = NULL, fulfillment_note = $4, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, { provider: 'sumopod' }, note]);
+            alertPayment(fetchImpl, env, id, 'Charge Sumopod ambigu', status ? `HTTP ${status}` : 'tanpa status');
+            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true });
+          }
+          if (String(charge?.order_id || '') !== id || Number(charge?.amount) !== amount) {
+            const note = 'Tagihan Sumopod dibuat, tetapi data pesanan tidak cocok. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+            await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = $3, payment_expires_at = NULL, fulfillment_note = $4, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, { provider: 'sumopod' }, note]);
+            alertPayment(fetchImpl, env, id, 'Tagihan Sumopod tidak cocok', `order_id=${String(charge?.order_id || '-').slice(0, 80)} amount=${charge?.amount ?? '-'}`);
+            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true });
+          }
+          const detail = sumopodPaymentDetail(charge);
+          const expiresAt = sumopodExpiresAt(charge);
+          if (!detail) {
+            const note = 'Tagihan sudah dibuat, tetapi tautan pembayaran belum tersedia. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+            await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = $3, payment_expires_at = $4, fulfillment_note = $5, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, { provider: 'sumopod' }, expiresAt, note]);
+            alertPayment(fetchImpl, env, id, 'Tagihan Sumopod tanpa tautan', `metode=${methodId}`);
+            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, manualReview: true });
+          }
+          await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = $3, payment_expires_at = $4, redirect_url = $5, updated_at = now() WHERE id = $1', [id, methodId, detail, expiresAt, detail.redirectUrl]);
+          notifyOrder(pool, fetchImpl, env, 'created', id);
+          return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, redirectUrl: detail.redirectUrl });
         }
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas tanpa
         // percobaan ambigu menutup pesanan; kegagalan ambigu (5xx/timeout) masuk manual review untuk rekonsiliasi.
@@ -826,6 +887,36 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (rows[0].status !== 'fulfilled') throw error(409, 'Penilaian bisa dikirim setelah pesanan selesai.');
         await pool.query('INSERT INTO order_ratings (order_id, owner_id, score, note) VALUES ($1, $2, $3, $4) ON CONFLICT (order_id) DO UPDATE SET score = EXCLUDED.score, note = EXCLUDED.note, updated_at = now()', [id, ownerId, score, note || null]);
         return send(res, 200, { rating: { score, note: note || null } });
+      }
+      if (req.method === 'POST' && path === '/api/webhooks/sumopod') {
+        const notice = await readJson(req);
+        if (!env.SUMOPOD_WEBHOOK_TOKEN) throw error(503, 'Webhook Sumopod belum dikonfigurasi.');
+        const event = sumopodWebhook(notice);
+        const sah = sumopodTokenValid(env, req.headers['x-webhook-token']);
+        console.error('[webhook] sumopod:', event.orderId.slice(0, 80), event.event.slice(0, 40), sah ? 'sah' : 'TIDAK SAH');
+        if (!sah) throw error(401, 'Notifikasi tidak sah.');
+        if (event.event === 'payment.test' || !event.orderId) return send(res, 200, { received: true, applied: false });
+        if (!idPattern.test(event.orderId)) return send(res, 200, { received: true, applied: false });
+        if (!ready(env)) throw error(503, 'Webhook belum siap.');
+        if (event.paid) {
+          const { rows } = await pool.query("SELECT price, status, payment_detail->>'provider' AS provider FROM orders WHERE id = $1", [event.orderId]);
+          if (!rows[0] || rows[0].provider !== 'sumopod') return send(res, 200, { received: true, applied: false });
+          if (Number(rows[0].price) !== event.amount) {
+            alertPayment(fetchImpl, env, event.orderId, 'Nominal webhook Sumopod tidak cocok', `amount=${event.amount} price=${rows[0].price}`);
+            return send(res, 200, { received: true, applied: false });
+          }
+          const applied = await markPaid(pool, event.orderId, event.amount);
+          // ponytail: balas 2xx dulu; pengiriman Digiflazz bisa lebih lama dari batas webhook 10 detik.
+          send(res, 200, { received: true, applied });
+          if (applied) setImmediate(() => claimAndFulfill(pool, fetchImpl, env, event.orderId).catch((err) => {
+            console.error('[webhook] sumopod fulfillment gagal:', event.orderId, err?.message || String(err));
+          }));
+          return;
+        }
+        if (event.failed) {
+          await failPayment(pool, event.orderId, event.amount);
+        }
+        return send(res, 200, { received: true });
       }
       if (req.method === 'POST' && path === '/api/webhooks/midtrans') {
         const notice = await readJson(req);

@@ -89,7 +89,7 @@ test('panel harga bisa mengisi draft dari margin persen per brand', () => {
   assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category, pct\)/);
   assert.match(source, /className="price-margin"/);
   assert.match(source, /aria-label=\{`Margin harga \$\{brand\.name\} \(%\)`\}/);
-  assert.match(source, /Modal × \(1 \+ %\), sudah termasuk biaya QRIS, dibulatkan ke atas\./);
+  assert.match(source, /Modal × \(1 \+ %\), ditambah biaya QRIS 0,7% \+ Rp300, dibulatkan ke atas\./);
   assert.match(css, /\.price-margin\{display:flex/);
   assert.match(css, /\.price-margin-field input\{[^}]*min-height:44px/);
 });

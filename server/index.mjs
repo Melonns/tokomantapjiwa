@@ -32,7 +32,7 @@ server.listen(port, host, () => console.log(`Melonbyte API listening on ${host}:
 const reconcileMinutes = Number(process.env.RECONCILE_INTERVAL_MINUTES ?? 10);
 async function reconcileSweep() {
   try {
-    const { rows } = await pool.query(`SELECT id, status, price, paid_at AS "paidAt" FROM orders
+    const { rows } = await pool.query(`SELECT id, status, price, paid_at AS "paidAt", COALESCE(payment_detail->>'provider', 'midtrans') AS "provider" FROM orders
       WHERE (status IN ('pending', 'payment_paid', 'fulfillment_pending') OR (status = 'manual_review' AND paid_at IS NULL))
         AND created_at > now() - interval '2 days'
         AND updated_at < now() - interval '10 minutes'

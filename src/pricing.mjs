@@ -2,6 +2,7 @@
 // nominal kecil dapat persen lebih besar, nominal besar lebih tipis agar tetap kompetitif) plus fee
 // pembayaran yang wajib tertutup di dalam harga (biaya tidak boleh dibebankan ke pembeli).
 export const QRIS_FEE_PCT = 0.7 // sudah termasuk PPN
+export const QRIS_FEE_RP = 300 // biaya tetap QRIS Sumopod per transaksi
 export const EWALLET_FEE_PCT = 2 // GoPay/ShopeePay
 export const VA_FEE_RP = 4440 // Rp 4.000 + PPN 11%, flat per transaksi
 export const VA_MIN_ORDER = 100000 // fee flat ini baru masuk akal di pesanan besar
@@ -45,7 +46,14 @@ export function suggestPrice(cost, category, pctOverride) {
   const custom = Number(pctOverride)
   const pct = Number.isFinite(custom) && custom >= 0 ? custom : band.pct
   const gross = modal * (1 + pct / 100)
-  return roundUpTo(Math.ceil(gross / (1 - QRIS_FEE_PCT / 100)), band.grid)
+  return roundUpTo(Math.ceil((gross + QRIS_FEE_RP) / (1 - QRIS_FEE_PCT / 100)), band.grid)
+}
+
+// Biaya QRIS aktual: persentase + biaya tetap. Dipakai juga untuk cek untung/rugi.
+export function qrisFee(price) {
+  const total = Number(price)
+  if (!Number.isFinite(total) || total <= 0) return 0
+  return Math.round(Math.round(total * QRIS_FEE_PCT) / 100 + QRIS_FEE_RP)
 }
 
 // Sisa bersih setelah biaya QRIS; 'rugi' berarti harga tidak menutup modal dan biaya.
@@ -54,7 +62,7 @@ export function priceHealth(price, cost, category) {
   const modal = Number(cost)
   if (!Number.isFinite(jual) || !Number.isFinite(modal) || jual <= 0 || modal <= 0) return null
   const band = marginBand(category, modal)
-  const fee = Math.round(jual * QRIS_FEE_PCT) / 100
+  const fee = qrisFee(jual)
   const netRp = Math.round(jual - modal - fee)
   const marginPct = Math.round(((jual - modal) / jual) * 1000) / 10
   const tipis = netRp < (band.pct / 100) * modal * 0.5

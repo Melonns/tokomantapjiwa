@@ -12,6 +12,8 @@ Login nomor HP tidak memakai SMS: pengguna masuk dengan nomor HP dan kata sandi,
 4. Di terminal pertama jalankan `npm run server`; terminal kedua `npm run dev`. Vite mem-proxy `/api` ke port `3001`.
 5. `npm test` dan `npm run build` untuk cek kode. Konfigurasi webhook Midtrans ke `https://domainmu/api/webhooks/midtrans` tanpa redirect. Di produksi, layani `dist/` dari web server dan proxy `/api` ke server Node di origin yang sama; gunakan HTTPS.
 
+**Kanal QRIS Sumopod (opsional).** Isi `PAYMENT_PROVIDER=sumopod`, `SUMOPOD_ENV=sandbox` (atau `production`), key sandbox/produksi, dan `SUMOPOD_WEBHOOK_TOKEN`. Daftarkan webhook `https://domainmu/api/webhooks/sumopod`; header `X-Webhook-Token` harus sama dengan nilai env tersebut. Selama token kosong, checkout dinonaktifkan agar pembayaran tidak menggantung. Sumopod hanya menampilkan QRIS; Midtrans tetap menjadi bawaan dan tidak dihapus.
+
 Siap mengudara di VPS? Ikuti [DEPLOY.md](DEPLOY.md): berkas Caddy, layanan systemd, skrip deploy, cadangan harian, dan pemantauan uptime sudah disiapkan di folder `deploy/`.
 
 Kontrak API, mode sandbox dan penanganan status ambigu: [server/README.md](server/README.md). Tanpa proyek Supabase dan kredensial, katalog tidak menampilkan harga sungguhan dan checkout tidak berjalan; tidak ada harga/produk palsu. Jangan meluncurkan pembayaran sebelum uji integrasi Midtrans–Digiflazz dan prosedur refund/reconciliation nyata.
