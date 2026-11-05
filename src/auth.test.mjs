@@ -135,3 +135,15 @@ test('login dengan email belum dikonfirmasi langsung dikirimi kode konfirmasi ba
   assert.ok(source.includes('Email Anda belum dikonfirmasi. Kode konfirmasi baru telah dikirim'))
   assert.ok(source.includes("writePendingCode(window.localStorage, { email: identity.email, purpose: 'signup', sentAt: Date.now() })"))
 })
+
+test('data akun terpisah dari form profil dan status nomor tidak menyesatkan', () => {
+  const dataAt = source.indexOf('<div className="account-data"')
+  const emailAt = source.indexOf('id="profile-email"')
+  const profileAt = source.indexOf('<form className="profile-form" onSubmit={saveProfile}>')
+  assert.ok(dataAt > 0 && emailAt > dataAt && profileAt > emailAt)
+  assert.ok(source.includes('Nomor untuk login'))
+  assert.ok(source.includes('phone_confirmed_at'))
+  assert.ok(source.includes('email_confirmed_at'))
+  assert.ok(source.includes('Nomor login belum diverifikasi'))
+  assert.equal(source.includes('Nama, username, dan nomor HP akun Anda telah diperbarui.'), false)
+})

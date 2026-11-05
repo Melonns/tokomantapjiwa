@@ -65,7 +65,7 @@ test('admin pages are separate from personal profile and gated by server-verifie
   assert.match(source, /view === 'admin' && canManage && adminPage === 'products'/);
   assert.match(source, /Halaman ini khusus admin toko\./);
   const personal = source.slice(source.indexOf("{view !== 'admin' && <>"), source.indexOf("{view === 'admin' && session && roleState === 'loading'"));
-  assert.match(personal, /Profil akun/);
+  assert.match(personal, /Data akun/);
   assert.match(personal, /Riwayat pesanan/);
   assert.doesNotMatch(personal, /pricing-title|admin-title|Navigasi admin/);
 });
@@ -97,6 +97,7 @@ test('halaman tidak dikenal, jeda struk bertingkat, dan pengajuan hapus akun ter
   assert.match(source, /id="tidak-ditemukan"/);
   assert.match(source, /import \{ receiptDelay \} from '\.\/refresh\.mjs'/);
   assert.match(source, /receiptDelay\(receiptRetry\)/);
+  assert.match(source, /document\.visibilityState === 'visible'/);
   assert.match(source, /\/api\/account\/deletion-request/);
   assert.match(source, /Ajukan penghapusan akun/);
   assert.match(source, /account-danger/);

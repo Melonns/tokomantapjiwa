@@ -25,7 +25,8 @@ test('kontak terisi dari profil tetapi tetap bisa diubah', () => {
 })
 
 test('kontak ikut dikirim dan disimpan di pesanan', () => {
-  assert.match(app, /contactEmail: contactEmail\.trim\(\), contactPhone: contactPhone\.trim\(\)/)
+  assert.match(app, /contactEmail: email,/)
+  assert.match(app, /\.\.\.\(phone \? \{ contactPhone: phone \} : \{\}\)/)
   assert.match(core, /contactEmail !== undefined && \(typeof contactEmail !== 'string'/)
   assert.match(core, /if \(contactEmail\) input\.contactEmail = contactEmail\.trim\(\)/)
   assert.match(server, /INSERT INTO orders \([^)]*contact_email, contact_phone, payment_environment\)/)
@@ -34,9 +35,12 @@ test('kontak ikut dikirim dan disimpan di pesanan', () => {
   assert.match(schema, /contact_phone text CHECK \(contact_phone IS NULL OR length\(contact_phone\) BETWEEN 8 AND 20\)/)
 })
 
-test('email kontak divalidasi sebelum pesanan dibuat', () => {
+test('email kontak wajib, nomor HP opsional dan hanya divalidasi jika diisi', () => {
   assert.match(app, /Isi email kontak yang valid sebelum membuat pesanan\./)
-  assert.match(app, /Isi nomor HP kontak yang valid sebelum membuat pesanan\./)
+  assert.match(app, /const phone = contactPhone\.trim\(\)/)
+  assert.match(app, /if \(phone && !/)
+  assert.match(app, /\.\.\.\(phone \? \{ contactPhone: phone \} : \{\}\)/)
+  assert.match(app, /Email wajib\. Nomor HP opsional\./)
 })
 
 test('email di halaman profil tetap ditandai terkunci', () => {

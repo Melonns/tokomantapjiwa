@@ -734,10 +734,19 @@ function App() {
     let active = true
     setReceiptState((current) => (current === 'ready' ? current : 'loading'))
     authHeaders().then((headers) => request(`/api/orders/${encodeURIComponent(receiptId)}`, { headers })).then((data) => {
-      if (active) { setReceipt(data.order || null); setReceiptState('ready') }
-    }).catch((error) => { if (active) { setReceiptError(error.message); setReceiptState('error') } })
+      if (active) { setReceipt(data.order || null); setReceiptError(''); setReceiptState('ready') }
+    }).catch((error) => { if (active) { setReceiptError(error.message); setReceiptState((current) => (current === 'ready' ? current : 'error')) } })
     return () => { active = false }
   }, [view, session?.access_token, receiptId, receiptRetry])
+
+  useEffect(() => {
+    if (view !== 'receipt' || !session) return
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') setReceiptRetry((value) => value + 1)
+    }
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => document.removeEventListener('visibilitychange', refreshWhenVisible)
+  }, [view, session?.access_token])
 
   useEffect(() => {
     const aktif = ACTIVE_STATUSES.includes(receipt?.status) || (receipt?.status === 'manual_review' && !receipt?.paidAt)
@@ -1180,7 +1189,7 @@ function App() {
       if (error) throw error
       setPhoneMessage('Profil tersimpan.')
       setProfileState('ready')
-      showToast('ok', 'Profil tersimpan', 'Nama, username, dan nomor HP akun Anda telah diperbarui.')
+      showToast('ok', 'Profil tersimpan', 'Nama, username, dan nomor untuk login telah diperbarui.')
     } catch (error) {
       setProfileState('error')
       setPhoneMessage(error.message || 'Gagal menyimpan data akun.')
@@ -1290,6 +1299,21 @@ function App() {
       setPasswordMessage(authErrorMessage(error.message))
     }
   }
+
+  const accountMeta = session?.user?.user_metadata || {}
+  const accountDisplayName = accountMeta.name || accountMeta.full_name || ''
+  const accountUsername = accountMeta.username || ''
+  const accountPhone = session?.user?.phone || accountMeta.requested_phone || ''
+  const accountPhoneVerified = Boolean(session?.user?.phone_confirmed_at && session?.user?.phone)
+  const accountEmailVerified = Boolean(session?.user?.email_confirmed_at)
+  const accountInitials = (accountDisplayName || accountUsername || session?.user?.email || 'Akun')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'A'
 
   const signOutButton = <button type="button" className="secondary-button signout-button" onClick={signOutAccount} disabled={signOutState === 'loading'}>{signOutState === 'loading' ? 'Keluar...' : 'Keluar akun'}</button>
   const deletionBlock = (
@@ -1512,14 +1536,16 @@ function App() {
     setCheckoutError('')
     try {
       if (!supabase || !session) throw new Error('Masuk ke akun Anda terlebih dahulu sebelum membuat pesanan.')
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(contactEmail.trim())) throw new Error('Isi email kontak yang valid sebelum membuat pesanan.')
-      if (!/^[0-9+()\s-]{8,20}$/.test(contactPhone.trim())) throw new Error('Isi nomor HP kontak yang valid sebelum membuat pesanan.')
+      const email = contactEmail.trim()
+      const phone = contactPhone.trim()
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw new Error('Isi email kontak yang valid sebelum membuat pesanan.')
+      if (phone && !/^[0-9+()\s-]{8,20}$/.test(phone)) throw new Error('Isi nomor HP kontak yang valid sebelum membuat pesanan.')
       const voucherUse = activeVoucher()
       const payable = selected.price - (voucherUse ? voucherUse.discount : 0)
       const data = await request('/api/checkout', {
         method: 'POST',
         headers: await authHeaders(),
-        body: JSON.stringify({ ...(selected.format === 'plain' || selected.format === 'riot' ? { productId: selected.id, userId: userId.trim() } : { productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim() }), paymentMethod: activePaymentMethod(payable), voucherCode: voucherUse?.code, contactEmail: contactEmail.trim(), contactPhone: contactPhone.trim() }),
+        body: JSON.stringify({ ...(selected.format === 'plain' || selected.format === 'riot' ? { productId: selected.id, userId: userId.trim() } : { productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim() }), paymentMethod: activePaymentMethod(payable), voucherCode: voucherUse?.code, contactEmail: email, ...(phone ? { contactPhone: phone } : {}) }),
       })
       if (!data.orderId) throw new Error('Pesanan tidak terbentuk. Coba lagi beberapa saat nanti.')
       setConfirmOpen(false)
@@ -1908,8 +1934,8 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 </li>
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">6</span><h3>Detail kontak</h3></div>
-                  <div className="field-row"><label><span className="field-label">Email</span><input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} type="email" maxLength="120" autoComplete="off" placeholder="nama@email.com" aria-describedby="kontak-bisa-diubah" /></label><label><span className="field-label">Nomor HP</span><input value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} type="tel" maxLength="20" inputMode="tel" autoComplete="off" placeholder="08..." aria-describedby="kontak-bisa-diubah" /></label></div>
-                  <p className="field-hint" id="kontak-bisa-diubah">{session ? 'Terisi dari profil akun.' : 'Masuk ke akun untuk menyelesaikan pesanan.'}</p>
+                  <div className="field-row"><label><span className="field-label">Email</span><input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} type="email" aria-required="true" maxLength="120" autoComplete="off" placeholder="nama@email.com" aria-describedby="kontak-bisa-diubah" /></label><label><span className="field-label">Nomor HP (opsional)</span><input value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} type="tel" maxLength="20" inputMode="tel" autoComplete="off" placeholder="08..." aria-describedby="kontak-bisa-diubah" /></label></div>
+                  <p className="field-hint" id="kontak-bisa-diubah">{session ? 'Email wajib. Nomor HP opsional. Terisi dari profil akun.' : 'Masuk ke akun untuk menyelesaikan pesanan.'}</p>
                 </li>
               </ol>
               {!checkoutAvailable && <p className="field-hint" role="status">Checkout belum tersedia. Coba lagi nanti.</p>}
@@ -2014,28 +2040,48 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
           </> : <h1>{view === 'register' && !session ? 'Daftar akun' : 'Akun saya'}</h1>}
           {view !== 'admin' && <>
           <section className="account-section" aria-labelledby="account-title">
-            <div className={session ? 'account-layout account-wide' : 'account-layout account-auth'}>
-              {session && <div>
-                <h2 id="account-title">Profil akun</h2>
-                <p>Pesanan yang Anda buat tersimpan di akun ini.</p>
-              </div>}
-              <div className={session ? 'order-panel' : 'order-panel auth-panel'}>
+            <div className={session ? 'account-layout account-signed' : 'account-layout account-auth'}>
+              <div className={session ? 'order-panel account-panel' : 'order-panel auth-panel'}>
                 {!session && <>
                   <h2 id="account-title">{view === 'register' ? 'Agar pesanan Anda mudah diperiksa.' : 'Masuk ke akun'}</h2>
                   <p className="auth-lead">{view === 'register' ? 'Daftar dengan email, kata sandi, nomor HP, dan username.' : 'Masuk dengan email atau nomor HP dan kata sandi.'}</p>
                 </>}
                 {!supabase ? <p role={authConfigError ? 'alert' : 'status'}>{authConfigError ? 'Konfigurasi login salah. Gunakan publishable/anon key Supabase; secret/service_role tidak boleh dipakai browser.' : 'Akun belum aktif. Pemilik toko perlu menambahkan konfigurasi Supabase.'}</p> : session ? <>
-                  {session.user.email ? <><div className="profile-cols">
+                  <header className="account-summary">
+                    <span className="account-avatar" aria-hidden="true">{accountInitials}</span>
+                    <div className="account-summary-copy">
+                      <p className="eyebrow">RINGKASAN AKUN</p>
+                      <h2 id="account-title">{accountDisplayName || accountUsername || 'Akun saya'}</h2>
+                      {accountDisplayName && accountUsername && <p className="account-handle">@{accountUsername}</p>}
+                      <ul className="account-status-list" aria-label="Status akun">
+                        {session.user.email && <li className={accountEmailVerified ? 'account-status is-ok' : 'account-status is-wait'}>{accountEmailVerified ? 'Email terverifikasi' : 'Email belum terverifikasi'}</li>}
+                        <li className={accountPhoneVerified ? 'account-status is-ok' : 'account-status is-wait'}>{accountPhoneVerified ? 'Nomor HP terverifikasi' : accountPhone ? 'Nomor login belum diverifikasi' : 'Nomor login belum diisi'}</li>
+                      </ul>
+                    </div>
+                  </header>
+                  {session.user.email ? <>
+                    <div className="account-data" aria-labelledby="account-data-title">
+                      <div className="account-data-head"><h3 id="account-data-title">Data akun</h3><p>Email akun. Nomor untuk login diatur pada formulir Ubah profil.</p></div>
+                      <div className="profile-field">
+                        <label htmlFor="profile-email">Email<span className="field-badge"><IkonGembok />Terkunci</span></label>
+                        <input id="profile-email" type="email" value={session.user.email} readOnly aria-describedby="profile-email-hint" />
+                        <small className="field-hint" id="profile-email-hint">Email dipakai untuk verifikasi. Tidak dapat diubah dari halaman ini.</small>
+                      </div>
+                      {accountPhoneVerified && <div className="profile-field">
+                        <label htmlFor="profile-verified-phone">Nomor HP terverifikasi</label>
+                        <input id="profile-verified-phone" type="tel" value={session.user.phone} readOnly aria-describedby="profile-verified-phone-hint" />
+                        <small className="field-hint" id="profile-verified-phone-hint">Nomor ini terverifikasi. Nomor untuk login diatur di bawah.</small>
+                      </div>}
+                    </div>
+                    <div className="profile-cols">
                     <div className="profile-col">
                       <form className="profile-form" onSubmit={saveProfile}>
                         <p className="form-title">Ubah profil</p>
                         <div className="profile-field"><label htmlFor="profile-name">Nama</label><input id="profile-name" type="text" autoComplete="off" maxLength="40" value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Nama Anda" /></div>
                         <div className="profile-field"><label htmlFor="profile-username">Username</label><input id="profile-username" type="text" autoComplete="off" minLength="3" maxLength="24" pattern="[a-zA-Z0-9_]+" required value={registerUsername} onChange={(event) => setRegisterUsername(event.target.value)} placeholder="username Anda" /></div>
-                        <div className="profile-field"><label htmlFor="profile-email">Email<span className="field-badge"><IkonGembok />Terkunci</span></label><input id="profile-email" type="email" value={session.user.email} readOnly aria-describedby="profile-email-hint" /><small className="field-hint" id="profile-email-hint">Email dipakai untuk verifikasi dan tidak dapat diubah sendiri.</small></div>
-                        <div className="profile-field"><label htmlFor="profile-phone">Nomor HP</label><input id="profile-phone" type="tel" autoComplete="off" required value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." /></div>
-                        <button type="submit" className="secondary-button" disabled={profileState === 'loading'}>{profileState === 'loading' ? 'Menyimpan...' : 'Ubah profil'}</button>
+                        <div className="profile-field"><label htmlFor="profile-phone">Nomor untuk login</label><input id="profile-phone" type="tel" autoComplete="off" required aria-describedby="profile-phone-hint" value={registerPhone} onChange={(event) => setRegisterPhone(event.target.value)} placeholder="08..." /><small className="field-hint" id="profile-phone-hint">Dipakai bersama kata sandi. Kode verifikasi tetap dikirim melalui email.</small></div>
+                        <button type="submit" className="secondary-button" disabled={profileState === 'loading'}>{profileState === 'loading' ? 'Menyimpan...' : 'Simpan profil'}</button>
                       </form>
-                      {session.user.phone_confirmed_at ? <p role="status">Nomor HP terverifikasi: {session.user.phone}</p> : session.user.user_metadata?.requested_phone ? <p role="status">Nomor HP ini dapat dipakai untuk masuk bersama kata sandi; kode verifikasi tetap dikirim melalui email.</p> : null}
                       {phoneMessage && <p role={profileState === 'error' ? 'alert' : 'status'}>{phoneMessage}</p>}
                     </div>
                     <div className="profile-col">
@@ -2062,7 +2108,14 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                         {twoStepMessage && <p role={twoStepState === 'error' ? 'alert' : 'status'}>{twoStepMessage}</p>}
                       </div>
                     </div>
-                  </div><div className="signout-zone"><p className="signout-hint">Anda dapat masuk kembali kapan saja dengan email dan kata sandi.</p>{signOutButton}</div>{deletionBlock}</> : <><p>Masuk sebagai <strong>{session.user.phone}</strong></p>{signOutButton}{deletionBlock}</>}
+                  </div>
+                </> : <div className="account-phone-only">
+                  <h3>Data akun</h3>
+                  <p>Akun ini masuk dengan nomor HP. Perubahan nama dan username belum tersedia di halaman ini.</p>
+                  <p>Nomor untuk login: <strong>{session.user.phone || accountPhone || 'Belum diisi'}</strong></p>
+                </div>}
+                <div className="signout-zone"><p className="signout-hint">{session.user.email ? 'Anda dapat masuk kembali kapan saja dengan email dan kata sandi.' : 'Anda dapat masuk kembali kapan saja dengan nomor HP dan kata sandi.'}</p>{signOutButton}</div>
+                {deletionBlock}
                 </> : view === 'register' ? <>
                   <form className="profile-form" onSubmit={register}>
                     <div className="auth-fields">

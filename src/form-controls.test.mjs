@@ -76,7 +76,7 @@ test('checkout meminta Zone ID hanya untuk produk ml_concat dan pilih server unt
   assert.match(source, /\{orderFormat === 'ml_concat' && <label>Zone ID/)
   assert.match(source, /\{orderFormat === 'uid_server' && <div className="field-block"><span className="field-block-label">Server<\/span><PilihanServer nilai=\{zoneId\} onPilih=\{setZoneId\} \/><\/div>\}/)
   assert.match(source, /const payable = selected\.price - \(voucherUse \? voucherUse\.discount : 0\)/);
-  assert.match(source, /paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code, contactEmail: contactEmail\.trim\(\)/);
+  assert.match(source, /paymentMethod: activePaymentMethod\(payable\), voucherCode: voucherUse\?\.code, contactEmail: email/);
   assert.match(source, /const code = promoCode\.trim\(\)\.toUpperCase\(\)/);
 })
 
