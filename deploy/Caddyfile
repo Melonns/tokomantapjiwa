@@ -66,8 +66,11 @@ melonbyte.biz.id {
 	# Berkas ber-hash dari Vite boleh disimpan lama di peramban; index.html tidak boleh.
 	@aset path /assets/*
 	header @aset Cache-Control "public, max-age=31536000, immutable"
-	@ikon path /favicon.svg /icon-192.png /apple-touch-icon.png /og.png /robots.txt
+	@ikon path /favicon.svg /favicon-32.png /icon-192.png /apple-touch-icon.png /og.png /robots.txt
 	header @ikon Cache-Control "public, max-age=86400"
+	# Aset merek dan ikon game: namanya tetap, jadi tahan lama di peramban dan CDN.
+	@gambar path /melonbyte-mark.png /melonbyte-lockup.png /melonbyte-logo.png /logo/*
+	header @gambar Cache-Control "public, max-age=604800"
 	@halaman path / /index.html
 	header @halaman Cache-Control "no-cache"
 

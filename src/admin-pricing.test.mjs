@@ -86,17 +86,17 @@ test('panel harga menyimpan katalog di server dan bisa menyinkron ulang sendiri'
 test('panel harga bisa mengisi draft dari margin persen per brand', () => {
   assert.match(source, /const \[marginDrafts, setMarginDrafts\] = useState\(\{\}\)/);
   assert.match(source, /applyBrandMargin/);
-  assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category, pct, qrisFixedFee\)/);
+  assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category, pct\)/);
   assert.match(source, /className="price-margin"/);
   assert.match(source, /aria-label=\{`Margin harga \$\{brand\.name\} \(%\)`\}/);
-  assert.match(source, /Modal × \(1 \+ %\), ditambah biaya QRIS 0,7% \+ biaya tetap provider, dibulatkan ke atas\./);
+  assert.match(source, /Modal × \(1 \+ %\), ditambah biaya QRIS 0,7%, dibulatkan ke atas\./);
   assert.match(css, /\.price-margin\{display:flex/);
   assert.match(css, /\.price-margin-field input\{[^}]*min-height:44px/);
 });
 
 test('panel harga menandai margin rugi/tipis dan menawarkan harga saran', () => {
-  assert.match(source, /const health = priceHealth\(draft\.price, item\.cost, item\.category, qrisFixedFee\)/);
-  assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category, undefined, qrisFixedFee\)/);
+  assert.match(source, /const health = priceHealth\(draft\.price, item\.cost, item\.category\)/);
+  assert.match(source, /const saran = suggestPrice\(item\.cost, item\.category\)/);
   assert.match(source, /price-health-\$\{health\.level\}/);
   assert.match(source, /Rugi \$\{rupiah\(Math\.abs\(health\.netRp\)\)\} setelah biaya QRIS\./);
   assert.match(source, /Margin aman: sisa \$\{rupiah\(health\.netRp\)\} \(\$\{health\.marginPct\}%\)\./);

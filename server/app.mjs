@@ -3,7 +3,7 @@ import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, custom
 import { paymentProvider, sumopodBody, sumopodConfig, sumopodExpiresAt, sumopodMethods, sumopodPaymentDetail, sumopodReady, sumopodTokenValid, sumopodWebhook } from './sumopod.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
 import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
-import { QRIS_FEE_RP, QRIS_FIXED_FEE_BY_PROVIDER, suggestPrice, voucherDiscount } from '../src/pricing.mjs';
+import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
 import { clientIp, createRateLimiter } from './ratelimit.mjs';
 import { refreshGameIcons } from './game-icons.mjs';
@@ -371,13 +371,11 @@ export async function reconcilePending(pool, fetchImpl, env, order) {
 // ponytail: pull Digiflazz hanya saat sinkron diminta; INSERT + DELETE memakai tanda synced_at yang sama supaya pembacaan konsisten.
 // ponytail: harga produk mode 'auto' dihitung ulang dari modal + aturan kategori tiap katalog supplier disinkronkan,
 // sehingga admin tidak perlu mengetik harga satu per satu; baris 'manual' tidak pernah disentuh.
-async function repriceAutoProducts(pool, env = {}) {
-  // ponytail: biaya tetap QRIS ikut provider aktif — Midtrans tidak memungut Rp300, jadi harga saran tidak boleh membebankannya.
-  const fixedFee = QRIS_FIXED_FEE_BY_PROVIDER[paymentProvider(env)] ?? QRIS_FEE_RP;
+async function repriceAutoProducts(pool) {
   const { rows } = await pool.query(`SELECT p.id, p.price, s.category, s.price AS cost FROM products p JOIN supplier_products s ON s.sku = p.digi_sku WHERE p.price_mode = 'auto'`);
   const changes = [];
   for (const row of rows) {
-    const next = suggestPrice(Number(row.cost), row.category, undefined, fixedFee);
+    const next = suggestPrice(Number(row.cost), row.category);
     if (next == null || next === Number(row.price)) continue;
     changes.push({ sku: row.id, from: Number(row.price), to: next });
   }
@@ -612,7 +610,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       if (req.method === 'POST' && path === '/api/admin/supplier-products/sync') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const { items, syncedAt } = await saveSupplierCatalog(pool, fetchImpl, env);
-        const repriced = await repriceAutoProducts(pool, env);
+        const repriced = await repriceAutoProducts(pool);
         return send(res, 200, { synced: items.length, catalogFetchedAt: syncedAt.toISOString(), autoPriced: repriced.length, priceChanges: repriced.slice(0, 5) });
       }
       // ponytail: ikon game diambil ulang dari App Store agar tidak ketinggalan saat ada kolaborasi atau ulang tahun.

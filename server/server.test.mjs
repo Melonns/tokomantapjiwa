@@ -717,8 +717,8 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     assert.equal(insert.params.length, 1 + 3 * 6);
     const cleanup = statements.find(statement => statement.sql.startsWith('DELETE FROM supplier_products'));
     assert.deepEqual(cleanup.params, [insert.params[0]]);
-    // ponytail: aturan harga berjalan sendiri pada setiap sinkron. Tes ini memakai env Midtrans (tanpa PAYMENT_PROVIDER),
-    // jadi biaya tetap QRIS Rp300 milik Sumopod tidak ikut dibebankan.
+    // ponytail: aturan harga berjalan sendiri pada setiap sinkron: biaya QRIS 0,7% ikut tertutup.
+    // ff12 (modal 1605) sudah di 1800 = harga saran, jadi tidak ikut berubah.
     assert.equal(body.autoPriced, 1);
     assert.deepEqual(body.priceChanges, [
       { sku: 'ml10', from: 20000, to: 30600 },
