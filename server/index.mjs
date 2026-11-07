@@ -32,9 +32,19 @@ server.listen(port, host, () => console.log(`Melonbyte API listening on ${host}:
 const reconcileMinutes = Number(process.env.RECONCILE_INTERVAL_MINUTES ?? 10);
 async function reconcileSweep() {
   try {
-    const { rows } = await pool.query(`SELECT id, status, price, paid_at AS "paidAt", COALESCE(payment_detail->>'provider', 'midtrans') AS "provider" FROM orders
+    // ponytail: tutup tagihan yang sudah lewat masa bayar supaya kuota voucher tidak tertahan dan pembeli tidak
+    // membayar kode kedaluwarsa. Hanya pesanan yang benar-benar belum dibayar.
+    const tutup = await pool.query(`UPDATE orders SET status = 'payment_failed', updated_at = now()
+      WHERE status = 'pending' AND paid_at IS NULL AND payment_expires_at IS NOT NULL AND payment_expires_at < now() - interval '5 minutes'
+      RETURNING id, voucher_code`);
+    for (const row of tutup.rows) {
+      if (row.voucher_code) await pool.query('DELETE FROM voucher_redemptions WHERE order_id = $1', [row.id]).then(async (hapus) => {
+        if (hapus.rowCount) await pool.query('UPDATE vouchers SET used = GREATEST(used - 1, 0) WHERE code = $1', [row.voucher_code]);
+      }).catch(() => {});
+    }
+    // ponytail: tanpa batas umur. Pesanan yang nyangkut berhari-hari justru yang paling butuh disapu.
+    const { rows } = await pool.query(`SELECT id, status, price, paid_at AS "paidAt", updated_at AS "updatedAt", COALESCE(payment_detail->>'provider', 'midtrans') AS "provider" FROM orders
       WHERE (status IN ('pending', 'payment_paid', 'fulfillment_pending') OR (status = 'manual_review' AND paid_at IS NULL))
-        AND created_at > now() - interval '2 days'
         AND updated_at < now() - interval '10 minutes'
       ORDER BY updated_at ASC LIMIT 20`);
     for (const order of rows) await reconcilePending(pool, fetch, process.env, order);

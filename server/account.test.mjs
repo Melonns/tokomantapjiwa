@@ -179,6 +179,7 @@ test('checkout stores verified owner UUID, never client-supplied owner', async (
   let inserts = 0, chargeCalls = 0;
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) {
       assert.match(sql, /owner_id/);
       assert.equal(params[8], owner);

@@ -128,7 +128,7 @@ test('notifikasi kedaluwarsa menutup pesanan dan tetap dijawab 200', async () =>
 test('notifikasi lunas untuk pesanan tak dikenal dijawab 200 tanpa pengiriman', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   const pool = { async query(sql) {
-    if (sql.includes('SET status = CASE')) return { rows: [] };
+    if (sql.includes("SET status = 'payment_paid'") || sql.includes("SET status = 'manual_review'")) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env, fetchImpl: async () => { throw Error('api touched'); } });
@@ -149,7 +149,7 @@ test('notifikasi sah dengan nominal yang tidak dapat diterapkan memicu alert', a
   const originalError = console.error;
   console.error = (...args) => logs.push(args.join(' '));
   const pool = { async query(sql) {
-    if (sql.includes('SET status = CASE')) return { rows: [] };
+    if (sql.includes("SET status = 'payment_paid'") || sql.includes("SET status = 'manual_review'")) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env, fetchImpl: async () => { throw Error('api touched'); } });
@@ -184,6 +184,7 @@ test('checkout uses server price and returns the invoice payment contract', asyn
   let amount, inserts = 0, chargeUrl = '', stored, chargeBody;
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) { inserts++; assert.equal(params[3], 25000); return { rows: [] }; }
     if (sql.startsWith('UPDATE orders SET payment_channel')) { stored = params; return { rows: [] }; }
     throw Error('unexpected SQL');
@@ -217,6 +218,7 @@ test('QRIS memakai acquirer cadangan saat kanal pertama menolak', async () => {
   const acquirers = [];
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
     if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
     throw Error('unexpected SQL');
@@ -242,7 +244,8 @@ test('status pull capture tanpa fraud accept tidak memicu pengiriman', async () 
   const id = '11111111-1111-4111-8111-111111111111';
   let paidUpdates = 0, failedUpdates = 0;
   const pool = { async query(sql) {
-    if (sql.includes('SET status = CASE')) { paidUpdates++; return { rows: [] }; }
+    if (sql.includes("SET status = 'payment_paid'")) { paidUpdates++; return { rows: [] }; }
+    if (sql.includes("SET status = 'manual_review'")) return { rows: [] };
     if (sql.includes("status = 'payment_failed'")) { failedUpdates++; return { rows: [] }; }
     if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status: 'pending', price: 25000 }] };
     throw Error('unexpected SQL: ' + sql);
@@ -260,7 +263,8 @@ test('status pull settlement memulihkan pesanan manual review yang tagihannya se
   const id = '11111111-1111-4111-8111-111111111111';
   let status = 'manual_review';
   const pool = { async query(sql) {
-    if (sql.includes('SET status = CASE')) { status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes("SET status = 'payment_paid'")) { status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes("SET status = 'manual_review'")) return { rows: [] };
     if (sql.includes('digiflazz_claimed_at = now()')) { status = 'fulfillment_pending'; return { rows: [{ id, digi_sku: 'ml10', customer_no: '123100', price: 25000 }] }; }
     if (sql.includes('SET status = $2')) { status = 'fulfilled'; return { rows: [] }; }
     if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status, price: 25000 }] };
@@ -277,6 +281,7 @@ test('picked payment method charges that channel through Core API and unknown on
   let stored = 'not-called';
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 120000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
     if (sql.startsWith('UPDATE orders SET payment_channel')) { stored = params; return { rows: [] }; }
     throw Error('unexpected SQL');
@@ -322,6 +327,7 @@ test('voucher: potongan dihitung server, kuota habis dan syarat minimum ditolak'
     if (sql.startsWith('SELECT count(*)::int AS count FROM orders')) return { rows: [{ count: myBuys }] };
     if (sql.startsWith('UPDATE vouchers SET used = used + 1')) return { rows: [{ used: voucher.used + 1 }] };
     if (sql.startsWith('INSERT INTO voucher_redemptions')) { redemptions++; return { rows: [] }; }
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) { orderParams = params; return { rows: [] }; }
     if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
     if (sql.startsWith('UPDATE orders SET status')) return { rows: [] };
@@ -398,6 +404,7 @@ test('a rejected charge closes the pending order instead of leaving it dangling'
   const updates = [];
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 120000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
     if (sql.startsWith('UPDATE orders SET status')) { updates.push(params); return { rows: [] }; }
     throw Error('unexpected SQL');
@@ -418,6 +425,7 @@ test('charge ambigu setelah fallback tidak menutup pesanan', async () => {
   let attempts = 0, manualUpdates = 0, failedUpdates = 0;
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
     if (sql.includes("status = 'manual_review'")) { manualUpdates++; return { rows: [] }; }
     if (sql.includes("status = 'payment_failed'")) { failedUpdates++; return { rows: [] }; }
@@ -451,6 +459,7 @@ test('charge sukses tanpa detail masuk manual review, bukan gagal senyap', async
   let manualUpdates = 0, failedUpdates = 0;
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
     if (sql.includes("status = 'manual_review'")) { manualUpdates++; return { rows: [] }; }
     if (sql.includes("status = 'payment_failed'")) { failedUpdates++; return { rows: [] }; }
@@ -477,6 +486,7 @@ test('plain format checkout sends the user id alone as customer number', async (
   let customer, zone;
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ff12', name: 'Free Fire 12 Diamond', price: 20000, digi_sku: 'FF12', customer_format: 'plain' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) { customer = params[5]; zone = params[7]; return { rows: [] }; }
     if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
     throw Error('unexpected SQL');
@@ -516,6 +526,7 @@ test('admin memakai harga modal tanpa margin, pembeli biasa tetap harga jual', a
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT p.id, p.name, p.game')) return { rows: [row] };
     if (sql.startsWith('SELECT id, name, price')) return { rows: [row] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) { insertedPrice = params[3]; return { rows: [] }; }
     if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
@@ -548,7 +559,8 @@ test('pending Digi response stays pending and duplicate webhook never retries', 
   const id = '11111111-1111-4111-8111-111111111111';
   let claimed = false, status = 'pending', calls = 0;
   const pool = { async query(sql) {
-    if (sql.includes('SET status = CASE')) { if (status === 'pending') status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes("SET status = 'payment_paid'")) { if (status === 'pending') status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes("SET status = 'manual_review'")) return { rows: [] };
     if (sql.includes('digiflazz_claimed_at = now()')) {
       if (claimed) return { rows: [] };
       claimed = true; status = 'fulfillment_pending';
@@ -575,7 +587,8 @@ test('duplicate paid notification claims exactly one Digi request', async () => 
   const id = '11111111-1111-4111-8111-111111111111';
   let status = 'pending', calls = 0, claimed = false;
   const pool = { async query(sql) {
-    if (sql.includes('SET status = CASE')) { status = status === 'pending' ? 'payment_paid' : status; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes("SET status = 'payment_paid'")) { status = status === 'pending' ? 'payment_paid' : status; return { rows: status === 'payment_paid' ? [{ id, price: 25000 }] : [] }; }
+    if (sql.includes("SET status = 'manual_review'")) return { rows: [] };
     if (sql.includes('digiflazz_claimed_at = now()')) {
       if (status !== 'payment_paid' || claimed) return { rows: [] };
       claimed = true; status = 'fulfillment_pending';
@@ -1106,7 +1119,8 @@ test('receipt read pulls Midtrans status when the webhook never arrived', async 
   let status = 'pending';
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT id, status, product_name')) return { rows: [{ id, status, productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' }] };
-    if (sql.includes('SET status = CASE')) { if (status === 'pending') status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes("SET status = 'payment_paid'")) { if (status === 'pending') status = 'payment_paid'; return { rows: [{ id, price: 25000 }] }; }
+    if (sql.includes("SET status = 'manual_review'")) return { rows: [] };
     if (sql.includes('digiflazz_claimed_at = now()')) { status = 'fulfillment_pending'; return { rows: [{ id, digi_sku: 'ml10', customer_no: '123100', price: 25000 }] }; }
     if (sql.includes('SET status = $2')) { status = 'fulfilled'; return { rows: [] }; }
     throw Error('unexpected SQL: ' + sql);
@@ -1428,6 +1442,7 @@ test('checkout sumopod membuat tautan QRIS dan menyimpan detail tagihan', async 
   let inserts = 0, stored, chargeUrl, chargeBody;
   const pool = { async query(sql, params) {
     if (sql.startsWith('SELECT id, name, price')) return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, status, payment_channel')) return { rows: [] };
     if (sql.startsWith('INSERT INTO orders')) { inserts++; assert.equal(params[3], 25000); return { rows: [] }; }
     if (sql.startsWith('UPDATE orders SET payment_channel')) { stored = params; return { rows: [] }; }
     throw Error('unexpected SQL: ' + sql);

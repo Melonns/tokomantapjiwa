@@ -3,7 +3,7 @@ import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, custom
 import { paymentProvider, sumopodBody, sumopodConfig, sumopodExpiresAt, sumopodMethods, sumopodPaymentDetail, sumopodReady, sumopodTokenValid, sumopodWebhook } from './sumopod.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
 import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
-import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
+import { QRIS_FEE_RP, QRIS_FIXED_FEE_BY_PROVIDER, suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
 import { clientIp, createRateLimiter } from './ratelimit.mjs';
 import { refreshGameIcons } from './game-icons.mjs';
@@ -71,7 +71,7 @@ const PAYMENT_METHODS = {
   shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
 };
 // ponytail: satu daftar kolom dipakai pembacaan struk dan rekonsiliasi supaya bentuk respons selalu sama.
-const PAYMENT_DETAIL_COLUMNS = 'payment_channel AS "paymentChannel", payment_detail AS "paymentDetail", payment_expires_at AS "paymentExpiresAt", redirect_url AS "redirectUrl", created_at AS "createdAt", paid_at AS "paidAt"';
+const PAYMENT_DETAIL_COLUMNS = 'payment_channel AS "paymentChannel", payment_detail AS "paymentDetail", payment_expires_at AS "paymentExpiresAt", redirect_url AS "redirectUrl", created_at AS "createdAt", paid_at AS "paidAt", updated_at AS "updatedAt"';
 
 // ponytail: simpan hanya field yang dipakai halaman invoice; URL dari Midtrans divalidasi supaya tidak ada tautan asing yang dirender.
 function paymentDetail(method, charge) {
@@ -177,7 +177,8 @@ export function digiRequest(row, env) {
     ref_id: row.id,
     sign: createHash('md5').update(env.DIGIFLAZZ_USERNAME + env.DIGIFLAZZ_API_KEY + row.id).digest('hex'),
     ...(env.DIGIFLAZZ_TESTING === 'true' ? { testing: true } : {}),
-    ...(row.price ? { max_price: row.price } : {})
+    // ponytail: batas harga yang mau dibayar = harga modal supplier, bukan harga jual; voucher besar tidak boleh membuat pesanan mustahil dipenuhi.
+    ...(row.cost ? { max_price: Number(row.cost) } : {})
   };
 }
 
@@ -192,16 +193,19 @@ async function submitDigi(pool, fetchImpl, env, row) {
     if (data?.ref_id === row.id && data?.buyer_sku_code === row.digi_sku && data?.customer_no === row.customer_no) {
       if (data.status === 'Sukses' && data.rc === '00') status = 'fulfilled';
       else if (data.status === 'Gagal' && data.rc === '02') status = 'fulfillment_failed';
-      else if (data.status === 'Pending') status = 'fulfillment_pending';
+      else if (String(data.status || '').trim().toLowerCase() === 'pending') status = 'fulfillment_pending';
     }
     const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
     const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
     const { rows: done } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending' RETURNING id, status", [row.id, status, sn, note]);
     if (done[0]?.status === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', row.id);
     else if (done[0]?.status === 'fulfillment_failed') notifyOrder(pool, fetchImpl, env, 'failed', row.id);
+    else if (done[0]?.status === 'manual_review') alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz belum pasti', note || 'balasan tidak final');
   } catch (err) {
     console.error('Digiflazz request unresolved; reconcile ref_id manually:', row.id, err?.upstreamStatus ? `HTTP ${err.upstreamStatus}` : '', err.message);
-    await pool.query("UPDATE orders SET status = 'manual_review', updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending'", [row.id]);
+    const { rows } = await pool.query("UPDATE orders SET status = 'manual_review', updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending' RETURNING id", [row.id]);
+    // ponytail: pesanan yang sudah dibayar tidak boleh menggantung diam-diam; kegagalan pengiriman selalu memicu alarm.
+    if (rows[0]) alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz gagal', err?.message ? String(err.message).slice(0, 160) : 'tanpa keterangan');
   }
 }
 
@@ -210,7 +214,8 @@ async function claimAndFulfill(pool, fetchImpl, env, orderId) {
   // Atomic claim across processes; never auto-resubmit after a network timeout/crash.
   const claim = await pool.query(`UPDATE orders SET status = 'fulfillment_pending', digiflazz_claimed_at = now(), updated_at = now()
     WHERE id = $1 AND status = 'payment_paid' AND digiflazz_claimed_at IS NULL
-    RETURNING id, digi_sku, customer_no, price`, [orderId]);
+    RETURNING id, digi_sku, customer_no, price,
+      (SELECT price FROM supplier_products WHERE sku = orders.digi_sku) AS cost`, [orderId]);
   if (!claim.rows[0]) return false;
   notifyOrder(pool, fetchImpl, env, 'paid', orderId);
   await submitDigi(pool, fetchImpl, env, claim.rows[0]);
@@ -272,14 +277,25 @@ async function releaseVoucher(pool, orderId) {
   return true;
 }
 
+// ponytail: kembalikan 'paid' bila siap dikirim, 'review' bila uang masuk setelah pesanan ditutup (jangan auto-kirim, admin yang putuskan).
 async function markPaid(pool, orderId, grossAmount) {
-  const paid = await pool.query(`UPDATE orders SET status = CASE WHEN status = 'pending' OR (status = 'manual_review' AND paid_at IS NULL) THEN 'payment_paid' ELSE status END, paid_at = COALESCE(paid_at, now()), updated_at = now()
-    WHERE id = $1 AND price = $2 AND status IN ('pending', 'manual_review') AND (status = 'pending' OR paid_at IS NULL) RETURNING id, price`, [orderId, grossAmount]);
-  return Boolean(paid.rows[0]);
+  const paid = await pool.query(`UPDATE orders SET status = 'payment_paid', paid_at = COALESCE(paid_at, now()), updated_at = now()
+    WHERE id = $1 AND price = $2 AND paid_at IS NULL AND status IN ('pending', 'manual_review') RETURNING id`, [orderId, grossAmount]);
+  if (paid.rows[0]) return 'paid';
+  // Settlement yang datang setelah expire/deny/cancel: dana pelanggan sudah masuk, jangan biarkan pesanan mati tanpa jejak.
+  const late = await pool.query(`UPDATE orders SET status = 'manual_review', paid_at = COALESCE(paid_at, now()), updated_at = now(),
+    fulfillment_note = COALESCE(fulfillment_note, 'Pembayaran masuk setelah pesanan ditutup. Periksa sebelum memproses.')
+    WHERE id = $1 AND price = $2 AND paid_at IS NULL AND status = 'payment_failed' RETURNING id`, [orderId, grossAmount]);
+  return late.rows[0] ? 'review' : false;
 }
 
 async function applyPaid(pool, fetchImpl, env, orderId, grossAmount) {
-  if (!await markPaid(pool, orderId, grossAmount)) return false;
+  const state = await markPaid(pool, orderId, grossAmount);
+  if (!state) return false;
+  if (state === 'review') {
+    alertPayment(fetchImpl, env, orderId, 'Pembayaran masuk setelah pesanan ditutup', `gross=${grossAmount} status=payment_failed`);
+    return true;
+  }
   await claimAndFulfill(pool, fetchImpl, env, orderId);
   return true;
 }
@@ -296,14 +312,16 @@ async function failPayment(pool, orderId, grossAmount) {
 // tiap kali struk pesanan pending dibuka/di-poll. Best-effort: error apa pun dikembalikan sebagai status tersimpan agar struk tetap tampil.
 export async function reconcilePending(pool, fetchImpl, env, order) {
   if (!['pending', 'payment_paid', 'fulfillment_pending', 'manual_review'].includes(order.status) || !ready(env)) return order;
-  if (order.status === 'manual_review' && order.paidAt) return order;
+  // ponytail: tarik status pihak ketiga maksimal sekali per 20 detik per pesanan; struk yang di-poll tidak boleh
+  // menjadi jalan membanjiri API Midtrans/Digiflazz.
+  if (order.updatedAt && Date.now() - new Date(order.updatedAt).getTime() < 20000) return order;
   const provider = order?.provider === 'sumopod' || order?.paymentDetail?.provider === 'sumopod' ? 'sumopod' : 'midtrans';
   if (provider === 'sumopod' && (order.status === 'pending' || order.status === 'manual_review')) {
     // ponytail: Sumopod tidak menyediakan tarik-status di sandbox; webhook adalah sumber utama.
     return order;
   }
   try {
-    if (order.status === 'pending' || order.status === 'manual_review') {
+    if (order.status === 'pending' || (order.status === 'manual_review' && !order.paidAt)) {
       const status = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/${order.id}/status`, {
         method: 'GET', headers: { accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` }
       });
@@ -337,7 +355,7 @@ export async function reconcilePending(pool, fetchImpl, env, order) {
       const { rows } = await pool.query(`UPDATE orders SET digi_checked_at = now(), updated_at = now()
         WHERE id = $1 AND status = 'fulfillment_pending' AND digiflazz_claimed_at < now() - interval '1 minute'
           AND (digi_checked_at IS NULL OR digi_checked_at < now() - interval '1 minute')
-        RETURNING id, digi_sku, customer_no, price`, [order.id]);
+        RETURNING id, digi_sku, customer_no, price, (SELECT price FROM supplier_products WHERE sku = orders.digi_sku) AS cost`, [order.id]);
       if (!rows[0]) return order;
       await submitDigi(pool, fetchImpl, env, rows[0]);
       console.error('[reconcile] fulfillment:', order.id, 'diperiksa ulang ke Digiflazz');
@@ -353,11 +371,13 @@ export async function reconcilePending(pool, fetchImpl, env, order) {
 // ponytail: pull Digiflazz hanya saat sinkron diminta; INSERT + DELETE memakai tanda synced_at yang sama supaya pembacaan konsisten.
 // ponytail: harga produk mode 'auto' dihitung ulang dari modal + aturan kategori tiap katalog supplier disinkronkan,
 // sehingga admin tidak perlu mengetik harga satu per satu; baris 'manual' tidak pernah disentuh.
-async function repriceAutoProducts(pool) {
+async function repriceAutoProducts(pool, env = {}) {
+  // ponytail: biaya tetap QRIS ikut provider aktif — Midtrans tidak memungut Rp300, jadi harga saran tidak boleh membebankannya.
+  const fixedFee = QRIS_FIXED_FEE_BY_PROVIDER[paymentProvider(env)] ?? QRIS_FEE_RP;
   const { rows } = await pool.query(`SELECT p.id, p.price, s.category, s.price AS cost FROM products p JOIN supplier_products s ON s.sku = p.digi_sku WHERE p.price_mode = 'auto'`);
   const changes = [];
   for (const row of rows) {
-    const next = suggestPrice(Number(row.cost), row.category);
+    const next = suggestPrice(Number(row.cost), row.category, undefined, fixedFee);
     if (next == null || next === Number(row.price)) continue;
     changes.push({ sku: row.id, from: Number(row.price), to: next });
   }
@@ -558,6 +578,19 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, owner_id AS "ownerId", created_at AS "createdAt", contact_phone AS "contactPhone", COALESCE(contact_email, (SELECT email FROM auth.users WHERE id = orders.owner_id)) AS "contactEmail" FROM orders ORDER BY created_at DESC, id DESC LIMIT 100');
         return send(res, 200, { orders: rows });
       }
+      if (req.method === 'POST' && /^\/api\/admin\/orders\/[^/]+\/retry-fulfillment$/.test(path)) {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        const id = path.split('/')[4];
+        if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
+        // ponytail: hanya pesanan yang sudah dibayar dan gagal kirim. Reset klaim supaya claimAndFulfill bisa jalan lagi;
+        // manual_review sengaja tidak ikut karena hasil Digiflazz-nya belum pasti.
+        const { rows } = await pool.query(`UPDATE orders SET status = 'payment_paid', digiflazz_claimed_at = NULL, fulfillment_note = NULL, updated_at = now()
+          WHERE id = $1 AND status = 'fulfillment_failed' AND paid_at IS NOT NULL RETURNING id`, [id]);
+        if (!rows[0]) throw error(409, 'Hanya pesanan gagal kirim yang bisa dicoba ulang.');
+        await claimAndFulfill(pool, fetchImpl, env, id);
+        const { rows: after } = await pool.query('SELECT status, fulfillment_sn AS "sn", fulfillment_note AS "note" FROM orders WHERE id = $1', [id]);
+        return send(res, 200, after[0]);
+      }
       if (req.method === 'GET' && path === '/api/admin/supplier-products') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const { rows: catalogRows } = await pool.query(`SELECT sku, name, game, category, variant, price, synced_at FROM supplier_products WHERE ${supplierRowWhere}`);
@@ -579,7 +612,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       if (req.method === 'POST' && path === '/api/admin/supplier-products/sync') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const { items, syncedAt } = await saveSupplierCatalog(pool, fetchImpl, env);
-        const repriced = await repriceAutoProducts(pool);
+        const repriced = await repriceAutoProducts(pool, env);
         return send(res, 200, { synced: items.length, catalogFetchedAt: syncedAt.toISOString(), autoPriced: repriced.length, priceChanges: repriced.slice(0, 5) });
       }
       // ponytail: ikon game diambil ulang dari App Store agar tidak ketinggalan saat ada kolaborasi atau ulang tahun.
@@ -709,6 +742,19 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const id = randomUUID();
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
+        // ponytail: satu tagihan hidup per tujuan yang sama. Klik ganda atau retry setelah respons putus mengembalikan
+        // pesanan yang sudah ada, bukan membuat tagihan kedua.
+        const { rows: kembar } = await pool.query(`SELECT id, status, ${PAYMENT_DETAIL_COLUMNS}, payment_detail->>'provider' AS provider
+          FROM orders WHERE owner_id = $1 AND product_id = $2 AND customer_no = $3 AND user_id = $4 AND status = 'pending' AND created_at > now() - interval '30 minutes'
+            AND COALESCE(voucher_code, '') = $5 ORDER BY created_at DESC LIMIT 1`, [ownerId, product.id, customerNo, input.userId, picked?.voucher.code ?? '']);
+        if (kembar[0]) {
+          const lama = kembar[0];
+          return send(res, 200, {
+            orderId: lama.id, paymentChannel: lama.paymentChannel, paymentDetail: lama.paymentDetail ?? null,
+            paymentExpiresAt: lama.paymentExpiresAt ? new Date(lama.paymentExpiresAt).toISOString() : null,
+            manualReview: lama.status === 'manual_review', reused: true
+          });
+        }
         await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone, payment_environment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null, paymentEnvironment(env)]);
         if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) {
           // Voucher gagal dipakai (misalnya kalah balapan dengan checkout lain): tutup pesanan yang belum ditagih.
@@ -893,28 +939,38 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (!env.SUMOPOD_WEBHOOK_TOKEN) throw error(503, 'Webhook Sumopod belum dikonfigurasi.');
         const event = sumopodWebhook(notice);
         const sah = sumopodTokenValid(env, req.headers['x-webhook-token']);
-        console.error('[webhook] sumopod:', event.orderId.slice(0, 80), event.event.slice(0, 40), sah ? 'sah' : 'TIDAK SAH');
         if (!sah) throw error(401, 'Notifikasi tidak sah.');
+        // ponytail: log setelah token lolos, supaya endpoint publik tidak bisa membanjiri log dengan isi pilihannya sendiri.
+        console.error('[webhook] sumopod:', event.orderId.slice(0, 80), event.event.slice(0, 40), 'sah');
         if (event.event === 'payment.test' || !event.orderId) return send(res, 200, { received: true, applied: false });
         if (!idPattern.test(event.orderId)) return send(res, 200, { received: true, applied: false });
         if (!ready(env)) throw error(503, 'Webhook belum siap.');
-        if (event.paid) {
-          const { rows } = await pool.query("SELECT price, status, payment_detail->>'provider' AS provider FROM orders WHERE id = $1", [event.orderId]);
+        if (event.paid || event.failed) {
+          const { rows } = await pool.query("SELECT price, status, paid_at, payment_detail->>'provider' AS provider FROM orders WHERE id = $1", [event.orderId]);
           if (!rows[0] || rows[0].provider !== 'sumopod') return send(res, 200, { received: true, applied: false });
           if (Number(rows[0].price) !== event.amount) {
             alertPayment(fetchImpl, env, event.orderId, 'Nominal webhook Sumopod tidak cocok', `amount=${event.amount} price=${rows[0].price}`);
             return send(res, 200, { received: true, applied: false });
           }
+          if (event.failed && !event.paid) {
+            // ponytail: kabar gagal setelah uang tercatat lunas tidak boleh memundurkan pesanan; cukup alarm.
+            if (rows[0].paid_at) {
+              alertPayment(fetchImpl, env, event.orderId, 'Webhook Sumopod gagal setelah lunas', `status=${rows[0].status} amount=${event.amount}`);
+              return send(res, 200, { received: true, applied: false });
+            }
+            await failPayment(pool, event.orderId, event.amount);
+            return send(res, 200, { received: true });
+          }
           const applied = await markPaid(pool, event.orderId, event.amount);
+          if (!applied && rows[0].status === 'payment_failed' && event.paid) {
+            alertPayment(fetchImpl, env, event.orderId, 'Pembayaran Sumopod masuk setelah pesanan ditutup', `amount=${event.amount}`);
+          }
           // ponytail: balas 2xx dulu; pengiriman Digiflazz bisa lebih lama dari batas webhook 10 detik.
-          send(res, 200, { received: true, applied });
-          if (applied) setImmediate(() => claimAndFulfill(pool, fetchImpl, env, event.orderId).catch((err) => {
+          send(res, 200, { received: true, applied: Boolean(applied) });
+          if (applied === 'paid') setImmediate(() => claimAndFulfill(pool, fetchImpl, env, event.orderId).catch((err) => {
             console.error('[webhook] sumopod fulfillment gagal:', event.orderId, err?.message || String(err));
           }));
           return;
-        }
-        if (event.failed) {
-          await failPayment(pool, event.orderId, event.amount);
         }
         return send(res, 200, { received: true });
       }
@@ -922,22 +978,35 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const notice = await readJson(req);
         const noticeStatus = String(notice?.transaction_status || '');
         const sah = paymentSignature(notice, env.MIDTRANS_SERVER_KEY);
-        const idToko = idPattern.test(String(notice?.order_id || ''));
-        console.error('[webhook] midtrans:', String(notice?.order_id).slice(0, 80), noticeStatus.slice(0, 40), sah ? (idToko ? 'sah' : 'sah (id di luar toko)') : 'TIDAK SAH');
         if (!sah) throw error(401, 'Notifikasi tidak sah.');
+        const idToko = idPattern.test(String(notice?.order_id || ''));
+        // ponytail: log hanya setelah signature lolos, supaya endpoint publik tidak bisa membanjiri log dengan isi pilihannya sendiri.
+        console.error('[webhook] midtrans:', String(notice?.order_id).slice(0, 80), noticeStatus.slice(0, 40), idToko ? 'sah' : 'sah (id di luar toko)');
         // ponytail: notifikasi sah selalu dijawab 200 supaya Midtrans berhenti mengulang kirim dan berhenti mengirim surel peringatan; id di luar pola pesanan toko cukup diabaikan tanpa menyentuh basis data.
+        if (!idToko) return send(res, 200, { received: true, applied: false });
+        // ponytail: dua provider bisa aktif bergantian; syarat provider ikut di dalam UPDATE supaya notifikasi satu
+        // provider tidak bisa menyentuh tagihan provider lain, tanpa query tambahan yang bisa balapan.
         if (['settlement', 'capture'].includes(noticeStatus)) {
           if (!verifiedPayment(notice, env.MIDTRANS_SERVER_KEY)) {
-            if (idToko) alertPayment(fetchImpl, env, notice.order_id, 'Notifikasi pembayaran tidak lolos verifikasi', `status=${noticeStatus} fraud=${notice.fraud_status || '-'}`);
+            alertPayment(fetchImpl, env, notice.order_id, 'Notifikasi pembayaran tidak lolos verifikasi', `status=${noticeStatus} fraud=${notice.fraud_status || '-'}`);
             return send(res, 200, { received: true, applied: false });
           }
-          if (!idToko) return send(res, 200, { received: true, applied: false });
           if (!ready(env)) throw error(503, 'Webhook belum siap.');
-          if (!await applyPaid(pool, fetchImpl, env, notice.order_id, Number(notice.gross_amount))) {
+          // ponytail: satu UPDATE status dijalankan sebelum balas supaya `applied` jujur; pengiriman Digiflazz yang bisa
+          // lebih lama dari batas retry Midtrans (10 detik) baru dilepas setelah 2xx terkirim.
+          const state = await markPaid(pool, notice.order_id, Number(notice.gross_amount));
+          if (!state) {
             alertPayment(fetchImpl, env, notice.order_id, 'Pembayaran sah tidak dapat diterapkan', `status=${noticeStatus} gross=${notice.gross_amount}`);
             return send(res, 200, { received: true, applied: false });
           }
-        } else if (['expire', 'deny', 'cancel'].includes(noticeStatus) && idToko) {
+          send(res, 200, { received: true, applied: true });
+          if (state === 'paid') setImmediate(() => claimAndFulfill(pool, fetchImpl, env, notice.order_id).catch((err) => {
+            console.error('[webhook] midtrans fulfillment gagal:', notice.order_id, err?.message || String(err));
+            alertPayment(fetchImpl, env, notice.order_id, 'Pengiriman setelah pembayaran gagal', `status=${noticeStatus} gross=${notice.gross_amount}`);
+          }));
+          return;
+        }
+        if (['expire', 'deny', 'cancel'].includes(noticeStatus)) {
           await failPayment(pool, notice.order_id, Number(notice.gross_amount));
         }
         return send(res, 200, { received: true });
@@ -948,9 +1017,10 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
         if (!ready(env)) throw error(503, 'Pemeriksaan tidak siap.');
         const { rows } = await pool.query(`UPDATE orders SET digi_checked_at = now(), updated_at = now()
-          WHERE id = $1 AND status = 'fulfillment_pending' AND digiflazz_claimed_at < now() - interval '5 minutes'
+          WHERE id = $1 AND status IN ('fulfillment_pending', 'manual_review') AND paid_at IS NOT NULL
+            AND (digiflazz_claimed_at IS NULL OR digiflazz_claimed_at < now() - interval '5 minutes')
             AND (digi_checked_at IS NULL OR digi_checked_at < now() - interval '5 minutes')
-          RETURNING id, digi_sku, customer_no, price`, [id]);
+          RETURNING id, digi_sku, customer_no, price, (SELECT price FROM supplier_products WHERE sku = orders.digi_sku) AS cost`, [id]);
         if (!rows[0]) throw error(409, 'Belum waktunya diperiksa atau status tidak sesuai.');
         await submitDigi(pool, fetchImpl, env, rows[0]);
         return send(res, 200, { checked: true });
@@ -1021,12 +1091,17 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const manual = body?.manual === true;
         const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 200) : '';
         if (manual && note.length < 3) throw error(400, 'Isi catatan refund manual (contoh: transfer bank BCA).');
-        const { rows } = await pool.query('SELECT id, status, price, paid_at AS "paidAt" FROM orders WHERE id = $1', [id]);
+        const { rows } = await pool.query('SELECT id, status, price, paid_at AS "paidAt", digiflazz_claimed_at AS "claimedAt", updated_at AS "updatedAt" FROM orders WHERE id = $1', [id]);
         const order = rows[0];
         if (!order) throw error(404, 'Pesanan tidak ditemukan.');
         if (order.status === 'refunded') throw error(409, 'Pesanan ini sudah direfund.');
         if (!REFUNDABLE_STATUSES.includes(order.status)) throw error(409, 'Status pesanan ini tidak dapat direfund.');
         if (!order.paidAt) throw error(409, 'Pembayaran belum terkonfirmasi; refund belum dapat diproses.');
+        // ponytail: pengiriman yang masih berjalan bisa mendarat setelah dana dikembalikan. Tunggu hasilnya dulu,
+        // kecuali klaim sudah menggantung terlalu lama dan admin memutuskan secara sadar.
+        if (order.status === 'fulfillment_pending' && order.claimedAt && Date.now() - new Date(order.claimedAt).getTime() < 15 * 60 * 1000) {
+          throw error(409, 'Pengiriman masih berjalan. Tunggu hasil Digiflazz sebelum refund.');
+        }
         if (!manual) {
           if (!env.MIDTRANS_SERVER_KEY) throw error(503, 'Refund otomatis belum dikonfigurasi. Gunakan penandaan manual.');
           try {

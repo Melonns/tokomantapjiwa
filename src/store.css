@@ -198,7 +198,7 @@
 .pay-qr p strong,.pay-va p strong{color:var(--text)}
 .pay-va p{margin:0 0 12px;line-height:1.6;color:var(--muted)}
 .pay-number{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 12px;font-size:clamp(1.1rem,1.9vw,1.5rem);font-weight:800;overflow-wrap:anywhere}
-.copy-button{border:1px solid #849e80;background:transparent;color:var(--text);border-radius:var(--r-pill);min-height:40px;padding:8px 14px;font-weight:700;font-size:.85rem}
+.copy-button{border:1px solid #849e80;background:transparent;color:var(--text);border-radius:var(--r-pill);min-height:44px;padding:8px 14px;font-weight:700;font-size:.85rem}
 .copy-button:hover{border-color:var(--lime);color:var(--lime)}
 .pay-legacy p{margin:0 0 14px;color:var(--muted)}
 .progress-steps{display:grid;gap:0;margin:0;padding:0;list-style:none}
@@ -311,7 +311,7 @@
 .order-contact a{color:var(--lime);text-decoration:none;border-bottom:1px dotted #c6dfa8}
 .field-lock{width:11px;height:11px;flex:0 0 auto;color:var(--muted)}
 .field-locked input,.checkout-form input[readonly],.checkout-form input:disabled,.profile-form input[readonly]{background:#0b120c;border-style:dashed;border-color:#6d8a68;color:var(--muted);cursor:not-allowed}
-.field-locked input:focus,.checkout-form input[readonly]:focus,.checkout-form input:disabled:focus,.profile-form input[readonly]:focus{outline:none;border-color:#6d8a68;box-shadow:none}
+.field-locked input:focus,.checkout-form input[readonly]:focus,.checkout-form input:disabled:focus,.profile-form input[readonly]:focus{border-color:#8fae88;box-shadow:0 0 0 3px rgba(198,223,168,.18)}
 .field-locked input::placeholder{color:var(--placeholder)}
 .profile-field .field-badge{margin-left:8px}
 .profile-field .field-hint{margin:6px 0 0;font-size:.78rem}
