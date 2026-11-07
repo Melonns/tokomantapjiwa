@@ -21,7 +21,9 @@ fi
 echo "==> Menarik kode terbaru dari cabang $BRANCH"
 git fetch --prune origin
 git checkout "$BRANCH"
-git pull --ff-only origin "$BRANCH"
+# Direktori ini cermin kode, bukan tempat mengedit: buang perubahan lokal yang tertinggal
+# supaya pull tidak pernah gagal. Berkas tak terlacak (mis. .env, unggahan ikon game) tidak disentuh.
+git reset --hard "origin/$BRANCH"
 
 # --include=dev dipakai agar vite tetap terpasang meski NODE_ENV=production ada di lingkungan VPS.
 echo "==> Memasang dependensi"
