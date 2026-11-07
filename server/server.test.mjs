@@ -717,14 +717,14 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
     assert.equal(insert.params.length, 1 + 3 * 6);
     const cleanup = statements.find(statement => statement.sql.startsWith('DELETE FROM supplier_products'));
     assert.deepEqual(cleanup.params, [insert.params[0]]);
-    // ponytail: aturan harga berjalan sendiri pada setiap sinkron: biaya QRIS 0,7% + Rp300 ikut tertutup.
-    assert.equal(body.autoPriced, 2);
+    // ponytail: aturan harga berjalan sendiri pada setiap sinkron. Tes ini memakai env Midtrans (tanpa PAYMENT_PROVIDER),
+    // jadi biaya tetap QRIS Rp300 milik Sumopod tidak ikut dibebankan.
+    assert.equal(body.autoPriced, 1);
     assert.deepEqual(body.priceChanges, [
-      { sku: 'ml10', from: 20000, to: 30900 },
-      { sku: 'ff12', from: 1800, to: 2100 },
+      { sku: 'ml10', from: 20000, to: 30600 },
     ]);
     const repriced = statements.filter(statement => statement.sql.startsWith('UPDATE products SET price = $2'));
-    assert.deepEqual(repriced.map(statement => statement.params), [['ml10', 30900], ['ff12', 2100]]);
+    assert.deepEqual(repriced.map(statement => statement.params), [['ml10', 30600]]);
     const autoSelect = statements.find(statement => statement.sql.startsWith('SELECT p.id, p.price'));
     assert.match(autoSelect.sql, /WHERE p\.price_mode = 'auto'/);
   } finally { await new Promise(resolve => server.close(resolve)); }
