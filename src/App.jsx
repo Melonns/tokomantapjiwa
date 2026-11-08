@@ -470,15 +470,23 @@ function App() {
   const [twoStepMessage, setTwoStepMessage] = useState('')
   const [twoStepCode, setTwoStepCode] = useState('')
   const [twoStepNext, setTwoStepNext] = useState(null)
+  const ordersCache = useRef(new Map())
   const [orders, setOrders] = useState([])
   const [ordersState, setOrdersState] = useState('idle')
   const [ordersError, setOrdersError] = useState('')
   const [ordersRetry, setOrdersRetry] = useState(0)
+  const [orderTotal, setOrderTotal] = useState(0)
+  const [orderPage, setOrderPage] = useState(1)
+  const [orderFilter, setOrderFilter] = useState('all')
+  const [orderQuery, setOrderQuery] = useState('')
+  const [orderSearch, setOrderSearch] = useState('')
   const [receiptId, setReceiptId] = useState(() => routeFromPath().orderId || '')
   const [receipt, setReceipt] = useState(null)
   const [receiptState, setReceiptState] = useState('idle')
   const [receiptError, setReceiptError] = useState('')
   const [receiptRetry, setReceiptRetry] = useState(0)
+  const [qrState, setQrState] = useState('idle')
+  const [qrError, setQrError] = useState('')
   const [ratingRingkas, setRatingRingkas] = useState(null)
   const [ratingScore, setRatingScore] = useState(0)
   const [ratingNote, setRatingNote] = useState('')
@@ -723,14 +731,29 @@ function App() {
   }, [session])
 
   useEffect(() => {
-    if (!session) { setOrders([]); setOrdersState('idle'); return }
+    if (!session) { setOrders([]); setOrdersState('idle'); setOrderTotal(0); return }
     let active = true
-    setOrdersState('loading')
-    authHeaders().then((headers) => request('/api/orders', { headers })).then((data) => {
-      if (active) { setOrders(Array.isArray(data.orders) ? data.orders : []); setOrdersState('ready') }
+    const params = new URLSearchParams({ page: String(orderPage) })
+    if (orderFilter !== 'all') params.set('status', orderFilter)
+    if (orderSearch) params.set('q', orderSearch)
+    const key = params.toString()
+    const cached = ordersCache.current.get(key)
+    if (cached) { setOrders(cached.orders); setOrderTotal(cached.total); setOrdersState('ready'); return }
+    setOrdersState((current) => (current === 'ready' ? current : 'loading'))
+    authHeaders().then((headers) => request(`/api/orders?${key}`, { headers })).then((data) => {
+      const next = { orders: Array.isArray(data.orders) ? data.orders : [], total: Number(data.total) || 0 }
+      ordersCache.current.set(key, next)
+      if (active) { setOrders(next.orders); setOrderTotal(next.total); setOrdersState('ready') }
     }).catch((error) => { if (active) { setOrdersError(error.message); setOrdersState('error') } })
     return () => { active = false }
-  }, [session?.access_token, ordersRetry])
+  }, [session?.access_token, ordersRetry, orderPage, orderFilter, orderSearch])
+
+  // ponytail: jeda 300 ms supaya mengetik tidak memicu satu permintaan per huruf; hasil yang sudah pernah
+  // diambil disimpan di ordersCache sehingga kembali ke halaman/filter sebelumnya tampil seketika.
+  useEffect(() => {
+    const timer = setTimeout(() => setOrderSearch(orderQuery.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [orderQuery])
 
   useEffect(() => {
     if (view !== 'receipt' || !session) { setReceipt(null); setReceiptState('idle'); return }
@@ -1606,6 +1629,33 @@ function App() {
     }
   }
 
+  async function downloadQr(id) {
+    if (!id || qrState === 'loading') return
+    setQrState('loading')
+    setQrError('')
+    try {
+      const headers = await authHeaders()
+      const response = await fetch(`/api/orders/${encodeURIComponent(id)}/qr.png`, { headers })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.error || 'Kode QR belum dapat diunduh.')
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `melonbyte-qr-${id}.png`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setQrState('ready')
+    } catch (error) {
+      setQrState('error')
+      setQrError(error.message)
+    }
+  }
+
   async function saveSellingPrice(sku) {
     const draft = catalogDrafts[sku]
     if (!draft || catalogBusy) return
@@ -1998,7 +2048,14 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
               <h2 id="invoice-pay-title">Selesaikan pembayaran</h2>
               {invoiceDetail?.qrUrl ? <div className="pay-qr">
                 <img src={invoiceDetail.qrUrl} alt="Kode QR pembayaran" width="240" height="240" />
-                <div><p>Pindai kode QR ini dari aplikasi bank atau e-wallet, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>{invoiceDetail.deeplink && <a className="secondary-button" href={invoiceDetail.deeplink}>Buka aplikasi pembayaran</a>}</div>
+                <div className="pay-qr-body">
+                  <p>Pindai kode QR ini dari aplikasi bank atau e-wallet, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>
+                  <div className="pay-qr-actions">
+                    <button type="button" className="secondary-button" onClick={() => downloadQr(receipt.id)} disabled={qrState === 'loading'}>{qrState === 'loading' ? 'Menyiapkan…' : 'Unduh kode QR'}</button>
+                    {invoiceDetail.deeplink && <a className="secondary-button" href={invoiceDetail.deeplink}>Buka aplikasi pembayaran</a>}
+                  </div>
+                  <p className="field-hint" role="status">{qrState === 'error' ? qrError : 'Simpan kode QR kalau ingin membayar dari ponsel lain.'}</p>
+                </div>
               </div> : invoiceDetail?.vaNumber ? <div className="pay-va">
                 <p>Transfer ke nomor Virtual Account berikut, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>
                 <p className="pay-number"><span>{invoiceDetail.vaNumber}</span><button type="button" className="copy-button" onClick={() => copyText(invoiceDetail.vaNumber)}>{copied === invoiceDetail.vaNumber ? 'Tersalin' : 'Salin'}</button></p>
@@ -2173,7 +2230,23 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
               </aside>}
             </div>
           </section>
-          {session && <section className="order-section" aria-labelledby="order-title"><div className="order-layout"><div><h2 id="order-title">Riwayat pesanan</h2><p>Klik pesanan untuk membuka invoice dan status terbarunya. Jangan membayar ulang sebelum memeriksa status.</p></div><div className="order-panel">{ordersState === 'loading' ? <p role="status">Memuat pesanan...</p> : ordersState === 'error' ? <p role="alert">Gagal memuat pesanan. {ordersError} <button type="button" onClick={() => setOrdersRetry((value) => value + 1)}>Coba lagi</button></p> : orders.length === 0 ? <p role="status">Belum ada pesanan di akun ini. <a href="/katalog">Lihat katalog</a></p> : <ul className="order-list">{orders.map((order) => <li key={order.id}><a href={`/struk/${encodeURIComponent(order.id)}`}><strong>{order.productName}</strong><span>{rupiah(order.price)} · {statusLabel(order.status)}</span><small>{[tanggalWib(order.createdAt, true), `#${order.id}`].filter(Boolean).join(' · ')}</small></a></li>)}</ul>}</div></div></section>}
+          {session && <section className="order-section history-section" aria-labelledby="order-title">
+            <div className="history-head">
+              <h2 id="order-title">Riwayat pesanan</h2>
+              <p>Klik pesanan untuk membuka invoice dan status terbarunya. Jangan membayar ulang sebelum memeriksa status.</p>
+            </div>
+            <div className="history-tools">
+              <label className="history-search"><span className="sr-only">Cari pesanan</span><input type="text" role="searchbox" value={orderQuery} onChange={(event) => { setOrderQuery(event.target.value); setOrderPage(1) }} placeholder="Cari nama produk atau ID pesanan" autoComplete="off" /></label>
+              <div className="history-filter" role="group" aria-label="Filter status pesanan">
+                {[['all', 'Semua'], ['active', 'Masih berjalan'], ['done', 'Selesai'], ['failed', 'Gagal']].map(([value, label]) => <button key={value} type="button" aria-pressed={orderFilter === value} onClick={() => { setOrderFilter(value); setOrderPage(1) }}>{label}</button>)}
+              </div>
+            </div>
+            {ordersState === 'loading' ? <p role="status">Memuat pesanan...</p>
+              : ordersState === 'error' ? <p role="alert">Gagal memuat pesanan. {ordersError} <button type="button" onClick={() => { ordersCache.current.clear(); setOrdersRetry((value) => value + 1) }}>Coba lagi</button></p>
+                : orders.length === 0 ? <p role="status">{orderSearch || orderFilter !== 'all' ? 'Tidak ada pesanan yang cocok. Ubah kata kunci atau filter.' : <>Belum ada pesanan di akun ini. <a href="/katalog">Lihat katalog</a></>}</p>
+                  : <ul className="order-history">{orders.map((order) => <li key={order.id}><a className="order-row" href={`/struk/${encodeURIComponent(order.id)}`}><span className="order-row-main"><strong>{order.productName}</strong><span className="order-row-meta">{rupiah(order.price)} · {statusLabel(order.status)}</span><small>{[tanggalWib(order.createdAt, true), `#${order.id}`].filter(Boolean).join(' · ')}</small></span><span className="order-row-go">Lihat</span></a></li>)}</ul>}
+            {orderTotal > 5 && (() => { const totalPages = Math.max(1, Math.ceil(orderTotal / 5)); return <nav className="history-pager" aria-label="Halaman riwayat pesanan"><button type="button" onClick={() => setOrderPage((value) => Math.max(1, value - 1))} disabled={orderPage <= 1}>Sebelumnya</button><span aria-live="polite">Halaman {orderPage} dari {totalPages}</span><button type="button" onClick={() => setOrderPage((value) => Math.min(totalPages, value + 1))} disabled={orderPage >= totalPages}>Berikutnya</button></nav> })()}
+          </section>}
           </>}
           {view === 'admin' && session && roleState === 'loading' && <p role="status">Memeriksa akses akun...</p>}
           {view === 'admin' && session && roleState === 'error' && <p role="alert">Akses pengelola belum dapat diperiksa. {roleError} <button type="button" onClick={() => setRoleRetry((value) => value + 1)}>Coba lagi</button></p>}

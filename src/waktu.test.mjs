@@ -34,7 +34,7 @@ test('invoice menampilkan tanggal, jam, dan batas pembayaran', async () => {
   assert.match(source, /<p className="invoice-meta">Dibuat \{labelTanggalJam\(receipt\.createdAt\)\}<\/p>/);
   assert.match(source, /<dt>Batas pembayaran<\/dt><dd>\{labelTanggalJam\(receipt\.paymentExpiresAt\)\}<\/dd>/);
   assert.match(source, /tanggalWib\(order\.createdAt, true\)/);
-  assert.match(server, /created_at AS "createdAt" FROM orders WHERE owner_id = \$1/);
+  assert.match(server, /created_at AS "createdAt" FROM orders WHERE \$\{clause\}/);
   assert.match(server, /created_at AS "createdAt".{0,200}FROM orders ORDER BY/);
   assert.match(css, /\.invoice-meta\{/);
 });

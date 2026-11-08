@@ -301,6 +301,7 @@ test('picked payment method charges that channel through Core API and unknown on
     assert.equal(chargeBody.payment_type, 'bank_transfer');
     assert.equal(chargeBody.bank, 'bca');
     assert.equal(chargeBody.transaction_details.gross_amount, 120000);
+    assert.deepEqual(chargeBody.custom_expiry, { expiry_duration: 30, unit: 'minute' });
     assert.match(chargeBody.transaction_details.order_id, /^[0-9a-f-]{36}$/);
     assert.equal(stored[1], 'bca_va');
     assert.deepEqual(stored[2], { bank: 'bca', vaNumber: '8830038369608185' });
@@ -517,6 +518,54 @@ test('public products and owned order expose only frontend contract fields', asy
     assert.deepEqual(products, { products: [{ id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000, format: 'ml_concat', category: 'Games', checkable: true }], checkoutAvailable: true, checkAvailable: false });
     const order = await (await fetch(base + '/api/orders/' + id, { headers: authHeaders })).json();
     assert.deepEqual(order, { order: { id, status: 'pending', productName: '10 Diamonds', price: 25000, userId: '123', zoneId: '100' } });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('riwayat pesanan dipaginasi 5 per halaman dan filter status disaring di server', async () => {
+  const seen = [];
+  const pool = { async query(sql, params) {
+    seen.push({ sql, params });
+    if (sql.includes('count(*)')) return { rows: [{ total: 7 }] };
+    return { rows: [] };
+  } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth() })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(base + '/api/orders?status=active&page=2&q=dimana', { headers: authHeaders });
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.deepEqual({ total: payload.total, page: payload.page, pageSize: payload.pageSize }, { total: 7, page: 2, pageSize: 5 });
+    const list = seen.find((entry) => entry.sql.includes('ORDER BY'));
+    assert.match(list.sql, /LIMIT 5 OFFSET 5$/);
+    assert.deepEqual(list.params.slice(1), [['pending', 'payment_paid', 'fulfillment_pending', 'manual_review'], '%dimana%']);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('unduh QR hanya untuk pemilik dan hanya dari host Midtrans', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const seen = [];
+  const pool = { async query(sql) {
+    if (sql.startsWith("SELECT payment_detail->>'qrUrl'")) return { rows: [{ qrUrl: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] };
+    throw Error('unexpected SQL');
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url) => {
+    seen.push(url);
+    return { ok: true, status: 200, arrayBuffer: async () => png };
+  }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const anonymous = await fetch(base + `/api/orders/${id}/qr.png`);
+    assert.equal(anonymous.status, 401);
+    const ok = await fetch(base + `/api/orders/${id}/qr.png`, { headers: authHeaders });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get('content-type'), 'image/png');
+    assert.match(ok.headers.get('content-disposition'), /attachment; filename="melonbyte-qr-/);
+    assert.deepEqual(Buffer.from(await ok.arrayBuffer()), png);
+    assert.deepEqual(seen, ['https://api.sandbox.midtrans.com/v2/qris/x/qr-code']);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 

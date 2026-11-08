@@ -175,6 +175,34 @@
 .receipt-links a{color:var(--lime);text-decoration:underline;text-underline-offset:3px}
 .order-list a{display:flex;flex-direction:column;gap:5px;width:100%;color:inherit;text-decoration:none}
 .order-list a:hover strong,.order-list a:focus-visible strong{color:var(--lime)}
+/* ponytail: riwayat pesanan ditumpuk - judul di atas, daftar lebar penuh, tiap baris kartu yang jelas bisa diklik */
+.history-section{display:grid;gap:26px}
+.history-head h2{margin-bottom:10px}
+.history-head p{max-width:60ch;margin:0}
+.order-history{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.order-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-card);color:inherit;text-decoration:none;transition:border-color .15s ease,background .15s ease}
+.order-row:hover{border-color:var(--lime);background:#203224}
+.order-row:focus-visible{outline:2px solid var(--lime);outline-offset:3px}
+.order-row-main{display:flex;flex-direction:column;gap:5px;min-width:0;overflow-wrap:anywhere}
+.order-row-main strong{font-size:1.05rem;line-height:1.3}
+.order-row-meta{color:var(--lime);font-weight:800;font-size:.92rem}
+.order-row-main small{color:var(--muted);font-size:.8rem}
+.order-row-go{flex:none;display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:8px 18px;border:1px solid var(--lime);border-radius:var(--r-pill);color:var(--lime);font-weight:700;font-size:.85rem}
+.order-row:hover .order-row-go{background:var(--lime);color:var(--bg)}
+.history-tools{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px}
+.history-search{flex:1 1 260px;min-width:0}
+.history-search input{background:#0e1610;border:1px solid #849e80;border-radius:var(--r-pill);color:var(--text);min-height:44px;width:100%;padding:10px 16px;font-size:1rem}
+.history-search input::placeholder{color:var(--placeholder)}
+.history-filter{display:flex;flex-wrap:wrap;gap:8px}
+.history-filter button{min-height:44px;padding:0 16px;background:transparent;border:1px solid var(--line);border-radius:var(--r-pill);color:var(--muted);font-family:inherit;font-weight:700;font-size:.85rem;cursor:pointer}
+.history-filter button:hover{border-color:var(--lime);color:var(--lime)}
+.history-filter button[aria-pressed="true"]{background:var(--lime);border-color:var(--lime);color:var(--bg)}
+.history-pager{display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap}
+.history-pager button{min-height:44px;padding:0 20px;background:transparent;border:1px solid var(--line);border-radius:var(--r-pill);color:var(--text);font-weight:700;font-size:.9rem;cursor:pointer}
+.history-pager button:hover:not(:disabled){border-color:var(--lime);color:var(--lime)}
+.history-pager button:disabled{opacity:.45;cursor:not-allowed}
+.history-pager span{font-size:.88rem;color:var(--muted)}
+@media(max-width:620px){.order-row{padding:16px;gap:12px}.order-row-go{padding:8px 12px;font-size:.8rem}}
 /* ponytail: invoice full 1 halaman (QR/VA tampil di sini) + modal verifikasi sebelum pesanan dibuat */
 .invoice-page{padding-block:44px 84px}
 .invoice-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:14px 20px;padding-bottom:22px;border-bottom:1px solid var(--line);margin-bottom:26px}
@@ -192,8 +220,13 @@
 .invoice-timer{flex:none;font-weight:800;color:var(--lime);font-variant-numeric:tabular-nums}
 .invoice-pay,.invoice-progress,.invoice-details{border:1px solid var(--line);border-radius:var(--r-card);background:var(--panel);padding:clamp(20px,2.6vw,30px);margin-bottom:18px}
 .invoice-pay h2,.invoice-progress h2,.invoice-details h2{font-size:clamp(1.15rem,1.7vw,1.5rem);margin-bottom:18px}
-.pay-qr{display:flex;flex-wrap:wrap;align-items:center;gap:clamp(16px,2.4vw,30px)}
-.pay-qr img{width:min(240px,60vw);height:auto;background:#fff;border-radius:var(--r-tile);padding:8px}
+.pay-qr{display:flex;flex-direction:column;align-items:center;gap:20px;text-align:center}
+.pay-qr img{width:min(320px,72vw);height:auto;background:#fff;border-radius:var(--r-tile);padding:12px}
+.pay-qr-body{display:flex;flex-direction:column;align-items:center;gap:16px;max-width:44ch}
+.pay-qr-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+.pay-qr-actions .secondary-button{display:inline-flex;align-items:center;justify-content:center;font-weight:700;cursor:pointer;text-decoration:none}
+.pay-qr-actions .secondary-button:disabled{color:var(--muted);border-color:var(--muted);cursor:progress}
+.pay-qr .field-hint{margin:0;font-size:.82rem}
 .pay-qr p{margin:0 0 10px;line-height:1.6;color:var(--muted)}
 .pay-qr p strong,.pay-va p strong{color:var(--text)}
 .pay-va p{margin:0 0 12px;line-height:1.6;color:var(--muted)}
@@ -229,7 +262,7 @@
 .confirm-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px;margin-top:18px}
 .pay-group{margin:18px 0 8px;font-size:.78rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .pay-options .pay-group:first-child{margin-top:0}
-@media(max-width:620px){.invoice-head{flex-direction:column;align-items:flex-start}.pay-qr{flex-direction:column;align-items:stretch}.pay-qr img{align-self:center}.confirm-actions .checkout-button,.confirm-actions .secondary-button{width:100%}}
+@media(max-width:620px){.invoice-head{flex-direction:column;align-items:flex-start}.pay-qr-body{max-width:none}.pay-qr-actions{width:100%;flex-direction:column}.pay-qr-actions .secondary-button{width:100%}.confirm-actions .checkout-button,.confirm-actions .secondary-button{width:100%}}
 .price-warning.price-health-rugi{color:var(--danger)}.price-warning.price-health-tipis{color:#f2b566}.price-warning.price-health-aman{color:var(--lime)}.price-suggest-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0}.price-suggest-row .secondary-button{min-height:36px;padding:6px 12px;font-size:.83rem}.price-suggest-note{color:var(--muted);font-size:.8rem}.pay-note{color:var(--muted);font-size:.85rem;line-height:1.5;margin:10px 0 0}
 .price-mode{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:.82rem;cursor:pointer;user-select:none}
 .price-mode input{width:16px;height:16px;accent-color:var(--lime)}

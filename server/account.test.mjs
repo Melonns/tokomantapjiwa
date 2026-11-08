@@ -63,7 +63,7 @@ test('verified phone-only buyer can access owned orders', async () => {
   await serve(createHandler({ env, pool, fetchImpl }), async base => {
     const response = await fetch(base + '/api/orders', { headers: authorization });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { orders: [] });
+    assert.deepEqual(await response.json(), { orders: [], total: 0, page: 1, pageSize: 5 });
   });
 });
 
@@ -98,11 +98,12 @@ test('order list and detail scope SQL to authenticated owner and hide other orde
     assert.match(sql, /WHERE owner_id = \$1/);
     assert.equal(params[0], owner);
     if (sql.includes('AND id = $2')) { assert.equal(params[1], orderId); return { rows: [] }; }
+    if (sql.includes('count(*)')) return { rows: [{ total: 1 }] };
     assert.match(sql, /ORDER BY created_at DESC/);
     return { rows };
   } };
   await serve(createHandler({ pool, env, fetchImpl: authFetch() }), async base => {
-    assert.deepEqual(await (await fetch(base + '/api/orders', { headers: authorization })).json(), { orders: rows });
+    assert.deepEqual(await (await fetch(base + '/api/orders', { headers: authorization })).json(), { orders: rows, total: 1, page: 1, pageSize: 5 });
     const response = await fetch(base + '/api/orders/' + orderId, { headers: authorization });
     assert.equal(response.status, 404);
     assert.deepEqual(await response.json(), { error: 'Pesanan tidak ditemukan.' });

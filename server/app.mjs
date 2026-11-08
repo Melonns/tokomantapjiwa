@@ -70,6 +70,12 @@ const PAYMENT_METHODS = {
   gopay: (id, storeUrl) => ({ payment_type: 'gopay', gopay: { enable_callback: true, callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
   shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
 };
+// ponytail: Midtrans default QRIS hanya 15 menit. TTL dipatok eksplisit supaya hitung mundur di invoice
+// dan masa berlaku tagihan di gateway tidak pernah berbeda. 30 menit cukup untuk pindah aplikasi bank.
+function customExpiry(env) {
+  const menit = Number.parseInt(env.PAYMENT_TTL_MINUTES, 10);
+  return { expiry_duration: Number.isInteger(menit) && menit >= 5 && menit <= 1440 ? menit : 30, unit: 'minute' };
+}
 // ponytail: satu daftar kolom dipakai pembacaan struk dan rekonsiliasi supaya bentuk respons selalu sama.
 const PAYMENT_DETAIL_COLUMNS = 'payment_channel AS "paymentChannel", payment_detail AS "paymentDetail", payment_expires_at AS "paymentExpiresAt", redirect_url AS "redirectUrl", created_at AS "createdAt", paid_at AS "paidAt", updated_at AS "updatedAt"';
 
@@ -820,7 +826,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           try {
             charge = await externalJson(fetchImpl, `https://api.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/v2/charge`, {
               method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` },
-              body: JSON.stringify({ ...kanal, transaction_details: { order_id: id, gross_amount: amount } })
+              body: JSON.stringify({ ...kanal, transaction_details: { order_id: id, gross_amount: amount }, custom_expiry: customExpiry(env) })
             });
             if (urutan > 0) console.warn('[checkout] QRIS dialihkan ke acquirer', kanal.qris.acquirer);
             break;
@@ -904,10 +910,40 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const average = rows[0]?.average ? Math.round(Number(rows[0].average) * 10) / 10 : null;
         return send(res, 200, { rating: { count: Number(rows[0]?.count || 0), average } });
       }
+      // ponytail: tombol unduh butuh PNG dari Midtrans, tetapi endpoint itu tanpa header CORS sehingga fetch browser
+      // selalu gagal. Server yang mengambil, dan hanya untuk pemilik pesanan serta host Midtrans.
+      if (req.method === 'GET' && /^\/api\/orders\/[^/]+\/qr\.png$/.test(path)) {
+        const ownerId = await authenticatedOwner(req, fetchImpl, env);
+        const id = path.split('/')[3];
+        if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
+        const { rows } = await pool.query("SELECT payment_detail->>'qrUrl' AS \"qrUrl\" FROM orders WHERE owner_id = $1 AND id = $2", [ownerId, id]);
+        const qrUrl = rows[0]?.qrUrl;
+        if (!qrUrl) throw error(404, 'Kode QR tidak tersedia.');
+        let target;
+        try { target = new URL(qrUrl); } catch { throw error(404, 'Kode QR tidak tersedia.'); }
+        if (target.protocol !== 'https:' || !/^api(\.sandbox)?\.midtrans\.com$/.test(target.hostname)) throw error(404, 'Kode QR tidak tersedia.');
+        const upstream = await fetchImpl(target.toString(), { signal: AbortSignal.timeout(12000) });
+        if (!upstream.ok) throw error(502, 'Kode QR belum dapat diunduh.');
+        const image = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(200, { 'content-type': 'image/png', 'content-length': image.length, 'content-disposition': `attachment; filename="melonbyte-qr-${id}.png"`, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff' });
+        return res.end(image);
+      }
       if (req.method === 'GET' && path === '/api/orders') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
-        const { rows } = await pool.query('SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", created_at AS "createdAt" FROM orders WHERE owner_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100', [ownerId]);
-        return send(res, 200, { orders: rows });
+        const params = new URL(req.url, 'http://local').searchParams;
+        const groups = { active: ['pending', 'payment_paid', 'fulfillment_pending', 'manual_review'], done: ['fulfilled'], failed: ['payment_failed', 'fulfillment_failed', 'refunded'] };
+        const statuses = groups[params.get('status')] || null;
+        const q = (params.get('q') || '').trim().slice(0, 60).replace(/[%_\\]/g, '');
+        const pageSize = 5;
+        const page = Math.max(1, Number.parseInt(params.get('page'), 10) || 1);
+        const where = ['owner_id = $1'];
+        const values = [ownerId];
+        if (statuses) { values.push(statuses); where.push(`status = ANY($${values.length})`); }
+        if (q) { values.push(`%${q}%`); where.push(`(product_name ILIKE $${values.length} OR id::text ILIKE $${values.length})`); }
+        const clause = where.join(' AND ');
+        const { rows: counted } = await pool.query(`SELECT count(*)::int AS total FROM orders WHERE ${clause}`, values);
+        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", created_at AS "createdAt" FROM orders WHERE ${clause} ORDER BY created_at DESC, id DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, values);
+        return send(res, 200, { orders: rows, total: counted[0]?.total || 0, page, pageSize });
       }
       if (req.method === 'GET' && path.startsWith('/api/orders/')) {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
