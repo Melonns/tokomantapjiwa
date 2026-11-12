@@ -144,14 +144,17 @@
 
 /* Cek nickname: aksi bantu di langkah kredensial; hasil dan kegagalan tampil apa adanya, checkout tetap jalan. */
 .check-block{display:grid;gap:10px;justify-items:start}
-.check-button{margin:0;border:1px solid var(--line);border-radius:var(--r-pill);background:transparent;color:var(--text);min-height:44px;padding:10px 18px;font-weight:700;cursor:pointer}
-.check-button:hover:not(:disabled){border-color:var(--lime);color:var(--lime)}
-.check-button:disabled{opacity:.6;cursor:not-allowed}
+.check-status{display:flex;align-items:center;gap:8px;margin:0;color:var(--muted)}
+.check-spinner{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--lime);border-radius:50%;animation:check-spin .7s linear infinite}
+@keyframes check-spin{to{transform:rotate(360deg)}}
+.check-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin:0}
 .check-result{margin:0;line-height:1.5}
 .check-result strong{color:var(--lime)}
 .check-note{margin-left:6px;color:var(--muted);font-size:.85rem}
-.check-again-button{margin:0;background:none;border:0;color:var(--lime);font-weight:700;padding:0;min-height:44px;cursor:pointer}
+.check-again-button{margin:0;background:none;border:0;color:var(--lime);font-weight:700;padding:0;min-height:44px;min-width:44px;cursor:pointer}
+.check-again-button:hover{color:var(--text);text-decoration:underline}
 .check-error{margin:0;color:var(--danger);font-weight:700;line-height:1.4}
+@media (prefers-reduced-motion: reduce){.check-spinner{animation-duration:2s}}
 .site-header{position:sticky;top:0;z-index:10;background:var(--bg)}
 .account-auth{grid-template-columns:minmax(0,1.45fr) minmax(250px,.75fr);gap:16px;align-items:start}
 .auth-lead{color:var(--muted)}

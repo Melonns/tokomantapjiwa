@@ -1773,34 +1773,27 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   const orderFormat = selected?.format || orderItems[0]?.format || 'plain'
   const orderType = catalogTypeOf(selected || orderItems[0] || {}, catalogTypes)
 
+  // ponytail: cek nickname jalan di halaman game juga, memakai produk checkable pertama brand itu.
+  // productId hanya dipakai server untuk memilih brand, jadi ID produk belum dipilih pun tetap sah.
+  const checkProduct = selected?.checkable === true ? selected : orderItems.find((item) => item.checkable === true) || null
+  const checkFormat = selected?.format || checkProduct?.format || orderFormat
   const checkRunRef = useRef(0)
-
-  useEffect(() => {
-    checkRunRef.current += 1
-    setCheckState('idle'); setCheckResult(null); setCheckError('')
-  }, [userId, zoneId, selected?.id])
+  const loggedIn = Boolean(supabase && session)
 
   // ponytail: cek nickname tidak pernah memblokir checkout; gagal ditampilkan apa adanya.
   async function checkNickname(force) {
-    if (!selected || selected.checkable !== true || !checkAvailable || checkState === 'loading') return
+    if (!checkProduct || !checkAvailable || !loggedIn) return
     const id = userId.trim()
     const zone = zoneId.trim()
-    const valid = orderFormat === 'plain' ? /^[0-9]{1,32}$/.test(id) : /^[0-9]{1,32}$/.test(id) && /^[0-9]{1,20}$/.test(zone)
-    if (!valid) {
-      setCheckState('error')
-      setCheckError(orderFormat === 'plain' ? 'Isi User ID berupa angka terlebih dahulu.' : 'Isi User ID dan Zone ID berupa angka terlebih dahulu.')
-      return
-    }
     const run = checkRunRef.current + 1
     checkRunRef.current = run
     setCheckState('loading')
     setCheckError('')
     try {
-      if (!supabase || !session) throw new Error('Masuk ke akun Anda terlebih dahulu untuk memakai fitur periksa nickname.')
       const data = await request('/api/check-account', {
         method: 'POST',
         headers: await authHeaders(),
-        body: JSON.stringify(orderFormat === 'plain' ? { productId: selected.id, userId: id, force: force === true } : { productId: selected.id, userId: id, zoneId: zone, force: force === true }),
+        body: JSON.stringify(checkFormat === 'plain' ? { productId: checkProduct.id, userId: id, force: force === true } : { productId: checkProduct.id, userId: id, zoneId: zone, force: force === true }),
       })
       if (run !== checkRunRef.current) return
       if (!data.check?.nickname) throw new Error('Respons cek tidak valid.')
@@ -1812,6 +1805,21 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
       setCheckState('error')
     }
   }
+
+  // ponytail: otomatis, tanpa tombol. 600 ms debounce supaya tidak menembak API tiap ketikan.
+  useEffect(() => {
+    checkRunRef.current += 1
+    setCheckResult(null); setCheckError('')
+    if (!checkProduct || !checkAvailable) { setCheckState('idle'); return }
+    if (!loggedIn) { setCheckState('locked'); return }
+    const id = userId.trim()
+    const zone = zoneId.trim()
+    const valid = checkFormat === 'plain' ? /^[0-9]{1,32}$/.test(id) : /^[0-9]{1,32}$/.test(id) && /^[0-9]{1,20}$/.test(zone)
+    if (!valid) { setCheckState('idle'); return }
+    setCheckState('loading')
+    const timer = setTimeout(() => { checkNickname(false) }, 600)
+    return () => clearTimeout(timer)
+  }, [userId, zoneId, checkProduct?.id, checkFormat, checkAvailable, loggedIn])
 
   function openCatalog(name) {
     setSearchOpen(false)
@@ -1969,15 +1977,15 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">1</span><h3>{orderType.targetTitle}</h3></div>
                   <div className="field-row"><label>{orderFormat === 'riot' ? 'Riot ID' : orderType.targetLabel} <input value={userId} onChange={(event) => setUserId(event.target.value)} required maxLength={orderFormat === 'riot' ? '40' : '32'} inputMode={orderFormat === 'riot' ? 'text' : 'numeric'} pattern={orderFormat === 'riot' ? '[A-Za-z0-9# ._-]+' : '[0-9]+'} placeholder={orderFormat === 'riot' ? 'Nama#1234' : orderType.targetPlaceholder} autoComplete="off" /></label>{orderFormat === 'ml_concat' && <label>Zone ID <input value={zoneId} onChange={(event) => setZoneId(event.target.value)} required maxLength="20" inputMode="numeric" pattern="[0-9]+" placeholder="Zone ID" autoComplete="off" /></label>}{orderFormat === 'uid_server' && <div className="field-block"><span className="field-block-label">Server</span><PilihanServer nilai={zoneId} onPilih={setZoneId} /></div>}</div>
                   <p className="field-hint">{orderFormat === 'plain' ? orderType.targetHint : orderFormat === 'ml_concat' ? 'User ID dan Zone ID berupa angka. Jangan memasukkan kata sandi.' : orderFormat === 'riot' ? 'Tulis Riot ID lengkap, contoh: NamaAnda#1234.' : 'Pilih server yang sama dengan akun game. Jangan memasukkan kata sandi.'}</p>
-                  {selected?.checkable && (
-                    <div className="check-block">
+                  {checkProduct && (
+                    <div className="check-block" aria-live="polite">
+                      {checkState === 'loading' && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />Memeriksa nickname...</p>}
                       {checkState === 'done' && checkResult ? (
-                        <p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p>
-                      ) : (
-                        <button type="button" className="check-button" onClick={() => checkNickname(false)} disabled={!checkAvailable || checkState === 'loading'}>{checkState === 'loading' ? 'Memeriksa...' : 'Periksa nickname'}</button>
-                      )}
-                      {checkState === 'done' && <button type="button" className="check-again-button" onClick={() => checkNickname(true)} disabled={!checkAvailable || checkState === 'loading'}>Periksa ulang</button>}
-                      {checkState === 'error' && <p className="check-error" role="alert">{checkError}</p>}
+                        <div className="check-row"><p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p><button type="button" className="check-again-button" onClick={() => checkNickname(true)}>Periksa ulang</button></div>
+                      ) : null}
+                      {checkState === 'error' && <div className="check-row"><p className="check-error" role="alert">{checkError}</p><button type="button" className="check-again-button" onClick={() => checkNickname(true)}>Coba lagi</button></div>}
+                      {checkState === 'locked' && <p className="field-hint"><a href="/akun">Masuk</a> untuk memeriksa nickname otomatis.</p>}
+                      {checkState === 'idle' && <p className="field-hint">{checkFormat === 'plain' ? 'Nickname muncul otomatis setelah User ID diisi.' : 'Nickname muncul otomatis setelah User ID dan Zone ID diisi.'}</p>}
                       {!checkAvailable && <p className="field-hint">Periksa nickname belum tersedia saat ini.</p>}
                     </div>
                   )}

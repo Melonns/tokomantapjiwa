@@ -5,16 +5,26 @@ import { readFile } from 'node:fs/promises'
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
 const css = await readFile(new URL('./store.css', import.meta.url), 'utf8')
 
-test('tombol periksa nickname hanya muncul untuk produk yang mendukung pemeriksaan', () => {
-  assert.match(source, /\{selected\?\.checkable && \(/)
-  assert.match(source, /Periksa nickname/)
-  assert.match(source, /disabled=\{!checkAvailable \|\| checkState === 'loading'\}/)
+test('cek nickname muncul otomatis untuk brand yang mendukung pemeriksaan', () => {
+  assert.match(source, /\{checkProduct && \(/)
+  assert.match(source, /const checkProduct = selected\?\.checkable === true \? selected : orderItems\.find\(\(item\) => item\.checkable === true\) \|\| null/)
 })
 
-test('permintaan pemeriksaan memakai produk terpilih agar layanan mengikuti brand', () => {
+test('tidak ada tombol periksa; permintaan berjalan sendiri setelah ID diisi', () => {
+  assert.doesNotMatch(source, /Periksa nickname<\//)
+  assert.match(source, /setTimeout\(\(\) => \{ checkNickname\(false\) \}, 600\)/)
+})
+
+test('permintaan pemeriksaan memakai produk dari brand terpilih', () => {
   assert.match(source, /request\('\/api\/check-account', \{/)
-  assert.match(source, /productId: selected\.id, userId: id/)
+  assert.match(source, /productId: checkProduct\.id, userId: id/)
   assert.match(source, /zoneId: zone, force: force === true/)
+})
+
+test('loading tampil selama pemeriksaan berjalan', () => {
+  assert.match(source, /checkState === 'loading' && <p className="check-status" role="status">/)
+  assert.match(source, /Memeriksa nickname\.\.\./)
+  assert.match(source, /className="check-spinner"/)
 })
 
 test('hasil pemeriksaan menampilkan nama, asal data, dan tombol periksa ulang', () => {
@@ -25,17 +35,17 @@ test('hasil pemeriksaan menampilkan nama, asal data, dan tombol periksa ulang', 
 
 test('kegagalan pemeriksaan ditampilkan apa adanya dan tidak mengunci checkout', () => {
   assert.match(source, /setCheckError\(error\.message\)/)
-  assert.match(source, /Periksa nickname belum tersedia saat ini\./);
-  assert.match(source, /Isi User ID dan Zone ID berupa angka terlebih dahulu\./)
+  assert.match(source, /Periksa nickname belum tersedia saat ini\./)
 })
 
 test('hasil pemeriksaan lama dibuang saat ID atau pilihan berubah', () => {
-  assert.match(source, /\}, \[userId, zoneId, selected\?\.id\]\)/)
+  assert.match(source, /\}, \[userId, zoneId, checkProduct\?\.id, checkFormat, checkAvailable, loggedIn\]\)/)
   assert.match(source, /if \(run !== checkRunRef\.current\) return/)
 })
 
 test('kelas gaya periksa nickname tersedia di stylesheet', () => {
-  assert.match(css, /\.check-button\{/)
+  assert.match(css, /\.check-status\{/)
+  assert.match(css, /\.check-spinner\{/)
   assert.match(css, /\.check-result\{/)
   assert.match(css, /\.check-error\{/)
   assert.match(css, /\.check-again-button\{/)
