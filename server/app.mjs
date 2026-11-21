@@ -878,30 +878,31 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (!product) throw error(404, 'Produk tidak tersedia.');
         const checkGame = checkableGame(product.game);
         if (!checkGame) throw error(422, 'Fitur periksa nickname belum tersedia untuk layanan ini.');
-        if (!checkReady(env)) throw error(503, 'Fitur periksa nickname belum aktif di server ini.');
         try { buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         const brand = String(product.game || '').toUpperCase();
-        const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
-        if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
         if (body?.force !== true) {
-          const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '30 days'", [brand, input.userId, input.zoneId]);
+          const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '7 days'", [brand, input.userId, input.zoneId]);
           if (cached.rows[0]) {
-            await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
             return send(res, 200, { check: { nickname: cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
           }
         }
-        let payload;
+        if (!checkReady(env)) throw error(503, 'Fitur periksa nickname belum aktif di server ini.');
+        const { rows: skuRows } = await pool.query('SELECT sku, price FROM supplier_products WHERE sku = $1 AND synced_at = (SELECT max(synced_at) FROM supplier_products)', [checkGame.sku]);
+        if (!skuRows[0]) throw error(503, 'SKU pemeriksaan nickname belum aktif di Digiflazz.');
+        if (Number(skuRows[0].price) !== 5) throw error(503, 'Harga SKU pemeriksaan nickname tidak sesuai konfigurasi.');
+        const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
+        if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
+        await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
         try {
-          const provider = checkRequest(env, checkGame, input);
+          const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price));
           const response = await fetchImpl(provider.url, provider.options);
           if (!response.ok) throw error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
-          payload = await response.json();
+          const payload = await response.json();
+          const result = checkResult(payload, provider.expected);
+          if (!result) throw error(502, 'Digiflazz belum memberi nickname yang dapat diverifikasi.');
+          await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [brand, input.userId, input.zoneId, result.nickname, result.region]);
+          return send(res, 200, { check: { nickname: result.nickname, region: result.region, cached: false, checkedAt: new Date().toISOString() } });
         } catch (err) { throw err.status ? err : error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.'); }
-        const result = checkResult(payload);
-        if (!result) throw error(404, 'Akun tidak ditemukan. Periksa kembali User ID dan Zone ID.');
-        await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [brand, input.userId, input.zoneId, result.nickname, result.region]);
-        await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
-        return send(res, 200, { check: { nickname: result.nickname, region: result.region, cached: false, checkedAt: new Date().toISOString() } });
       }
       if (req.method === 'GET' && path === '/api/ratings') {
         const game = (new URL(req.url, 'http://localhost').searchParams.get('game') || '').trim();

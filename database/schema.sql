@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS voucher_redemptions (
 );
 CREATE INDEX IF NOT EXISTS voucher_redemptions_code_idx ON voucher_redemptions (code, owner_id);
 
--- Cache global hasil cek nickname per (brand, User ID, Zone ID). Baris dianggap segar 30 hari oleh server; baris gagal tidak disimpan.
+-- Cache global hasil cek nickname per (brand, User ID, Zone ID). Baris dianggap segar 7 hari oleh server; baris gagal tidak disimpan.
 CREATE TABLE IF NOT EXISTS account_checks (
   game text NOT NULL CHECK (length(game) BETWEEN 1 AND 80),
   user_id text NOT NULL CHECK (user_id ~ '^[A-Za-z0-9_-]{1,64}$'),
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS account_checks (
   PRIMARY KEY (game, user_id, zone_id)
 );
 
--- Catatan pemakaian cek per akun pembeli, untuk batas harian (kuota di server/check.mjs).
+-- Catatan panggilan provider cek nickname per akun pembeli, untuk batas harian (kuota di server/check.mjs).
 CREATE TABLE IF NOT EXISTS account_check_logs (
   id bigserial PRIMARY KEY,
   owner_id uuid NOT NULL REFERENCES auth.users(id),

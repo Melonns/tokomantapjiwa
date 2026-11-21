@@ -1981,9 +1981,9 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                     <div className="check-block" aria-live="polite">
                       {checkState === 'loading' && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />Memeriksa nickname...</p>}
                       {checkState === 'done' && checkResult ? (
-                        <div className="check-row"><p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p><button type="button" className="check-again-button" onClick={() => checkNickname(true)}>Periksa ulang</button></div>
+                        <p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p>
                       ) : null}
-                      {checkState === 'error' && <div className="check-row"><p className="check-error" role="alert">{checkError}</p><button type="button" className="check-again-button" onClick={() => checkNickname(true)}>Coba lagi</button></div>}
+                      {checkState === 'error' && <p className="check-error" role="alert">{checkError}</p>}
                       {checkState === 'locked' && <p className="field-hint"><a href="/akun">Masuk</a> untuk memeriksa nickname otomatis.</p>}
                       {checkState === 'idle' && <p className="field-hint">{checkFormat === 'plain' ? 'Nickname muncul otomatis setelah User ID diisi.' : 'Nickname muncul otomatis setelah User ID dan Zone ID diisi.'}</p>}
                       {!checkAvailable && <p className="field-hint">Periksa nickname belum tersedia saat ini.</p>}

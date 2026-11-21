@@ -1,35 +1,47 @@
-// ponytail: cek nickname berjalan per brand. Brand di luar peta ini tidak menampilkan tombol cek,
-// dan kode di sini menentukan layanan mana yang dipanggil (ML -> cek ML, FF -> cek FF).
+import { createHash, randomUUID } from 'node:crypto';
+import { customerNo } from './core.mjs';
+
+// SKU cek adalah transaksi Digiflazz biasa, tapi disembunyikan dari katalog produk toko.
 export const checkGames = {
-  'MOBILE LEGENDS': { code: 'MLBB' },
-  'FREE FIRE': { code: 'FREEFIRE' }, // ponytail: placeholder sampai dokumentasi provider cek FF dipasang.
+  'MOBILE LEGENDS': { sku: 'mlcek' },
+  'FREE FIRE': { sku: 'pre34729032' },
 };
 
 export const maxChecksPerDay = 10;
 const timeoutMs = 12000;
 
 export const checkableGame = game => checkGames[String(game || '').toUpperCase()] || null;
+export const checkReady = env => Boolean(env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && env.DIGIFLAZZ_TESTING === 'false');
 
-export const checkReady = env => Boolean(env.CHECK_API_URL && env.CHECK_API_KEY);
-
-// ponytail: bentuk permintaan ke provider ditulis di satu tempat ini; ganti di sini kalau provider cek berganti.
-export function checkRequest(env, game, input) {
+export function checkRequest(env, game, input, product, price) {
+  const refId = randomUUID();
+  const customer = customerNo(product.customer_format, input);
   return {
-    url: env.CHECK_API_URL,
+    url: 'https://api.digiflazz.com/v1/transaction',
     options: {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': env.CHECK_API_KEY },
-      body: JSON.stringify({ game: game.code, user_id: input.userId, zone_id: input.zoneId }),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: env.DIGIFLAZZ_USERNAME,
+        buyer_sku_code: game.sku,
+        customer_no: customer,
+        max_price: price,
+        ref_id: refId,
+        sign: createHash('md5').update(env.DIGIFLAZZ_USERNAME + env.DIGIFLAZZ_API_KEY + refId).digest('hex'),
+        ...(env.DIGIFLAZZ_TESTING === 'true' ? { testing: true } : {}),
+      }),
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     },
+    expected: { refId, customerNo: customer, sku: game.sku },
   };
 }
 
-// ponytail: bentuk respons mengikuti contoh provider (data.account.nickname/region); sesuaikan saat disambungkan.
-export function checkResult(payload) {
-  const account = payload?.data?.account;
-  const nickname = typeof account?.nickname === 'string' ? account.nickname.trim().slice(0, 120) : '';
+export function checkResult(payload, expected) {
+  const data = payload?.data;
+  if (data?.ref_id !== expected.refId || data?.customer_no !== expected.customerNo || data?.buyer_sku_code !== expected.sku) return null;
+  if (data?.status !== 'Sukses' || String(data?.rc) !== '00') return null;
+  const nickname = typeof data?.sn === 'string' ? data.sn.trim().slice(0, 120) : '';
   if (!nickname) return null;
-  return { nickname, region: typeof account?.region === 'string' ? account.region.trim().slice(0, 40) : '' };
+  return { nickname, region: '' };
 }

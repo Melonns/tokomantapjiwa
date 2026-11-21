@@ -11,7 +11,7 @@ test('cek nickname muncul otomatis untuk brand yang mendukung pemeriksaan', () =
 })
 
 test('tidak ada tombol periksa; permintaan berjalan sendiri setelah ID diisi', () => {
-  assert.doesNotMatch(source, /Periksa nickname<\//)
+  assert.doesNotMatch(source, /className="check-again-button"|Periksa ulang/)
   assert.match(source, /setTimeout\(\(\) => \{ checkNickname\(false\) \}, 600\)/)
 })
 
@@ -27,15 +27,17 @@ test('loading tampil selama pemeriksaan berjalan', () => {
   assert.match(source, /className="check-spinner"/)
 })
 
-test('hasil pemeriksaan menampilkan nama, asal data, dan tombol periksa ulang', () => {
+test('hasil pemeriksaan menampilkan nama dan asal data tanpa tombol', () => {
   assert.match(source, /Nickname: <strong>\{checkResult\.nickname\}<\/strong>/)
   assert.match(source, /'hasil tersimpan' : 'baru diperiksa'/)
-  assert.match(source, /Periksa ulang/)
+  assert.doesNotMatch(source, /className="check-again-button"|Periksa ulang/)
 })
 
 test('kegagalan pemeriksaan ditampilkan apa adanya dan tidak mengunci checkout', () => {
   assert.match(source, /setCheckError\(error\.message\)/)
   assert.match(source, /Periksa nickname belum tersedia saat ini\./)
+  assert.match(source, /checkState === 'error' && <p className="check-error" role="alert">\{checkError\}<\/p>/)
+  assert.doesNotMatch(source, /className="check-again-button"|Periksa ulang/)
 })
 
 test('hasil pemeriksaan lama dibuang saat ID atau pilihan berubah', () => {
@@ -48,5 +50,5 @@ test('kelas gaya periksa nickname tersedia di stylesheet', () => {
   assert.match(css, /\.check-spinner\{/)
   assert.match(css, /\.check-result\{/)
   assert.match(css, /\.check-error\{/)
-  assert.match(css, /\.check-again-button\{/)
+  assert.doesNotMatch(css, /\.check-again-button/)
 })
