@@ -39,6 +39,11 @@ const categoryFormats = {
 };
 const formatFor = (game, category) => customerFormats[String(game || '').toUpperCase()] || categoryFormats[String(category || '').trim()] || null;
 const error = (status, message) => Object.assign(new Error(message), { status });
+const checkDiagnostic = (response, payload, expected) => {
+  const data = payload?.data;
+  const code = value => typeof value === 'string' || typeof value === 'number' ? String(value).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || '-' : '-';
+  return `http=${response.status} status=${code(data?.status ?? payload?.status)} rc=${code(data?.rc ?? payload?.rc)} ref_match=${data?.ref_id === expected.refId} sku_match=${data?.buyer_sku_code === expected.sku} customer_match=${data?.customer_no === expected.customerNo} sn_type=${typeof data?.sn}`;
+};
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const paymentEnvironment = env => paymentProvider(env) === 'sumopod'
   ? (env.SUMOPOD_ENV === 'production' ? 'production' : 'sandbox')
@@ -893,16 +898,28 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
         if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
         await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
+        let phase = 'provider_request';
         try {
           const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price));
           const response = await fetchImpl(provider.url, provider.options);
-          if (!response.ok) throw error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
-          const payload = await response.json();
+          let payload = null;
+          try { payload = await response.json(); } catch {}
+          if (!response.ok) {
+            console.error('[check-account] Digiflazz rejected request:', checkDiagnostic(response, payload, provider.expected));
+            throw error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
+          }
           const result = checkResult(payload, provider.expected);
-          if (!result) throw error(502, 'Digiflazz belum memberi nickname yang dapat diverifikasi.');
+          if (!result) {
+            console.error('[check-account] Digiflazz response not verified:', checkDiagnostic(response, payload, provider.expected));
+            throw error(502, 'Digiflazz belum memberi nickname yang dapat diverifikasi.');
+          }
+          phase = 'cache_write';
           await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [brand, input.userId, input.zoneId, result.nickname, result.region]);
           return send(res, 200, { check: { nickname: result.nickname, region: result.region, cached: false, checkedAt: new Date().toISOString() } });
-        } catch (err) { throw err.status ? err : error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.'); }
+        } catch (err) {
+          if (!err.status) console.error('[check-account] failed:', `phase=${phase}`, `name=${err?.name || 'Error'}`, `code=${String(err?.cause?.code || err?.code || '-').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || '-'}`);
+          throw err.status ? err : error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
+        }
       }
       if (req.method === 'GET' && path === '/api/ratings') {
         const game = (new URL(req.url, 'http://localhost').searchParams.get('game') || '').trim();

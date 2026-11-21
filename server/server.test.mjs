@@ -998,6 +998,9 @@ test('kuota harian habis ditolak sebelum provider dipanggil', async () => {
 test('ID tidak ketemu dan provider mati tidak disimpan ke cache', async () => {
   let savedChecks = 0;
   let mode = 'missing';
+  const diagnostics = [];
+  const originalError = console.error;
+  console.error = (...args) => diagnostics.push(args.join(' '));
   const pool = { async query(sql) {
     if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
     if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
@@ -1023,7 +1026,13 @@ test('ID tidak ketemu dan provider mati tidak disimpan ke cache', async () => {
     assert.equal(down.status, 502);
     assert.match((await down.json()).error, /tidak tersedia/);
     assert.equal(savedChecks, 0);
-  } finally { await new Promise(resolve => server.close(resolve)); }
+    assert.ok(diagnostics.some(line => line.includes('Digiflazz response not verified: http=200')));
+    assert.ok(diagnostics.some(line => line.includes('Digiflazz rejected request: http=500')));
+    assert.ok(diagnostics.every(line => !line.includes('999') && !line.includes('Account not found')));
+  } finally {
+    console.error = originalError;
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('brand tanpa layanan pemeriksaan ditolak dengan pesan jelas (422)', async () => {
