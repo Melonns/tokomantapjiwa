@@ -1779,7 +1779,6 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   const checkFormat = selected?.format || checkProduct?.format || orderFormat
   const checkRunRef = useRef(0)
   const checkRetryRef = useRef(null)
-  const checkPollsRef = useRef(0)
   const loggedIn = Boolean(supabase && session)
 
   function clearCheckRetry() {
@@ -1805,14 +1804,10 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
       })
       if (run !== checkRunRef.current) return
       if (data.check?.status === 'pending') {
-        const polls = checkPollsRef.current
-        setCheckState(polls < 3 ? 'pending' : 'pending_stopped')
-        if (polls < 3) {
-          checkPollsRef.current += 1
-          checkRetryRef.current = setTimeout(() => {
-            if (run === checkRunRef.current) checkNickname(false)
-          }, Math.max(60, Number(data.check.retryAfterSeconds) || 60) * 1000 + 1000)
-        }
+        setCheckState('pending')
+        checkRetryRef.current = setTimeout(() => {
+          if (run === checkRunRef.current) checkNickname(false)
+        }, Math.max(60, Number(data.check.retryAfterSeconds) || 60) * 1000 + 1000)
         return
       }
       if (data.check?.status === 'failed') { setCheckState('failed'); return }
@@ -1829,7 +1824,6 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   // ponytail: otomatis, tanpa tombol. Pending menunggu status transaksi sama sebelum cek ulang.
   useEffect(() => {
     clearCheckRetry()
-    checkPollsRef.current = 0
     checkRunRef.current += 1
     setCheckResult(null); setCheckError('')
     if (!checkProduct || !checkAvailable) { setCheckState('idle'); return }
@@ -2005,9 +1999,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                   <p className="field-hint">{orderFormat === 'plain' ? orderType.targetHint : orderFormat === 'ml_concat' ? 'User ID dan Zone ID berupa angka. Jangan memasukkan kata sandi.' : orderFormat === 'riot' ? 'Tulis Riot ID lengkap, contoh: NamaAnda#1234.' : 'Pilih server yang sama dengan akun game. Jangan memasukkan kata sandi.'}</p>
                   {checkProduct && (
                     <div className="check-block" aria-live="polite">
-                      {checkState === 'loading' && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />Memeriksa nickname...</p>}
-                      {checkState === 'pending' && <p className="check-status" role="status">Pemeriksaan masih diproses. Status dicoba ulang otomatis setelah jeda aman.</p>}
-                      {checkState === 'pending_stopped' && <><p className="check-status" role="status">Status akhir belum tersedia. Pemeriksaan otomatis dihentikan.</p><button type="button" className="secondary-button" onClick={() => { checkPollsRef.current = 0; checkNickname(false) }}>Cek status lagi</button></>}
+                      {(checkState === 'loading' || checkState === 'pending') && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />{checkState === 'pending' ? 'Digiflazz masih memproses. Menunggu hasil nickname...' : 'Memeriksa nickname...'}</p>}
                       {checkState === 'done' && checkResult ? (
                         <p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p>
                       ) : null}

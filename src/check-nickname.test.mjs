@@ -21,17 +21,17 @@ test('permintaan pemeriksaan memakai produk dari brand terpilih', () => {
   assert.match(source, /zoneId: zone, force: force === true/)
 })
 
-test('loading tampil selama pemeriksaan berjalan', () => {
-  assert.match(source, /checkState === 'loading' && <p className="check-status" role="status">/)
+test('loading tetap tampil selama permintaan dan menunggu status pending', () => {
+  assert.match(source, /\(checkState === 'loading' \|\| checkState === 'pending'\) && <p className="check-status" role="status">/)
   assert.match(source, /Memeriksa nickname\.\.\./)
+  assert.match(source, /Digiflazz masih memproses\. Menunggu hasil nickname/)
   assert.match(source, /className="check-spinner"/)
 })
 
-test('status pending memakai jeda minimal, batas retry, dan aksi lanjut setelah batas', () => {
+test('pending terus mengecek otomatis dengan jeda minimum dan memakai ref transaksi yang sama', () => {
   assert.match(source, /Math\.max\(60, Number\(data\.check\.retryAfterSeconds\) \|\| 60\)/)
-  assert.match(source, /polls < 3/)
-  assert.match(source, /checkState === 'pending_stopped'/)
-  assert.match(source, /onClick=\{\(\) => \{ checkPollsRef\.current = 0; checkNickname\(false\) \}\}/)
+  assert.match(source, /if \(run === checkRunRef\.current\) checkNickname\(false\)/)
+  assert.doesNotMatch(source, /pending_stopped|polls < 3|checkPollsRef/)
 })
 
 test('hasil pemeriksaan menampilkan nama dan asal data tanpa tombol', () => {
