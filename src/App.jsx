@@ -1778,11 +1778,19 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   const checkProduct = selected?.checkable === true ? selected : orderItems.find((item) => item.checkable === true) || null
   const checkFormat = selected?.format || checkProduct?.format || orderFormat
   const checkRunRef = useRef(0)
+  const checkRetryRef = useRef(null)
+  const checkPollsRef = useRef(0)
   const loggedIn = Boolean(supabase && session)
+
+  function clearCheckRetry() {
+    if (checkRetryRef.current) clearTimeout(checkRetryRef.current)
+    checkRetryRef.current = null
+  }
 
   // ponytail: cek nickname tidak pernah memblokir checkout; gagal ditampilkan apa adanya.
   async function checkNickname(force) {
     if (!checkProduct || !checkAvailable || !loggedIn) return
+    clearCheckRetry()
     const id = userId.trim()
     const zone = zoneId.trim()
     const run = checkRunRef.current + 1
@@ -1796,6 +1804,18 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
         body: JSON.stringify(checkFormat === 'plain' ? { productId: checkProduct.id, userId: id, force: force === true } : { productId: checkProduct.id, userId: id, zoneId: zone, force: force === true }),
       })
       if (run !== checkRunRef.current) return
+      if (data.check?.status === 'pending') {
+        const polls = checkPollsRef.current
+        setCheckState(polls < 3 ? 'pending' : 'pending_stopped')
+        if (polls < 3) {
+          checkPollsRef.current += 1
+          checkRetryRef.current = setTimeout(() => {
+            if (run === checkRunRef.current) checkNickname(false)
+          }, Math.max(60, Number(data.check.retryAfterSeconds) || 60) * 1000 + 1000)
+        }
+        return
+      }
+      if (data.check?.status === 'failed') { setCheckState('failed'); return }
       if (!data.check?.nickname) throw new Error('Respons cek tidak valid.')
       setCheckResult(data.check)
       setCheckState('done')
@@ -1806,8 +1826,10 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
     }
   }
 
-  // ponytail: otomatis, tanpa tombol. 600 ms debounce supaya tidak menembak API tiap ketikan.
+  // ponytail: otomatis, tanpa tombol. Pending menunggu status transaksi sama sebelum cek ulang.
   useEffect(() => {
+    clearCheckRetry()
+    checkPollsRef.current = 0
     checkRunRef.current += 1
     setCheckResult(null); setCheckError('')
     if (!checkProduct || !checkAvailable) { setCheckState('idle'); return }
@@ -1818,7 +1840,11 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
     if (!valid) { setCheckState('idle'); return }
     setCheckState('loading')
     const timer = setTimeout(() => { checkNickname(false) }, 600)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      clearCheckRetry()
+      checkRunRef.current += 1
+    }
   }, [userId, zoneId, checkProduct?.id, checkFormat, checkAvailable, loggedIn])
 
   function openCatalog(name) {
@@ -1980,10 +2006,13 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                   {checkProduct && (
                     <div className="check-block" aria-live="polite">
                       {checkState === 'loading' && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />Memeriksa nickname...</p>}
+                      {checkState === 'pending' && <p className="check-status" role="status">Pemeriksaan masih diproses. Status dicoba ulang otomatis setelah jeda aman.</p>}
+                      {checkState === 'pending_stopped' && <><p className="check-status" role="status">Status akhir belum tersedia. Pemeriksaan otomatis dihentikan.</p><button type="button" className="secondary-button" onClick={() => { checkPollsRef.current = 0; checkNickname(false) }}>Cek status lagi</button></>}
                       {checkState === 'done' && checkResult ? (
                         <p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p>
                       ) : null}
                       {checkState === 'error' && <p className="check-error" role="alert">{checkError}</p>}
+                      {checkState === 'failed' && <p className="check-error" role="alert">Pemeriksaan gagal dari Digiflazz. Coba lagi beberapa saat lagi.</p>}
                       {checkState === 'locked' && <p className="field-hint"><a href="/akun">Masuk</a> untuk memeriksa nickname otomatis.</p>}
                       {checkState === 'idle' && <p className="field-hint">{checkFormat === 'plain' ? 'Nickname muncul otomatis setelah User ID diisi.' : 'Nickname muncul otomatis setelah User ID dan Zone ID diisi.'}</p>}
                       {!checkAvailable && <p className="field-hint">Periksa nickname belum tersedia saat ini.</p>}

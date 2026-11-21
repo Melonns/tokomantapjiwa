@@ -883,9 +883,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (!product) throw error(404, 'Produk tidak tersedia.');
         const checkGame = checkableGame(product.game);
         if (!checkGame) throw error(422, 'Fitur periksa nickname belum tersedia untuk layanan ini.');
-        try { buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
+        let customer;
+        try { customer = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         const brand = String(product.game || '').toUpperCase();
-        if (body?.force !== true) {
+        const { rows: pendingRows } = await pool.query("SELECT id, ref_id AS \"refId\", GREATEST(0, CEIL(EXTRACT(EPOCH FROM (retry_at - now()))))::int AS \"retryAfterSeconds\" FROM account_check_logs WHERE owner_id = $1 AND game = $2 AND user_id = $3 AND zone_id = $4 AND status IN ('pending', 'unknown') ORDER BY created_at DESC LIMIT 1", [ownerId, brand, input.userId, input.zoneId]);
+        if (pendingRows[0] && pendingRows[0].retryAfterSeconds > 0) return send(res, 200, { check: { status: 'pending', retryAfterSeconds: pendingRows[0].retryAfterSeconds } });
+        if (!pendingRows[0] && body?.force !== true) {
           const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '7 days'", [brand, input.userId, input.zoneId]);
           if (cached.rows[0]) {
             return send(res, 200, { check: { nickname: cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
@@ -895,28 +898,52 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const { rows: skuRows } = await pool.query('SELECT sku, price FROM supplier_products WHERE sku = $1 AND synced_at = (SELECT max(synced_at) FROM supplier_products)', [checkGame.sku]);
         if (!skuRows[0]) throw error(503, 'SKU pemeriksaan nickname belum aktif di Digiflazz.');
         if (Number(skuRows[0].price) !== 5) throw error(503, 'Harga SKU pemeriksaan nickname tidak sesuai konfigurasi.');
-        const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
-        if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
-        await pool.query('INSERT INTO account_check_logs (owner_id, game) VALUES ($1, $2)', [ownerId, brand]);
+        let logId;
+        let refId;
+        if (pendingRows[0]) {
+          const claimed = await pool.query("UPDATE account_check_logs SET retry_at = now() + interval '1 minute' WHERE id = $1 AND retry_at <= now() AND status IN ('pending', 'unknown') RETURNING id, ref_id AS \"refId\"", [pendingRows[0].id]);
+          if (!claimed.rows[0]) return send(res, 200, { check: { status: 'pending', retryAfterSeconds: 60 } });
+          logId = claimed.rows[0].id;
+          refId = claimed.rows[0].refId;
+        } else {
+          const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
+          if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
+          const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price));
+          const inserted = await pool.query("INSERT INTO account_check_logs (owner_id, game, user_id, zone_id, ref_id, customer_no, buyer_sku_code, status, retry_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now() + interval '1 minute') ON CONFLICT (owner_id, game, user_id, zone_id) WHERE status IN ('pending', 'unknown') DO NOTHING RETURNING id, ref_id AS \"refId\"", [ownerId, brand, input.userId, input.zoneId, provider.expected.refId, customer, checkGame.sku]);
+          if (!inserted.rows[0]) return send(res, 200, { check: { status: 'pending', retryAfterSeconds: 60 } });
+          logId = inserted.rows[0].id;
+          refId = inserted.rows[0].refId;
+        }
         let phase = 'provider_request';
         try {
-          const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price));
+          const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price), refId);
           const response = await fetchImpl(provider.url, provider.options);
           let payload = null;
           try { payload = await response.json(); } catch {}
-          if (!response.ok) {
+          const result = checkResult(payload, provider.expected);
+          if (!response.ok && !['pending', 'failed'].includes(result?.status)) {
             console.error('[check-account] Digiflazz rejected request:', checkDiagnostic(response, payload, provider.expected));
             throw error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
           }
-          const result = checkResult(payload, provider.expected);
           if (!result) {
             console.error('[check-account] Digiflazz response not verified:', checkDiagnostic(response, payload, provider.expected));
             throw error(502, 'Digiflazz belum memberi nickname yang dapat diverifikasi.');
           }
+          if (result.status === 'pending') {
+            await pool.query("UPDATE account_check_logs SET status = 'pending', retry_at = now() + interval '1 minute' WHERE id = $1", [logId]);
+            return send(res, 200, { check: { status: 'pending', retryAfterSeconds: 60 } });
+          }
+          if (result.status === 'failed') {
+            await pool.query("UPDATE account_check_logs SET status = 'failed' WHERE id = $1", [logId]);
+            return send(res, 200, { check: { status: 'failed' } });
+          }
+          if (result.status !== 'success') throw error(502, 'Digiflazz belum memberi nickname yang dapat diverifikasi.');
           phase = 'cache_write';
           await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [brand, input.userId, input.zoneId, result.nickname, result.region]);
+          await pool.query("UPDATE account_check_logs SET status = 'success', nickname = $2, region = $3 WHERE id = $1", [logId, result.nickname, result.region]);
           return send(res, 200, { check: { nickname: result.nickname, region: result.region, cached: false, checkedAt: new Date().toISOString() } });
         } catch (err) {
+          try { await pool.query("UPDATE account_check_logs SET status = 'unknown', retry_at = now() + interval '1 minute' WHERE id = $1 AND status IN ('pending', 'unknown')", [logId]); } catch {}
           if (!err.status) console.error('[check-account] failed:', `phase=${phase}`, `name=${err?.name || 'Error'}`, `code=${String(err?.cause?.code || err?.code || '-').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || '-'}`);
           throw err.status ? err : error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
         }
@@ -1115,14 +1142,14 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         }
         const status = String(data?.status || '');
         if (status === 'Pending') {
-          await pool.query("UPDATE orders SET updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending'", [refId]);
+          await pool.query("UPDATE orders SET updated_at = now() WHERE id = $1 AND digi_sku = $2 AND customer_no = $3 AND status = 'fulfillment_pending'", [refId, data?.buyer_sku_code, data?.customer_no]);
           return send(res, 200, { received: true });
         }
         const next = status === 'Sukses' && String(data?.rc) === '00' ? 'fulfilled' : status === 'Gagal' && String(data?.rc) === '02' ? 'fulfillment_failed' : 'manual_review';
         const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
         const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
-        const { rows } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND status IN ('fulfillment_pending', 'manual_review') RETURNING id, status", [refId, next, sn, note]);
-        if (!rows[0]) return send(res, 200, { received: true });
+        const { rows } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND digi_sku = $5 AND customer_no = $6 AND status IN ('fulfillment_pending', 'manual_review') RETURNING id, status", [refId, next, sn, note, data?.buyer_sku_code, data?.customer_no]);
+        if (!rows[0]) return send(res, 200, { received: true, applied: false });
         if (next === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', refId);
         else if (next === 'fulfillment_failed') notifyOrder(pool, fetchImpl, env, 'failed', refId);
         return send(res, 200, { received: true });

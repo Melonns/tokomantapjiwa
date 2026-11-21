@@ -153,14 +153,35 @@ CREATE TABLE IF NOT EXISTS account_checks (
   PRIMARY KEY (game, user_id, zone_id)
 );
 
--- Catatan panggilan provider cek nickname per akun pembeli, untuk batas harian (kuota di server/check.mjs).
+-- Catatan transaksi provider cek nickname per akun, termasuk ref_id agar pending bisa direkonsiliasi.
 CREATE TABLE IF NOT EXISTS account_check_logs (
   id bigserial PRIMARY KEY,
   owner_id uuid NOT NULL REFERENCES auth.users(id),
   game text NOT NULL CHECK (length(game) BETWEEN 1 AND 80),
+  user_id text NOT NULL,
+  zone_id text NOT NULL DEFAULT '',
+  ref_id text NOT NULL,
+  customer_no text NOT NULL,
+  buyer_sku_code text NOT NULL,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'unknown')),
+  nickname text,
+  region text NOT NULL DEFAULT '',
+  retry_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS account_check_logs_owner_idx ON account_check_logs (owner_id, created_at DESC);
+-- Instalasi lama yang sudah memiliki tabel log menambah kolom rekonsiliasi berikut.
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS user_id text;
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS zone_id text NOT NULL DEFAULT '';
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS ref_id text;
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS customer_no text;
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS buyer_sku_code text;
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'pending';
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS nickname text;
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS region text NOT NULL DEFAULT '';
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS retry_at timestamptz NOT NULL DEFAULT now();
+CREATE UNIQUE INDEX IF NOT EXISTS account_check_logs_ref_id_idx ON account_check_logs (ref_id) WHERE ref_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS account_check_logs_pending_target_idx ON account_check_logs (owner_id, game, user_id, zone_id) WHERE status IN ('pending', 'unknown');
 
 -- Berikan akses admin secara manual dengan UUID auth.users yang sudah diverifikasi.
 -- Tidak ada admin bawaan; akun baru selalu buyer.

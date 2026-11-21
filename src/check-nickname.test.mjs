@@ -27,6 +27,13 @@ test('loading tampil selama pemeriksaan berjalan', () => {
   assert.match(source, /className="check-spinner"/)
 })
 
+test('status pending memakai jeda minimal, batas retry, dan aksi lanjut setelah batas', () => {
+  assert.match(source, /Math\.max\(60, Number\(data\.check\.retryAfterSeconds\) \|\| 60\)/)
+  assert.match(source, /polls < 3/)
+  assert.match(source, /checkState === 'pending_stopped'/)
+  assert.match(source, /onClick=\{\(\) => \{ checkPollsRef\.current = 0; checkNickname\(false\) \}\}/)
+})
+
 test('hasil pemeriksaan menampilkan nama dan asal data tanpa tombol', () => {
   assert.match(source, /Nickname: <strong>\{checkResult\.nickname\}<\/strong>/)
   assert.match(source, /'hasil tersimpan' : 'baru diperiksa'/)

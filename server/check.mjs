@@ -13,8 +13,7 @@ const timeoutMs = 12000;
 export const checkableGame = game => checkGames[String(game || '').toUpperCase()] || null;
 export const checkReady = env => Boolean(env.DIGIFLAZZ_USERNAME && env.DIGIFLAZZ_API_KEY && env.DIGIFLAZZ_TESTING === 'false');
 
-export function checkRequest(env, game, input, product, price) {
-  const refId = randomUUID();
+export function checkRequest(env, game, input, product, price, refId = randomUUID()) {
   const customer = customerNo(product.customer_format, input);
   return {
     url: 'https://api.digiflazz.com/v1/transaction',
@@ -40,8 +39,10 @@ export function checkRequest(env, game, input, product, price) {
 export function checkResult(payload, expected) {
   const data = payload?.data;
   if (data?.ref_id !== expected.refId || data?.customer_no !== expected.customerNo || data?.buyer_sku_code !== expected.sku) return null;
+  if (data?.status === 'Gagal') return { status: 'failed' };
+  if (data?.status === 'Pending' || String(data?.rc) === '03') return { status: 'pending' };
   if (data?.status !== 'Sukses' || String(data?.rc) !== '00') return null;
   const nickname = typeof data?.sn === 'string' ? data.sn.trim().slice(0, 120) : '';
-  if (!nickname) return null;
-  return { nickname, region: '' };
+  if (!nickname) return { status: 'unavailable' };
+  return { status: 'success', nickname, region: '' };
 }

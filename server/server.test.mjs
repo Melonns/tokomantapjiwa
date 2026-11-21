@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './core.mjs';
 import { createHandler, digiRequest, reconcilePending } from './app.mjs';
-import { checkGames } from './check.mjs';
+import { checkGames, checkRequest, checkResult } from './check.mjs';
 
 // Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
 // (misalnya 6000 atau 6665-6669) sehingga tes gagal tanpa sebab yang jelas.
@@ -18,6 +18,17 @@ const authHeaders = { authorization: 'Bearer buyer-token' };
 const withAuth = next => async (url, options) => url === 'https://sample.supabase.co/auth/v1/user'
   ? { ok: true, status: 200, json: async () => ({ id: ownerId, email_confirmed_at: '2026-01-01T00:00:00Z' }) }
   : next(url, options);
+
+test('cek Digiflazz membedakan pending, sukses, gagal, dan ref_id saat status dicek ulang', () => {
+  const expected = { refId: 'ref-fixed', customerNo: '12345100', sku: 'mlcek' };
+  const response = status => ({ data: { ref_id: expected.refId, customer_no: expected.customerNo, buyer_sku_code: expected.sku, status, rc: status === 'Pending' ? '03' : status === 'Sukses' ? '00' : '02', sn: status === 'Sukses' ? 'Player' : '' } });
+  assert.deepEqual(checkResult(response('Pending'), expected), { status: 'pending' });
+  assert.deepEqual(checkResult(response('Sukses'), expected), { status: 'success', nickname: 'Player', region: '' });
+  assert.deepEqual(checkResult(response('Gagal'), expected), { status: 'failed' });
+  assert.equal(checkResult({ ...response('Pending'), data: { ...response('Pending').data, customer_no: 'other' } }, expected), null);
+  const retry = JSON.parse(checkRequest(checkEnv, checkGames['MOBILE LEGENDS'], { userId: '12345', zoneId: '100' }, { customer_format: 'ml_concat' }, 5, expected.refId).options.body);
+  assert.equal(retry.ref_id, expected.refId);
+});
 
 test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
   assert.deepEqual(validateCheckout({ productId: 'ml-1', userId: '12345', zoneId: '1234' }), { productId: 'ml-1', userId: '12345', zoneId: '1234', paymentMethod: undefined });
@@ -632,6 +643,36 @@ test('pending Digi response stays pending and duplicate webhook never retries', 
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('webhook Digiflazz hanya mengubah pesanan saat ref_id, SKU, dan tujuan cocok', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const secret = 'webhook-test-secret';
+  let status = 'fulfillment_pending';
+  const pool = { async query(sql, params) {
+    assert.match(sql, /WHERE id = \$1 AND digi_sku = \$5 AND customer_no = \$6/);
+    if (params[0] !== id || params[4] !== 'ml10' || params[5] !== '123100') return { rows: [] };
+    status = params[1];
+    return { rows: [{ id, status }] };
+  } };
+  const server = createServer(createHandler({ pool, env: { ...env, DIGIFLAZZ_WEBHOOK_SECRET: secret }, fetchImpl: async () => { throw Error('unexpected external request'); } })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const send = async (customerNo, sku = 'ml10') => {
+      const raw = JSON.stringify({ data: { ref_id: id, buyer_sku_code: sku, customer_no: customerNo, status: 'Sukses', rc: '00', sn: 'Player' } });
+      const signature = createHmac('sha1', secret).update(raw, 'utf8').digest('hex');
+      return fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/digiflazz`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature': `sha1=${signature}` }, body: raw });
+    };
+    const wrongCustomer = await send('999900');
+    assert.equal(wrongCustomer.status, 200);
+    assert.deepEqual(await wrongCustomer.json(), { received: true, applied: false });
+    const wrongSku = await send('123100', 'other-sku');
+    assert.equal(wrongSku.status, 200);
+    assert.deepEqual(await wrongSku.json(), { received: true, applied: false });
+    assert.equal(status, 'fulfillment_pending');
+    assert.equal((await send('123100')).status, 200);
+    assert.equal(status, 'fulfilled');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('duplicate paid notification claims exactly one Digi request', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   let status = 'pending', calls = 0, claimed = false;
@@ -865,10 +906,12 @@ test('pemeriksaan nickname memakai layanan sesuai brand produk, menyimpan hasil,
   const pool = { async query(sql, params) {
     statements.push({ sql, params });
     if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [] };
     if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
     if (sql.startsWith('SELECT sku, price FROM supplier_products')) return { rows: [{ sku: 'mlcek', price: 5 }] };
     if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 0 }] };
-    if (sql.startsWith('INSERT')) return { rows: [] };
+    if (sql.startsWith('INSERT INTO account_check_logs')) return { rows: [{ id: 1, refId: params[4] }] };
+    if (sql.startsWith('INSERT') || sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
@@ -908,13 +951,15 @@ test('cache tetap gratis walau kuota provider habis; cache miss menghabiskan sat
   let usedCount = 10;
   let providerCalls = 0;
   const statements = [];
-  const pool = { async query(sql) {
+  const pool = { async query(sql, params) {
     statements.push(sql);
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [] };
     if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
     if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: cached ? [{ nickname: 'Purbaya Sadewa. RI', region: 'ID', checked_at: checkedAt }] : [] };
     if (sql.startsWith('SELECT sku, price FROM supplier_products')) return { rows: [{ sku: 'mlcek', price: 5 }] };
     if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: usedCount }] };
-    if (sql.startsWith('INSERT INTO account_check_logs')) { usedCount++; return { rows: [] }; }
+    if (sql.startsWith('INSERT INTO account_check_logs')) { usedCount++; return { rows: [{ id: 1, refId: params[4] }] }; }
+    if (sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
     if (sql.startsWith('INSERT INTO account_checks')) { cached = true; return { rows: [] }; }
     throw Error('unexpected SQL: ' + sql);
   } };
@@ -946,12 +991,14 @@ test('cache tetap gratis walau kuota provider habis; cache miss menghabiskan sat
 test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa melewati data tersimpan', async () => {
   const bodies = [];
   const statements = [];
-  const pool = { async query(sql) {
+  const pool = { async query(sql, params) {
     statements.push(sql);
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [] };
     if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ff12', game: 'FREE FIRE', customer_format: 'plain' }] };
     if (sql.startsWith('SELECT sku, price FROM supplier_products')) return { rows: [{ sku: 'pre34729032', price: 5 }] };
     if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 3 }] };
-    if (sql.startsWith('INSERT')) return { rows: [] };
+    if (sql.startsWith('INSERT INTO account_check_logs')) return { rows: [{ id: 1, refId: params[4] }] };
+    if (sql.startsWith('INSERT') || sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
@@ -975,9 +1022,63 @@ test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('cek nickname pending memakai ulang ref_id setelah jeda dan tidak membuat transaksi baru', async () => {
+  let pending = null;
+  let retryAfterSeconds = 0;
+  let inserts = 0;
+  const requests = [];
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: pending ? [{ id: 1, refId: pending.refId, retryAfterSeconds }] : [] };
+    if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
+    if (sql.startsWith('SELECT sku, price FROM supplier_products')) return { rows: [{ sku: 'mlcek', price: 5 }] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: inserts }] };
+    if (sql.startsWith('INSERT INTO account_check_logs')) {
+      inserts++;
+      pending = { refId: params[4] };
+      retryAfterSeconds = 60;
+      return { rows: [{ id: 1, refId: pending.refId }] };
+    }
+    if (sql.startsWith('UPDATE account_check_logs SET retry_at')) {
+      retryAfterSeconds = 60;
+      return { rows: [{ id: 1, refId: pending.refId }] };
+    }
+    if (sql.startsWith("UPDATE account_check_logs SET status = 'pending'")) { retryAfterSeconds = 60; return { rows: [] }; }
+    if (sql.startsWith("UPDATE account_check_logs SET status = 'success'")) { pending = null; return { rows: [] }; }
+    if (sql.startsWith('INSERT INTO account_checks')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const status = requests.length === 1 ? 'Pending' : 'Sukses';
+    return { ok: status !== 'Pending', status: status === 'Pending' ? 400 : 200, json: async () => ({ data: { ref_id: request.ref_id, customer_no: request.customer_no, buyer_sku_code: request.buyer_sku_code, status, rc: status === 'Pending' ? '03' : '00', sn: status === 'Sukses' ? 'Player' : '' } }) };
+  }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/check-account`;
+    const call = () => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '30001', zoneId: '400' }) });
+    const first = await call();
+    assert.deepEqual((await first.json()).check, { status: 'pending', retryAfterSeconds: 60 });
+    assert.equal(requests.length, 1);
+    retryAfterSeconds = 40;
+    const early = await call();
+    assert.deepEqual((await early.json()).check, { status: 'pending', retryAfterSeconds: 40 });
+    assert.equal(requests.length, 1);
+    retryAfterSeconds = 0;
+    const checked = await call();
+    assert.equal((await checked.json()).check.nickname, 'Player');
+    assert.equal(requests.length, 2);
+    assert.equal(inserts, 1);
+    assert.equal(requests[0].ref_id, requests[1].ref_id);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('kuota harian habis ditolak sebelum provider dipanggil', async () => {
   let providerCalls = 0;
   const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [] };
     if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
     if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
     if (sql.startsWith('SELECT sku, price FROM supplier_products')) return { rows: [{ sku: 'mlcek', price: 5 }] };
@@ -1001,13 +1102,15 @@ test('ID tidak ketemu dan provider mati tidak disimpan ke cache', async () => {
   const diagnostics = [];
   const originalError = console.error;
   console.error = (...args) => diagnostics.push(args.join(' '));
-  const pool = { async query(sql) {
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [] };
     if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
     if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
     if (sql.startsWith('SELECT sku, price FROM supplier_products')) return { rows: [{ sku: 'mlcek', price: 5 }] };
     if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 1 }] };
     if (sql.startsWith('INSERT INTO account_checks')) { savedChecks++; return { rows: [] }; }
-    if (sql.startsWith('INSERT INTO account_check_logs')) return { rows: [] };
+    if (sql.startsWith('INSERT INTO account_check_logs')) return { rows: [{ id: 1, refId: params[4] }] };
+    if (sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => mode === 'missing'
@@ -1055,7 +1158,7 @@ test('pemeriksaan nickname menolak tanpa sesi terverifikasi dan saat provider be
     assert.equal(response.status, 401);
   } finally { await new Promise(resolve => unauthorized.close(resolve)); }
   let fetchCalls = 0;
-  const inactive = createServer(createHandler({ pool: { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] }; if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] }; throw Error('unexpected SQL: ' + sql); } }, env, fetchImpl: withAuth(async () => { fetchCalls++; return { ok: true, json: async () => ({}) }; }) })).listen(portAman(), '127.0.0.1');
+  const inactive = createServer(createHandler({ pool: { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] }; if (sql.startsWith('SELECT id, ref_id AS "refId"') || sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] }; throw Error('unexpected SQL: ' + sql); } }, env, fetchImpl: withAuth(async () => { fetchCalls++; return { ok: true, json: async () => ({}) }; }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => inactive.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${inactive.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
