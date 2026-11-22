@@ -2097,7 +2097,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             </section>
             {receipt.status === 'pending' && (!receipt.paymentExpiresAt || invoiceRemaining > 0) && <section className="invoice-pay" aria-labelledby="invoice-pay-title">
               <h2 id="invoice-pay-title">Selesaikan pembayaran</h2>
-              {receipt.paymentChannel === 'gopay_app' ? <div className="pay-va"><p>Bayar melalui aplikasi GoPay, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>{invoiceDetail?.deeplink ? <p><a className="checkout-button" href={invoiceDetail.deeplink}>Buka aplikasi GoPay</a></p> : <p className="field-hint" role="status">Tautan aplikasi GoPay belum tersedia. Muat ulang halaman ini.</p>}</div> : invoiceDetail?.qrUrl ? <div className="pay-qr">
+              {receipt.paymentChannel === 'gopay_app' && invoiceDetail?.deeplink ? <div className="pay-va"><p>Bayar melalui aplikasi GoPay, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p><p><a className="checkout-button" href={invoiceDetail.deeplink}>Buka aplikasi GoPay</a></p></div> : invoiceDetail?.qrUrl ? <div className="pay-qr">
                 <img src={invoiceDetail.qrUrl} alt="Kode QR pembayaran" width="240" height="240" />
                 <div className="pay-qr-body">
                   <p>Pindai kode QR ini dari aplikasi bank atau e-wallet, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>

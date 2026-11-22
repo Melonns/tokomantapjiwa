@@ -93,12 +93,13 @@ function paymentDetail(method, charge) {
     return qrUrl ? { qrUrl } : null;
   }
   if (method === 'gopay_app') {
-    const deeplink = safeUrl(actionUrl('deeplink-redirect'), ['https://gopay.co.id/', 'https://gojek.link/', 'gojek://']);
-    return deeplink ? { deeplink } : null;
+    const deeplink = safeUrl(actionUrl('deeplink-redirect'), ['https://', 'gojek://', 'gopay://']);
+    const qrUrl = safeUrl(actionUrl('generate-qr-code-v2') || actionUrl('generate-qr-code'), ['https://api.']);
+    return deeplink ? { deeplink } : qrUrl ? { qrUrl } : null;
   }
   if (method === 'gopay' || method === 'shopeepay') {
     const qrUrl = safeUrl(actionUrl('generate-qr-code-v2') || actionUrl('generate-qr-code'), ['https://api.']);
-    const deeplink = safeUrl(actionUrl('deeplink-redirect'), ['https://', 'gojek://', 'shopee://']);
+    const deeplink = safeUrl(actionUrl('deeplink-redirect'), ['https://', 'gojek://', 'gopay://', 'shopee://']);
     return qrUrl || deeplink ? { ...(qrUrl ? { qrUrl } : {}), ...(deeplink ? { deeplink } : {}) } : null;
   }
   if (method === 'mandiri_bill') {
