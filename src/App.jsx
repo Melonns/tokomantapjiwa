@@ -50,7 +50,7 @@ const PAYMENT_METHODS = [
   { id: 'bri_va', group: 'Transfer bank / Virtual Account', label: 'BRI Virtual Account', note: 'Nomor VA BRI', minOrder: VA_MIN_ORDER },
   { id: 'permata_va', group: 'Transfer bank / Virtual Account', label: 'Permata Virtual Account', note: 'Nomor VA Permata', minOrder: VA_MIN_ORDER },
   { id: 'mandiri_bill', group: 'Transfer bank / Virtual Account', label: 'Mandiri Bill Payment', note: 'Kode bayar Mandiri', minOrder: VA_MIN_ORDER },
-  { id: 'gopay', group: 'E-wallet', label: 'GoPay', note: 'Bayar melalui aplikasi Gojek' },
+  { id: 'gopay_app', group: 'E-wallet', label: 'GoPay App', note: 'Buka aplikasi GoPay, tanpa QR' },
   { id: 'shopeepay', group: 'E-wallet', label: 'ShopeePay', note: 'Bayar melalui aplikasi Shopee' },
 ]
 const SUMOPOD_PAYMENT_METHODS = [PAYMENT_METHODS[0]]
@@ -1777,10 +1777,9 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   const orderFormat = selected?.format || orderItems[0]?.format || 'plain'
   const orderType = catalogTypeOf(selected || orderItems[0] || {}, catalogTypes)
 
-  // ponytail: cek nickname jalan di halaman game juga, memakai produk checkable pertama brand itu.
-  // productId hanya dipakai server untuk memilih brand, jadi ID produk belum dipilih pun tetap sah.
-  const checkProduct = selected?.checkable === true ? selected : orderItems.find((item) => item.checkable === true) || null
-  const checkFormat = selected?.format || checkProduct?.format || orderFormat
+  // ponytail: cek nickname memakai SKU tetap per game agar pilih nominal tidak mengulang pemeriksaan.
+  const checkProduct = orderItems.find((item) => item.checkable === true) || null
+  const checkFormat = checkProduct?.format || orderFormat
   const checkRunRef = useRef(0)
   const checkRetryRef = useRef(null)
   const checkPendingRef = useRef(false)
@@ -2022,7 +2021,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                   <p className="field-hint">{orderFormat === 'plain' ? orderType.targetHint : orderFormat === 'ml_concat' ? 'User ID dan Zone ID berupa angka. Jangan memasukkan kata sandi.' : orderFormat === 'riot' ? 'Tulis Riot ID lengkap, contoh: NamaAnda#1234.' : 'Pilih server yang sama dengan akun game. Jangan memasukkan kata sandi.'}</p>
                   {checkProduct && (
                     <div className="check-block" aria-live="polite">
-                      {(checkState === 'loading' || checkState === 'pending') && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />{checkState === 'pending' ? 'Digiflazz masih memproses. Menunggu hasil nickname...' : 'Memeriksa nickname...'}</p>}
+                      {(checkState === 'loading' || checkState === 'pending') && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />{checkState === 'pending' ? 'Menunggu...' : 'Memeriksa nickname...'}</p>}
                       {checkState === 'done' && checkResult ? (
                         <p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p>
                       ) : null}
@@ -2098,7 +2097,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             </section>
             {receipt.status === 'pending' && (!receipt.paymentExpiresAt || invoiceRemaining > 0) && <section className="invoice-pay" aria-labelledby="invoice-pay-title">
               <h2 id="invoice-pay-title">Selesaikan pembayaran</h2>
-              {invoiceDetail?.qrUrl ? <div className="pay-qr">
+              {receipt.paymentChannel === 'gopay_app' ? <div className="pay-va"><p>Bayar melalui aplikasi GoPay, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>{invoiceDetail?.deeplink ? <p><a className="checkout-button" href={invoiceDetail.deeplink}>Buka aplikasi GoPay</a></p> : <p className="field-hint" role="status">Tautan aplikasi GoPay belum tersedia. Muat ulang halaman ini.</p>}</div> : invoiceDetail?.qrUrl ? <div className="pay-qr">
                 <img src={invoiceDetail.qrUrl} alt="Kode QR pembayaran" width="240" height="240" />
                 <div className="pay-qr-body">
                   <p>Pindai kode QR ini dari aplikasi bank atau e-wallet, lalu bayar tepat <strong>{rupiah(receipt.price)}</strong>.</p>

@@ -47,7 +47,7 @@ test('metode pembayaran yang dipilih ikut terkirim ke checkout, kode promo aktif
   assert.match(source, /zoneId: zoneId\.trim\(\) \}\)/);
   assert.equal(source.includes('QR atau nomor Virtual Account tampil di halaman invoice'), false);
   assert.match(source, /const VA_BANKS = \{ bca: 'BCA', bni: 'BNI', bri: 'BRI', permata: 'Permata' \}/);
-  for (const id of ['qris', 'bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill', 'gopay', 'shopeepay']) {
+  for (const id of ['qris', 'bca_va', 'bni_va', 'bri_va', 'permata_va', 'mandiri_bill', 'gopay_app', 'shopeepay']) {
     assert.ok(source.includes(`id: '${id}'`), `kanal ${id} hilang dari PAYMENT_METHODS`);
   }
   assert.equal(source.includes('Metode final masih dipilih'), false);

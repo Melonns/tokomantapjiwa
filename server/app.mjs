@@ -72,7 +72,7 @@ const PAYMENT_METHODS = {
   bri_va: () => ({ payment_type: 'bank_transfer', bank: 'bri' }),
   permata_va: () => ({ payment_type: 'bank_transfer', bank: 'permata' }),
   mandiri_bill: () => ({ payment_type: 'echannel', echannel: { bill_info1: 'Pembayaran pesanan', bill_info2: 'Melonbyte' } }),
-  gopay: (id, storeUrl) => ({ payment_type: 'gopay', gopay: { enable_callback: true, callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
+  gopay_app: (id, storeUrl) => ({ payment_type: 'gopay', gopay: { enable_callback: true, callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
   shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
 };
 // ponytail: Midtrans default QRIS hanya 15 menit. TTL dipatok eksplisit supaya hitung mundur di invoice
@@ -92,8 +92,12 @@ function paymentDetail(method, charge) {
     const qrUrl = safeUrl(actionUrl('generate-qr-code'), ['https://api.']);
     return qrUrl ? { qrUrl } : null;
   }
+  if (method === 'gopay_app') {
+    const deeplink = safeUrl(actionUrl('deeplink-redirect'), ['https://gopay.co.id/', 'https://gojek.link/', 'gojek://']);
+    return deeplink ? { deeplink } : null;
+  }
   if (method === 'gopay' || method === 'shopeepay') {
-    const qrUrl = safeUrl(actionUrl('generate-qr-code'), ['https://api.']);
+    const qrUrl = safeUrl(actionUrl('generate-qr-code-v2') || actionUrl('generate-qr-code'), ['https://api.']);
     const deeplink = safeUrl(actionUrl('deeplink-redirect'), ['https://', 'gojek://', 'shopee://']);
     return qrUrl || deeplink ? { ...(qrUrl ? { qrUrl } : {}), ...(deeplink ? { deeplink } : {}) } : null;
   }

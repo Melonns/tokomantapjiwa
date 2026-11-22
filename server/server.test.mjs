@@ -300,7 +300,8 @@ test('picked payment method charges that channel through Core API and unknown on
   const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url, options) => {
     chargeBody = JSON.parse(options.body);
     assert.equal(url, 'https://api.sandbox.midtrans.com/v2/charge');
-    if (chargeBody.payment_type === 'gopay') return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/gopay/x/qr-code' }, { name: 'deeplink-redirect', url: 'gojek://gopay/merchanttransfer?tref=x' }] }) };
+    if (chargeBody.payment_type === 'qris') return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
+    if (chargeBody.payment_type === 'gopay') return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code-v2', url: 'https://api.sandbox.midtrans.com/v4/qris/gopay/x/qr-code' }, { name: 'deeplink-redirect', url: 'https://gopay.co.id/app/merchanttransfer?tref=x' }] }) };
     return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-16 12:15:57', va_numbers: [{ bank: 'bca', va_number: '8830038369608185' }] }) };
   }) });
   const server = createServer(handler).listen(portAman(), '127.0.0.1');
@@ -317,11 +318,18 @@ test('picked payment method charges that channel through Core API and unknown on
     assert.equal(stored[1], 'bca_va');
     assert.deepEqual(stored[2], { bank: 'bca', vaNumber: '8830038369608185' });
     assert.deepEqual((await ok.json()).paymentDetail, { bank: 'bca', vaNumber: '8830038369608185' });
-    const wallet = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'gopay' }) });
+    const wallet = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'qris' }) });
     assert.equal(wallet.status, 201);
+    assert.equal(chargeBody.payment_type, 'qris');
+    assert.deepEqual((await wallet.json()).paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' });
+    assert.equal(stored[1], 'qris');
+    const walletApp = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'gopay_app' }) });
+    assert.equal(walletApp.status, 201);
     assert.equal(chargeBody.payment_type, 'gopay');
     assert.match(chargeBody.gopay.callback_url, /^http:\/\/localhost:5173\/struk\/[0-9a-f-]{36}$/);
-    assert.deepEqual((await wallet.json()).paymentDetail, { qrUrl: 'https://api.sandbox.midtrans.com/v2/gopay/x/qr-code', deeplink: 'gojek://gopay/merchanttransfer?tref=x' });
+    assert.equal(stored[1], 'gopay_app');
+    assert.deepEqual(stored[2], { deeplink: 'https://gopay.co.id/app/merchanttransfer?tref=x' });
+    assert.deepEqual((await walletApp.json()).paymentDetail, { deeplink: 'https://gopay.co.id/app/merchanttransfer?tref=x' });
     const bad = await fetch(base + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'bitcoin' }) });
     assert.equal(bad.status, 400);
     assert.match((await bad.json()).error, /tidak dikenal/);

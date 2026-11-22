@@ -92,6 +92,15 @@ test('paid orders land on a dedicated invoice page, not the account page', () =>
   assert.match(source, /ACTIVE_STATUSES\.includes\(receipt\?\.status\)/);
 });
 
+test('GoPay App membuka deeplink langsung tanpa menampilkan QR', () => {
+  assert.match(source, /id: 'gopay_app', group: 'E-wallet', label: 'GoPay App'/)
+  const invoice = source.slice(source.indexOf("receipt.status === 'pending' && (!receipt.paymentExpiresAt"), source.indexOf('className="invoice-progress"'))
+  const appOnly = invoice.slice(invoice.indexOf("receipt.paymentChannel === 'gopay_app'"), invoice.indexOf('invoiceDetail?.qrUrl'))
+  assert.ok(appOnly.includes('invoiceDetail.deeplink'))
+  assert.ok(appOnly.includes('Buka aplikasi GoPay'))
+  assert.doesNotMatch(appOnly, /<img/)
+})
+
 test('halaman tidak dikenal, jeda struk bertingkat, dan pengajuan hapus akun tersedia', () => {
   assert.match(source, /view === 'notfound'/);
   assert.match(source, /id="tidak-ditemukan"/);

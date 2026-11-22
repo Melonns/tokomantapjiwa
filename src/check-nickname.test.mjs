@@ -5,9 +5,10 @@ import { readFile } from 'node:fs/promises'
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
 const css = await readFile(new URL('./store.css', import.meta.url), 'utf8')
 
-test('cek nickname muncul otomatis untuk brand yang mendukung pemeriksaan', () => {
+test('memilih nominal tidak mengubah target pemeriksaan nickname', () => {
   assert.match(source, /\{checkProduct && \(/)
-  assert.match(source, /const checkProduct = selected\?\.checkable === true \? selected : orderItems\.find\(\(item\) => item\.checkable === true\) \|\| null/)
+  assert.match(source, /const checkProduct = orderItems\.find\(\(item\) => item\.checkable === true\) \|\| null/)
+  assert.doesNotMatch(source, /const checkProduct = selected\?\.checkable/)
 })
 
 test('tidak ada tombol periksa; permintaan berjalan sendiri setelah ID diisi', () => {
@@ -24,7 +25,8 @@ test('permintaan pemeriksaan memakai produk dari brand terpilih', () => {
 test('loading tetap tampil selama permintaan dan menunggu status pending', () => {
   assert.match(source, /\(checkState === 'loading' \|\| checkState === 'pending'\) && <p className="check-status" role="status">/)
   assert.match(source, /Memeriksa nickname\.\.\./)
-  assert.match(source, /Digiflazz masih memproses\. Menunggu hasil nickname/)
+  assert.match(source, /checkState === 'pending' \? 'Menunggu\.\.\.' : 'Memeriksa nickname\.\.\.'/)
+  assert.doesNotMatch(source, /Digiflazz masih memproses/)
   assert.match(source, /className="check-spinner"/)
 })
 
