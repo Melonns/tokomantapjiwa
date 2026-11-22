@@ -94,7 +94,8 @@ function paymentDetail(method, charge) {
   }
   if (method === 'gopay_app') {
     const deeplink = safeUrl(actionUrl('deeplink-redirect'), ['https://', 'gojek://', 'gopay://']);
-    const qrUrl = safeUrl(actionUrl('generate-qr-code-v2') || actionUrl('generate-qr-code'), ['https://api.']);
+    const qrUrl = safeUrl(actionUrl('generate-qr-code'), ['https://api.', 'https://merchants-app.'])
+      || safeUrl(actionUrl('generate-qr-code-v2'), ['https://api.', 'https://merchants-app.']);
     return deeplink ? { deeplink } : qrUrl ? { qrUrl } : null;
   }
   if (method === 'gopay' || method === 'shopeepay') {
@@ -521,7 +522,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       if ((req.method === 'GET' || req.method === 'HEAD') && path === '/api/health') {
         try {
           await pool.query('SELECT 1');
-          return send(res, 200, { ok: true, db: 'ok', time: new Date().toISOString() });
+          return send(res, 200, { ok: true, db: 'ok', version: '2026-11-22-v2', time: new Date().toISOString() });
         } catch {
           return send(res, 503, { ok: false, db: 'error' });
         }
@@ -869,9 +870,11 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const detail = paymentDetail(methodId, charge);
         const expiresAt = expiryDate(charge?.expiry_time);
         if (!detail) {
-          const note = 'Tagihan sudah dibuat, tetapi instruksi pembayaran belum tersedia. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+          const chargeDiag = `status=${charge?.status_code || '-'} actions=${(charge?.actions || []).map(a => a.name).join(',') || 'none'}`;
+          console.error('[checkout] Tagihan dibuat tanpa detail:', chargeDiag);
+          const note = `Tagihan sudah dibuat, tetapi instruksi pembayaran belum tersedia (${chargeDiag}). Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.`;
           await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = NULL, payment_expires_at = $3, fulfillment_note = $4, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, expiresAt, note]);
-          alertPayment(fetchImpl, env, id, 'Tagihan dibuat tanpa detail', `metode=${methodId}`);
+          alertPayment(fetchImpl, env, id, 'Tagihan dibuat tanpa detail', `metode=${methodId} ${chargeDiag}`);
           return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, manualReview: true });
         }
         await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = $3, payment_expires_at = $4, updated_at = now() WHERE id = $1', [id, methodId, detail, expiresAt]);
