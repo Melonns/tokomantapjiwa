@@ -648,6 +648,7 @@ test('webhook Digiflazz hanya mengubah pesanan saat ref_id, SKU, dan tujuan coco
   const secret = 'webhook-test-secret';
   let status = 'fulfillment_pending';
   const pool = { async query(sql, params) {
+    if (sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
     assert.match(sql, /WHERE id = \$1 AND digi_sku = \$5 AND customer_no = \$6/);
     if (params[0] !== id || params[4] !== 'ml10' || params[5] !== '123100') return { rows: [] };
     status = params[1];
@@ -670,6 +671,34 @@ test('webhook Digiflazz hanya mengubah pesanan saat ref_id, SKU, dan tujuan coco
     assert.equal(status, 'fulfillment_pending');
     assert.equal((await send('123100')).status, 200);
     assert.equal(status, 'fulfilled');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('webhook Digiflazz menyimpan nickname cek hanya untuk transaksi yang cocok', async () => {
+  const refId = '44444444-4444-4444-8444-444444444444';
+  const secret = 'webhook-test-secret';
+  let log = { game: 'MOBILE LEGENDS', user_id: '30001', zone_id: '400', nickname: null, region: '', status: 'pending' };
+  let cached;
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('UPDATE account_check_logs')) {
+      assert.deepEqual(params.slice(0, 4), [refId, 'mlcek', '30001400', 'success']);
+      log = { ...log, status: params[3], nickname: params[4] };
+      return { rows: [log] };
+    }
+    if (sql.startsWith('INSERT INTO account_checks')) { cached = params; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const server = createServer(createHandler({ pool, env: { ...env, DIGIFLAZZ_WEBHOOK_SECRET: secret }, fetchImpl: async () => { throw Error('unexpected external request'); } })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const raw = JSON.stringify({ data: { ref_id: refId, buyer_sku_code: 'mlcek', customer_no: '30001400', status: 'Sukses', rc: '00', sn: 'Player' } });
+    const signature = createHmac('sha1', secret).update(raw, 'utf8').digest('hex');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/digiflazz`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature': `sha1=${signature}` }, body: raw });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { received: true, applied: true });
+    assert.equal(log.status, 'success');
+    assert.equal(log.nickname, 'Player');
+    assert.deepEqual(cached, ['MOBILE LEGENDS', '30001', '400', 'Player', '']);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
@@ -1019,6 +1048,29 @@ test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa
     assert.ok(bodies[0].ref_id);
     assert.equal(bodies[0].sign, createHash('md5').update(`buyerapi-secret${bodies[0].ref_id}`).digest('hex'));
     assert.ok(statements.every(sql => !sql.startsWith('SELECT nickname')));
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('polling status-only membaca hasil pending dan sukses tanpa request Digiflazz', async () => {
+  let log = { id: 1, refId: '44444444-4444-4444-8444-444444444444', status: 'pending', nickname: null, region: '', retryAfterSeconds: 54 };
+  let providerCalls = 0;
+  const pool = { async query(sql) {
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [log] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => { providerCalls++; throw Error('unexpected provider call'); }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/check-account`;
+    const call = () => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ml10', userId: '30001', zoneId: '400', statusOnly: true }) });
+    const pending = await call();
+    assert.deepEqual((await pending.json()).check, { status: 'pending', retryAfterSeconds: 54 });
+    log = { ...log, status: 'success', nickname: 'Player', retryAfterSeconds: 0 };
+    const done = await call();
+    assert.equal((await done.json()).check.nickname, 'Player');
+    assert.equal(providerCalls, 0);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 

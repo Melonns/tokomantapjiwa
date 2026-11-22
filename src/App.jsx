@@ -129,7 +129,11 @@ const HERO_SLIDES = [
 async function request(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload.error || 'Server tidak dapat dihubungi. Coba lagi nanti.')
+  if (!response.ok) {
+    const error = new Error(payload.error || 'Server tidak dapat dihubungi. Coba lagi nanti.')
+    error.status = response.status
+    throw error
+  }
   return payload
 }
 
@@ -1779,6 +1783,8 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   const checkFormat = selected?.format || checkProduct?.format || orderFormat
   const checkRunRef = useRef(0)
   const checkRetryRef = useRef(null)
+  const checkPendingRef = useRef(false)
+  const checkErrorRetryRef = useRef(0)
   const loggedIn = Boolean(supabase && session)
 
   function clearCheckRetry() {
@@ -1787,35 +1793,51 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   }
 
   // ponytail: cek nickname tidak pernah memblokir checkout; gagal ditampilkan apa adanya.
-  async function checkNickname(force) {
+  async function checkNickname(force, statusOnly = false) {
     if (!checkProduct || !checkAvailable || !loggedIn) return
     clearCheckRetry()
     const id = userId.trim()
     const zone = zoneId.trim()
     const run = checkRunRef.current + 1
     checkRunRef.current = run
-    setCheckState('loading')
+    setCheckState(checkPendingRef.current ? 'pending' : 'loading')
     setCheckError('')
     try {
+      const body = checkFormat === 'plain' ? { productId: checkProduct.id, userId: id, force: force === true } : { productId: checkProduct.id, userId: id, zoneId: zone, force: force === true }
+      if (statusOnly) body.statusOnly = true
       const data = await request('/api/check-account', {
         method: 'POST',
         headers: await authHeaders(),
-        body: JSON.stringify(checkFormat === 'plain' ? { productId: checkProduct.id, userId: id, force: force === true } : { productId: checkProduct.id, userId: id, zoneId: zone, force: force === true }),
+        body: JSON.stringify(body),
       })
       if (run !== checkRunRef.current) return
       if (data.check?.status === 'pending') {
+        checkPendingRef.current = true
+        checkErrorRetryRef.current = 0
         setCheckState('pending')
+        const retryAfterSeconds = Number(data.check.retryAfterSeconds) || 0
         checkRetryRef.current = setTimeout(() => {
-          if (run === checkRunRef.current) checkNickname(false)
-        }, Math.max(60, Number(data.check.retryAfterSeconds) || 60) * 1000 + 1000)
+          if (run === checkRunRef.current) checkNickname(false, statusOnly ? retryAfterSeconds > 0 : true)
+        }, statusOnly ? Math.min(2000, retryAfterSeconds * 1000) : 2000)
         return
       }
-      if (data.check?.status === 'failed') { setCheckState('failed'); return }
+      if (data.check?.status === 'failed') { checkPendingRef.current = false; setCheckState('failed'); return }
       if (!data.check?.nickname) throw new Error('Respons cek tidak valid.')
+      checkPendingRef.current = false
+      checkErrorRetryRef.current = 0
       setCheckResult(data.check)
       setCheckState('done')
     } catch (error) {
       if (run !== checkRunRef.current) return
+      if (checkPendingRef.current && (error?.status === 429 || error?.status >= 500 || error instanceof TypeError || error?.name === 'AbortError')) {
+        checkErrorRetryRef.current += 1
+        setCheckState('pending')
+        checkRetryRef.current = setTimeout(() => {
+          if (run === checkRunRef.current) checkNickname(false, true)
+        }, Math.min(10000, 2000 * 2 ** Math.min(checkErrorRetryRef.current - 1, 3)))
+        return
+      }
+      checkPendingRef.current = false
       setCheckError(error.message)
       setCheckState('error')
     }
@@ -1825,6 +1847,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
   useEffect(() => {
     clearCheckRetry()
     checkRunRef.current += 1
+    checkPendingRef.current = false
     setCheckResult(null); setCheckError('')
     if (!checkProduct || !checkAvailable) { setCheckState('idle'); return }
     if (!loggedIn) { setCheckState('locked'); return }

@@ -84,6 +84,7 @@ test('webhook digiflazz dengan HMAC-SHA1 sah menutup pesanan dan menyimpan SN', 
   const seen = [];
   const pool = { async query(sql, params) {
     seen.push(sql);
+    if (sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
     assert.match(sql, /UPDATE orders SET status = \$2/);
     assert.equal(params[0], orderId);
     assert.equal(params[1], 'fulfilled');

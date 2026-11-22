@@ -2,7 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { paymentProvider, sumopodBody, sumopodConfig, sumopodExpiresAt, sumopodMethods, sumopodPaymentDetail, sumopodReady, sumopodTokenValid, sumopodWebhook } from './sumopod.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
-import { checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
+import { checkGames, checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
 import { clientIp, createRateLimiter } from './ratelimit.mjs';
@@ -489,6 +489,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
     login: limit('LOGIN', 10, 15 * 60 * 1000),
     checkout: limit('CHECKOUT', 20, 10 * 60 * 1000),
     checkAccount: limit('CHECKACCOUNT', 30, 10 * 60 * 1000),
+    checkAccountStatus: limit('CHECKACCOUNT_STATUS', 60, 60 * 1000),
     voucher: limit('VOUCHER', 30, 10 * 60 * 1000),
     deletion: limit('DELETION', 3, 60 * 60 * 1000),
   };
@@ -874,10 +875,11 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
       }
       // ponytail: periksa nickname adalah layanan pemeriksaan per brand (ML memakai cek ML, FF memakai cek FF); hasil disimpan agar tidak membayar berulang.
       if (req.method === 'POST' && path === '/api/check-account') {
-        guard('checkAccount');
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         let body, input;
         try { body = await readJson(req); input = validateCheckout(body); } catch (err) { throw err.status ? err : error(400, err.message); }
+        guard(body?.statusOnly === true ? 'checkAccountStatus' : 'checkAccount');
+        if (body?.statusOnly === true && body.force === true) throw error(400, 'Permintaan cek status tidak valid.');
         const { rows } = await pool.query('SELECT id, game, customer_format FROM products WHERE id = $1 AND enabled = true', [input.productId]);
         const product = rows[0];
         if (!product) throw error(404, 'Produk tidak tersedia.');
@@ -886,7 +888,15 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         let customer;
         try { customer = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         const brand = String(product.game || '').toUpperCase();
-        const { rows: pendingRows } = await pool.query("SELECT id, ref_id AS \"refId\", GREATEST(0, CEIL(EXTRACT(EPOCH FROM (retry_at - now()))))::int AS \"retryAfterSeconds\" FROM account_check_logs WHERE owner_id = $1 AND game = $2 AND user_id = $3 AND zone_id = $4 AND status IN ('pending', 'unknown') ORDER BY created_at DESC LIMIT 1", [ownerId, brand, input.userId, input.zoneId]);
+        const statuses = body?.statusOnly === true ? ['pending', 'unknown', 'success', 'failed'] : ['pending', 'unknown'];
+        const { rows: pendingRows } = await pool.query("SELECT id, ref_id AS \"refId\", status, nickname, region, GREATEST(0, CEIL(EXTRACT(EPOCH FROM (retry_at - now()))))::int AS \"retryAfterSeconds\" FROM account_check_logs WHERE owner_id = $1 AND game = $2 AND user_id = $3 AND zone_id = $4 AND status = ANY($5::text[]) ORDER BY created_at DESC LIMIT 1", [ownerId, brand, input.userId, input.zoneId, statuses]);
+        if (body?.statusOnly === true) {
+          const log = pendingRows[0];
+          if (!log) throw error(409, 'Status pemeriksaan nickname tidak ditemukan.');
+          if (log.status === 'success' && log.nickname) return send(res, 200, { check: { nickname: log.nickname, region: log.region || '', cached: false } });
+          if (log.status === 'failed') return send(res, 200, { check: { status: 'failed' } });
+          return send(res, 200, { check: { status: 'pending', retryAfterSeconds: log.retryAfterSeconds } });
+        }
         if (pendingRows[0] && pendingRows[0].retryAfterSeconds > 0) return send(res, 200, { check: { status: 'pending', retryAfterSeconds: pendingRows[0].retryAfterSeconds } });
         if (!pendingRows[0] && body?.force !== true) {
           const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '7 days'", [brand, input.userId, input.zoneId]);
@@ -1141,6 +1151,13 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           return send(res, 200, { received: true, applied: false });
         }
         const status = String(data?.status || '');
+        const nickname = typeof data?.sn === 'string' ? data.sn.trim().slice(0, 120) : '';
+        const checkStatus = status === 'Pending' || String(data?.rc) === '03' ? 'pending' : status === 'Sukses' && String(data?.rc) === '00' && nickname ? 'success' : status === 'Gagal' ? 'failed' : null;
+        if (checkStatus && Object.values(checkGames).some(game => game.sku === data?.buyer_sku_code)) {
+          const { rows: checks } = await pool.query("UPDATE account_check_logs SET status = $4, nickname = CASE WHEN $4 = 'success' THEN $5 ELSE nickname END, retry_at = CASE WHEN $4 = 'pending' THEN now() + interval '1 minute' ELSE retry_at END WHERE ref_id = $1 AND buyer_sku_code = $2 AND customer_no = $3 AND status IN ('pending', 'unknown') RETURNING game, user_id, zone_id, nickname, region, status", [refId, data?.buyer_sku_code, data?.customer_no, checkStatus, nickname]);
+          if (checks[0]?.status === 'success' && checks[0].nickname) await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [checks[0].game, checks[0].user_id, checks[0].zone_id, checks[0].nickname, checks[0].region || '']);
+          if (checks[0]) return send(res, 200, { received: true, applied: true });
+        }
         if (status === 'Pending') {
           await pool.query("UPDATE orders SET updated_at = now() WHERE id = $1 AND digi_sku = $2 AND customer_no = $3 AND status = 'fulfillment_pending'", [refId, data?.buyer_sku_code, data?.customer_no]);
           return send(res, 200, { received: true });

@@ -28,10 +28,20 @@ test('loading tetap tampil selama permintaan dan menunggu status pending', () =>
   assert.match(source, /className="check-spinner"/)
 })
 
-test('pending terus mengecek otomatis dengan jeda minimum dan memakai ref transaksi yang sama', () => {
-  assert.match(source, /Math\.max\(60, Number\(data\.check\.retryAfterSeconds\) \|\| 60\)/)
-  assert.match(source, /if \(run === checkRunRef\.current\) checkNickname\(false\)/)
+test('pending cek status cepat tanpa mengulang transaksi Digiflazz sebelum jatuh tempo', () => {
+  assert.match(source, /async function checkNickname\(force, statusOnly = false\)/)
+  assert.match(source, /if \(statusOnly\) body\.statusOnly = true/)
+  assert.match(source, /statusOnly \? Math\.min\(2000, retryAfterSeconds \* 1000\) : 2000/)
+  assert.match(source, /checkNickname\(false, statusOnly \? retryAfterSeconds > 0 : true\)/)
   assert.doesNotMatch(source, /pending_stopped|polls < 3|checkPollsRef/)
+})
+
+test('error sementara mempertahankan loading dan lanjut cek status dalam 2 detik', () => {
+  assert.match(source, /const checkPendingRef = useRef\(false\)/)
+  assert.match(source, /checkPendingRef\.current && \(error\?\.status === 429 \|\| error\?\.status >= 500 \|\| error instanceof TypeError \|\| error\?\.name === 'AbortError'\)/)
+  assert.match(source, /checkNickname\(false, true\)[\s\S]*}, Math\.min\(10000, 2000 \* 2 \*\*/)
+  assert.match(source, /checkRetryRef\.current = setTimeout\(\(\) => \{[\s\S]*checkNickname\(false, statusOnly \? retryAfterSeconds > 0 : true\)[\s\S]*statusOnly \? Math\.min\(2000, retryAfterSeconds \* 1000\) : 2000/)
+  assert.match(source, /error\.status = response\.status/)
 })
 
 test('hasil pemeriksaan menampilkan nama dan asal data tanpa tombol', () => {
