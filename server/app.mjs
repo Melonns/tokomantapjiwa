@@ -438,7 +438,7 @@ async function readRaw(req, limit = 16384) {
 async function applyAsyncCheck(pool, { refId, sku, customerNo, status, nickname }) {
   const { rows: checks } = await pool.query("UPDATE account_check_logs SET status = $4, nickname = CASE WHEN $4 = 'success' THEN $5 ELSE nickname END, retry_at = CASE WHEN $4 = 'pending' THEN now() + interval '1 minute' ELSE retry_at END WHERE ref_id = $1 AND buyer_sku_code = $2 AND customer_no = $3 AND status IN ('pending', 'unknown') RETURNING game, user_id, zone_id, nickname, region, status", [refId, sku, customerNo, status, nickname]);
   if (checks[0]?.status === 'success' && checks[0].nickname) await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [checks[0].game, checks[0].user_id, checks[0].zone_id, checks[0].nickname, checks[0].region || '']);
-  return Boolean(checks[0]);
+  return checks[0] || null;
 }
 
 // ponytail: status ketika dana sudah masuk tetapi item belum terkirim; satu-satunya status yang boleh direfund.
@@ -490,8 +490,32 @@ function storeBaseUrl(env) {
   return 'http://localhost:5173';
 }
 
-export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
+export function createHandler({ pool, fetchImpl = fetch, env = process.env, checkReportWaitMs = 15000 }) {
   const storeUrl = storeBaseUrl(env);
+  const checkWaiters = new Map();
+  const addCheckWaiter = (id, listener) => {
+    let set = checkWaiters.get(id);
+    if (!set) { set = new Set(); checkWaiters.set(id, set); }
+    set.add(listener);
+  };
+  const removeCheckWaiter = (id, listener) => {
+    const set = checkWaiters.get(id);
+    if (!set) return;
+    set.delete(listener);
+    if (set.size === 0) checkWaiters.delete(id);
+  };
+  const notifyCheckWaiters = (id, outcome) => {
+    const set = checkWaiters.get(id);
+    if (!set) return;
+    for (const listener of [...set]) listener(outcome);
+  };
+  const applyAndNotifyCheck = async (entry) => {
+    const updated = await applyAsyncCheck(pool, entry);
+    if (updated && (updated.status === 'success' || updated.status === 'failed')) {
+      notifyCheckWaiters(entry.refId, { status: updated.status, nickname: updated.nickname || '', region: updated.region || '' });
+    }
+    return updated;
+  };
   // ponytail: Pembatas percobaan per IP untuk endpoint yang mudah disalahgunakan. Batas dapat diubah lewat env.
   const limit = (name, fallback, windowMs) => createRateLimiter({ windowMs, max: Number(env[`RATE_LIMIT_${name}_MAX`]) > 0 ? Number(env[`RATE_LIMIT_${name}_MAX`]) : fallback });
   const limits = {
@@ -938,6 +962,14 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           refId = inserted.rows[0].refId;
         }
         let phase = 'provider_request';
+        const waitMs = String(env.DIGIFLAZZ_OTOMAX_REPORT_SECRET || '').trim() && checkReportWaitMs > 0 ? checkReportWaitMs : 0;
+        let earlyOutcome = null;
+        let resolveWaiter = null;
+        const onOutcome = (outcome) => {
+          earlyOutcome = outcome;
+          if (resolveWaiter) resolveWaiter(outcome);
+        };
+        if (waitMs > 0) addCheckWaiter(refId, onOutcome);
         try {
           const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price), refId);
           const response = await fetchImpl(provider.url, provider.options);
@@ -954,7 +986,35 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           }
           if (result.status === 'pending') {
             await pool.query("UPDATE account_check_logs SET status = 'pending', retry_at = now() + interval '1 minute' WHERE id = $1 AND status IN ('pending', 'unknown')", [logId]);
-            return send(res, 200, { check: { status: 'pending', retryAfterSeconds: 60 } });
+            const retryDeadline = Date.now() + 60000;
+            let outcome = earlyOutcome;
+            if (!outcome && waitMs > 0) {
+              outcome = await new Promise((resolve) => {
+                let done = false;
+                const finish = (value) => {
+                  if (done) return;
+                  done = true;
+                  clearTimeout(timer);
+                  res.off?.('close', onClose);
+                  resolveWaiter = null;
+                  resolve(value);
+                };
+                const onClose = () => finish(null);
+                const timer = setTimeout(() => finish(null), waitMs);
+                resolveWaiter = finish;
+                res.once?.('close', onClose);
+                if (earlyOutcome) finish(earlyOutcome);
+              });
+            }
+            if (res.destroyed || res.writableEnded) return;
+            if (outcome?.status === 'success' && outcome.nickname) {
+              return send(res, 200, { check: { nickname: outcome.nickname, region: outcome.region || '', cached: false, checkedAt: new Date().toISOString() } });
+            }
+            if (outcome?.status === 'failed') {
+              return send(res, 200, { check: { status: 'failed' } });
+            }
+            const retryAfterSeconds = waitMs > 0 ? Math.max(1, Math.ceil((retryDeadline - Date.now()) / 1000)) : 60;
+            return send(res, 200, { check: { status: 'pending', retryAfterSeconds } });
           }
           if (result.status === 'failed') {
             await pool.query("UPDATE account_check_logs SET status = 'failed' WHERE id = $1", [logId]);
@@ -969,6 +1029,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
           try { await pool.query("UPDATE account_check_logs SET status = 'unknown', retry_at = now() + interval '1 minute' WHERE id = $1 AND status IN ('pending', 'unknown')", [logId]); } catch {}
           if (!err.status) console.error('[check-account] failed:', `phase=${phase}`, `name=${err?.name || 'Error'}`, `code=${String(err?.cause?.code || err?.code || '-').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || '-'}`);
           throw err.status ? err : error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
+        } finally {
+          if (waitMs > 0) removeCheckWaiter(refId, onOutcome);
         }
       }
       if (req.method === 'GET' && path === '/api/ratings') {
@@ -1167,7 +1229,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const nickname = typeof data?.sn === 'string' ? data.sn.trim().slice(0, 120) : '';
         const checkStatus = status === 'Pending' || String(data?.rc) === '03' ? 'pending' : status === 'Sukses' && String(data?.rc) === '00' && nickname ? 'success' : status === 'Gagal' ? 'failed' : null;
         if (checkStatus && Object.values(checkGames).some(game => game.sku === data?.buyer_sku_code)) {
-          if (await applyAsyncCheck(pool, { refId, sku: data?.buyer_sku_code, customerNo: data?.customer_no, status: checkStatus, nickname })) {
+          if (await applyAndNotifyCheck({ refId, sku: data?.buyer_sku_code, customerNo: data?.customer_no, status: checkStatus, nickname })) {
             return send(res, 200, { received: true, applied: true });
           }
         }
@@ -1198,8 +1260,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         }
         const report = checkReport(new URL(req.url, 'http://localhost').searchParams);
         if (!report || !idPattern.test(report.refId)) return send(res, 200, { received: true, applied: false });
-        const applied = await applyAsyncCheck(pool, report);
-        return send(res, 200, { received: true, applied });
+        const updated = await applyAndNotifyCheck(report);
+        return send(res, 200, { received: true, applied: Boolean(updated) });
       }
       // ponytail: refund hanya untuk pesanan yang sudah dibayar tetapi itemnya belum terkirim; 'manual' menandai dana yang dikembalikan di luar sistem.
       if (req.method === 'GET' && path === '/api/admin/refunds') {

@@ -794,6 +794,85 @@ test('report callback Otomax memverifikasi token rahasia lalu memperbarui status
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('cek nickname menahan koneksi pending dan langsung mengembalikan hasil report callback Otomax', async () => {
+  const secret = 'otomax-report-secret';
+  let log = null;
+  let providerCalls = 0;
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] };
+    if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [] };
+    if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] };
+    if (sql.startsWith('SELECT sku, price FROM supplier_products')) return { rows: [{ sku: 'mlcek', price: 5 }] };
+    if (sql.startsWith('SELECT count(*)::int AS count FROM account_check_logs')) return { rows: [{ count: 0 }] };
+    if (sql.startsWith('INSERT INTO account_check_logs')) {
+      log = { id: 1, refId: params[4], game: params[1], user_id: params[2], zone_id: params[3], customer_no: params[5], buyer_sku_code: params[6], status: 'pending', nickname: null, region: '' };
+      return { rows: [{ id: 1, refId: params[4] }] };
+    }
+    if (sql.startsWith("UPDATE account_check_logs SET status = 'pending'")) return { rows: [] };
+    if (sql.startsWith('UPDATE account_check_logs SET status = $4')) {
+      if (!log || log.refId !== params[0] || !['pending', 'unknown'].includes(log.status)) return { rows: [] };
+      log = { ...log, status: params[3], nickname: params[3] === 'success' ? params[4] : log.nickname };
+      return { rows: [log] };
+    }
+    if (sql.startsWith('INSERT INTO account_checks')) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+
+  let base = '';
+  let pendingReport = null;
+  const handler = createHandler({
+    pool,
+    env: { ...checkEnv, DIGIFLAZZ_OTOMAX_REPORT_SECRET: secret },
+    checkReportWaitMs: 60,
+    fetchImpl: withAuth(async url => {
+      providerCalls++;
+      const request = new URL(url);
+      const refId = request.searchParams.get('idtrx');
+      if (pendingReport) {
+        const query = pendingReport;
+        pendingReport = null;
+        setTimeout(() => { void fetch(`${base}/api/webhooks/otomax/${secret}?clientid=${refId}&${query}`); }, 15);
+      }
+      return otomaxResponse(otomaxReply(request.searchParams.get('kodeproduk'), request.searchParams.get('tujuan'), 'pending'));
+    }),
+  });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+    const checkCall = () => fetch(`${base}/api/check-account`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }),
+    });
+
+    pendingReport = 'kp=mlcek&msisdn=12345100&statuscode=1&sn=InstantPlayer';
+    const successRes = await checkCall();
+    assert.equal(successRes.status, 200);
+    const successPayload = await successRes.json();
+    assert.equal(successPayload.check.nickname, 'InstantPlayer');
+    assert.equal(successPayload.check.cached, false);
+    assert.ok(successPayload.check.checkedAt);
+    assert.equal(providerCalls, 1);
+
+    log = null;
+    pendingReport = 'kp=mlcek&msisdn=12345100&statuscode=2&sn=';
+    const failRes = await checkCall();
+    assert.equal(failRes.status, 200);
+    assert.deepEqual(await failRes.json(), { check: { status: 'failed' } });
+    assert.equal(providerCalls, 2);
+
+    log = null;
+    pendingReport = null;
+    const timeoutRes = await checkCall();
+    assert.equal(timeoutRes.status, 200);
+    const timeoutPayload = await timeoutRes.json();
+    assert.equal(timeoutPayload.check.status, 'pending');
+    assert.ok(timeoutPayload.check.retryAfterSeconds >= 1 && timeoutPayload.check.retryAfterSeconds <= 60);
+    assert.equal(providerCalls, 3);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('duplicate paid notification claims exactly one Digi request', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   let status = 'pending', calls = 0, claimed = false;
