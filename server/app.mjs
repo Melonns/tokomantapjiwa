@@ -387,11 +387,11 @@ export async function reconcilePending(pool, fetchImpl, env, order) {
 // ponytail: pull Digiflazz hanya saat sinkron diminta; INSERT + DELETE memakai tanda synced_at yang sama supaya pembacaan konsisten.
 // ponytail: harga produk mode 'auto' dihitung ulang dari modal + aturan kategori tiap katalog supplier disinkronkan,
 // sehingga admin tidak perlu mengetik harga satu per satu; baris 'manual' tidak pernah disentuh.
-async function repriceAutoProducts(pool) {
+async function repriceAutoProducts(pool, provider = 'midtrans') {
   const { rows } = await pool.query(`SELECT p.id, p.price, s.category, s.price AS cost FROM products p JOIN supplier_products s ON s.sku = p.digi_sku WHERE p.price_mode = 'auto'`);
   const changes = [];
   for (const row of rows) {
-    const next = suggestPrice(Number(row.cost), row.category);
+    const next = suggestPrice(Number(row.cost), row.category, undefined, provider);
     if (next == null || next === Number(row.price)) continue;
     changes.push({ sku: row.id, from: Number(row.price), to: next });
   }
@@ -657,8 +657,17 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       if (req.method === 'POST' && path === '/api/admin/supplier-products/sync') {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const { items, syncedAt } = await saveSupplierCatalog(pool, fetchImpl, env);
-        const repriced = await repriceAutoProducts(pool);
+        const repriced = await repriceAutoProducts(pool, paymentProvider(env));
         return send(res, 200, { synced: items.length, catalogFetchedAt: syncedAt.toISOString(), autoPriced: repriced.length, priceChanges: repriced.slice(0, 5) });
+      }
+      if (req.method === 'POST' && path === '/api/admin/products/reprice') {
+        await authenticatedAdmin(req, pool, fetchImpl, env);
+        let body;
+        try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
+        const provider = body?.provider;
+        if (provider !== 'midtrans' && provider !== 'sumopod') throw error(400, 'Mode biaya pembayaran tidak valid.');
+        const repriced = await repriceAutoProducts(pool, provider);
+        return send(res, 200, { provider, autoPriced: repriced.length, priceChanges: repriced.slice(0, 5) });
       }
       // ponytail: ikon game diambil ulang dari App Store agar tidak ketinggalan saat ada kolaborasi atau ulang tahun.
       if (req.method === 'POST' && path === '/api/admin/game-icons/refresh') {

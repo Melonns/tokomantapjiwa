@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { availablePaymentMethods, marginBand, priceHealth, qrisFee, QRIS_FEE_PCT, suggestPrice, VA_FEE_RP, VA_METHOD_IDS, VA_MIN_ORDER, voucherDiscount } from './pricing.mjs';
+import { availablePaymentMethods, marginBand, priceHealth, qrisFee, qrisFlatFee, QRIS_FEE_PCT, suggestPrice, SUMOPOD_QRIS_FLAT_RP, VA_FEE_RP, VA_METHOD_IDS, VA_MIN_ORDER, voucherDiscount } from './pricing.mjs';
 
 test('saran harga mengikuti modal + biaya QRIS dan dibulatkan ke atas', () => {
   // Angka nyata dari katalog supplier: 10% di nominal kecil, turun di nominal besar.
   assert.equal(suggestPrice(1605, 'Games'), 1800);
   assert.equal(suggestPrice(28343, 'Games'), 30600);
-  assert.equal(suggestPrice(60135, 'Games'), 63600);
-  // Contoh nyata dari pemilik toko: Weekly Diamond Pass 2x modal 60.588, pasar menjual 64.600.
-  assert.equal(suggestPrice(60588, 'Games'), 64100);
+  assert.equal(suggestPrice(60135, 'Games'), 64200);
+  // Contoh nyata dari pemilik toko: Weekly Diamond Pass 2x modal 60.588.
+  assert.equal(suggestPrice(60588, 'Games'), 64700);
   assert.equal(suggestPrice(10175, 'Pulsa'), 11500);
   assert.equal(suggestPrice(19830, 'Pulsa'), 21200);
   assert.equal(suggestPrice(50270, 'E-Money'), 51700);
@@ -20,11 +20,17 @@ test('saran harga mengikuti modal + biaya QRIS dan dibulatkan ke atas', () => {
   assert.equal(suggestPrice(null, 'Games'), null);
   assert.equal(suggestPrice(undefined, 'Games'), null);
   assert.equal(suggestPrice('abc', 'Games'), null);
+  assert.equal(SUMOPOD_QRIS_FLAT_RP, 300);
+  assert.equal(qrisFlatFee('midtrans'), 0);
+  assert.equal(qrisFlatFee('sumopod'), 300);
+  assert.equal(suggestPrice(1605, 'Games', undefined, 'sumopod'), 2100);
+  assert.equal(suggestPrice(28343, 'Games', undefined, 'sumopod'), 30900);
+  assert.equal(suggestPrice(5, 'Games', undefined, 'sumopod'), 400);
 });
 
 test('margin turun saat modal naik, kategori tak dikenal dapat default', () => {
   const games = [100, 20000, 100000, 300000].map((cost) => marginBand('Games', cost).pct);
-  assert.deepEqual(games, [10, 7, 5, 4]);
+  assert.deepEqual(games, [10, 7, 6, 5]);
   // Pembulatan harus halus supaya harga tidak melompat jauh di atas modal.
   assert.deepEqual([100, 20000, 100000, 300000].map((cost) => marginBand('Games', cost).grid), [100, 100, 100, 100]);
   const pulsa = [10175, 19830, 48785, 98685].map((cost) => suggestPrice(cost, 'Pulsa'));
@@ -52,6 +58,14 @@ test('sisa bersih dihitung setelah biaya QRIS', () => {
   assert.equal(besar.vaSafe, true);
   assert.equal(priceHealth('', 1605, 'Games'), null);
   assert.equal(priceHealth(1800, 0, 'Games'), null);
+  assert.equal(qrisFee(1700, 'sumopod'), 312);
+  const sumoAman = priceHealth(2100, 1605, 'Games', 'sumopod');
+  assert.equal(sumoAman.level, 'aman');
+  assert.equal(sumoAman.fee, 315);
+  assert.equal(sumoAman.netRp, 180);
+  const sumoRugi = priceHealth(1800, 1605, 'Games', 'sumopod');
+  assert.equal(sumoRugi.level, 'rugi');
+  assert.equal(sumoRugi.netRp, -118);
 });
 
 test('kanal ber-minOrder disembunyikan di pesanan kecil', () => {

@@ -1026,6 +1026,62 @@ test('sinkron katalog menyimpan hasil pull ke tabel supplier_products', async ()
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('admin reprice menghitung ulang harga otomatis sesuai mode biaya QRIS Midtrans atau Sumopod', async () => {
+  let isAdmin = false;
+  const rows = [
+    { id: 'ml10', price: 30600, category: 'Games', cost: 28343 },
+    { id: 'ff12', price: 1800, category: 'Games', cost: 1605 },
+  ];
+  const updates = [];
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: isAdmin ? [{ user_id: ownerId }] : [] };
+    if (sql.startsWith('SELECT p.id, p.price')) return { rows };
+    if (sql.startsWith('UPDATE products SET price = $2')) {
+      updates.push(params);
+      const target = rows.find(item => item.id === params[0]);
+      if (target) target.price = params[1];
+      return { rows: [] };
+    }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('unexpected external request'); }) })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/admin/products/reprice`;
+    const post = body => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify(body) });
+
+    const forbidden = await post({ provider: 'sumopod' });
+    assert.equal(forbidden.status, 403);
+
+    isAdmin = true;
+    const invalid = await post({ provider: 'lainnya' });
+    assert.equal(invalid.status, 400);
+
+    const sumoRes = await post({ provider: 'sumopod' });
+    assert.equal(sumoRes.status, 200);
+    assert.deepEqual(await sumoRes.json(), {
+      provider: 'sumopod',
+      autoPriced: 2,
+      priceChanges: [
+        { sku: 'ml10', from: 30600, to: 30900 },
+        { sku: 'ff12', from: 1800, to: 2100 },
+      ],
+    });
+
+    const midRes = await post({ provider: 'midtrans' });
+    assert.equal(midRes.status, 200);
+    assert.deepEqual(await midRes.json(), {
+      provider: 'midtrans',
+      autoPriced: 2,
+      priceChanges: [
+        { sku: 'ml10', from: 30900, to: 30600 },
+        { sku: 'ff12', from: 2100, to: 1800 },
+      ],
+    });
+    assert.deepEqual(updates, [['ml10', 30900], ['ff12', 2100], ['ml10', 30600], ['ff12', 1800]]);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test('admin pricing sets selling price, blocks unsupported formats and missing SKUs', async () => {
   let isAdmin = true, inserts = 0, supplierCalls = 0, last;
   const mirror = [
