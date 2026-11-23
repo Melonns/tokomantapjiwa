@@ -39,10 +39,9 @@ const categoryFormats = {
 };
 const formatFor = (game, category) => customerFormats[String(game || '').toUpperCase()] || categoryFormats[String(category || '').trim()] || null;
 const error = (status, message) => Object.assign(new Error(message), { status });
-const checkDiagnostic = (response, payload, expected) => {
-  const data = payload?.data;
-  const code = value => typeof value === 'string' || typeof value === 'number' ? String(value).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || '-' : '-';
-  return `http=${response.status} status=${code(data?.status ?? payload?.status)} rc=${code(data?.rc ?? payload?.rc)} ref_match=${data?.ref_id === expected.refId} sku_match=${data?.buyer_sku_code === expected.sku} customer_match=${data?.customer_no === expected.customerNo} sn_type=${typeof data?.sn}`;
+const checkDiagnostic = (response, reply, expected) => {
+  const result = checkResult(reply, expected);
+  return `http=${response.status} status=${result?.status || '-'} sku_match=${result !== null} customer_match=${result !== null} reply_type=${typeof reply}`;
 };
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const paymentEnvironment = env => paymentProvider(env) === 'sumopod'
@@ -936,15 +935,15 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         try {
           const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price), refId);
           const response = await fetchImpl(provider.url, provider.options);
-          let payload = null;
-          try { payload = await response.json(); } catch {}
-          const result = checkResult(payload, provider.expected);
+          let reply = '';
+          try { reply = await response.text(); } catch {}
+          const result = checkResult(reply, provider.expected);
           if (!response.ok && !['pending', 'failed'].includes(result?.status)) {
-            console.error('[check-account] Digiflazz rejected request:', checkDiagnostic(response, payload, provider.expected));
+            console.error('[check-account] Otomax rejected request:', checkDiagnostic(response, reply, provider.expected));
             throw error(502, 'Fitur periksa nickname sedang tidak tersedia. Coba lagi nanti.');
           }
           if (!result) {
-            console.error('[check-account] Digiflazz response not verified:', checkDiagnostic(response, payload, provider.expected));
+            console.error('[check-account] Otomax response not verified:', checkDiagnostic(response, reply, provider.expected));
             throw error(502, 'Digiflazz belum memberi nickname yang dapat diverifikasi.');
           }
           if (result.status === 'pending') {

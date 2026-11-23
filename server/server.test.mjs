@@ -4,7 +4,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './core.mjs';
 import { createHandler, digiRequest, reconcilePending } from './app.mjs';
-import { checkGames, checkRequest, checkResult } from './check.mjs';
+import { checkGames, checkReady, checkRequest, checkResult } from './check.mjs';
 
 // Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
 // (misalnya 6000 atau 6665-6669) sehingga tes gagal tanpa sebab yang jelas.
@@ -19,15 +19,21 @@ const withAuth = next => async (url, options) => url === 'https://sample.supabas
   ? { ok: true, status: 200, json: async () => ({ id: ownerId, email_confirmed_at: '2026-01-01T00:00:00Z' }) }
   : next(url, options);
 
-test('cek Digiflazz membedakan pending, sukses, gagal, dan ref_id saat status dicek ulang', () => {
+test('Otomax nickname check builds GET requests and parses only matching pending/success/failure replies', () => {
   const expected = { refId: 'ref-fixed', customerNo: '12345100', sku: 'mlcek' };
-  const response = status => ({ data: { ref_id: expected.refId, customer_no: expected.customerNo, buyer_sku_code: expected.sku, status, rc: status === 'Pending' ? '03' : status === 'Sukses' ? '00' : '02', sn: status === 'Sukses' ? 'Player' : '' } });
-  assert.deepEqual(checkResult(response('Pending'), expected), { status: 'pending' });
-  assert.deepEqual(checkResult(response('Sukses'), expected), { status: 'success', nickname: 'Player', region: '' });
-  assert.deepEqual(checkResult(response('Gagal'), expected), { status: 'failed' });
-  assert.equal(checkResult({ ...response('Pending'), data: { ...response('Pending').data, customer_no: 'other' } }, expected), null);
-  const retry = JSON.parse(checkRequest(checkEnv, checkGames['MOBILE LEGENDS'], { userId: '12345', zoneId: '100' }, { customer_format: 'ml_concat' }, 5, expected.refId).options.body);
-  assert.equal(retry.ref_id, expected.refId);
+  assert.deepEqual(checkResult('Request mlcek ke 12345100 segera diproses Saldo=95', expected), { status: 'pending' });
+  assert.deepEqual(checkResult('TRX mlcek.12345100 BERHASIL, HRG:5 SN:Player. SISA SALDO:95', expected), { status: 'success', nickname: 'Player', region: '' });
+  assert.deepEqual(checkResult('TRX mlcek.12345100 GAGAL, ID salah. SISA SALDO:100', expected), { status: 'failed' });
+  assert.equal(checkResult('TRX mlcek.999 BERHASIL, HRG:5 SN:Player. SISA SALDO:95', expected), null);
+  const request = checkRequest(checkEnv, checkGames['MOBILE LEGENDS'], { userId: '12345', zoneId: '100' }, { customer_format: 'ml_concat' }, 5, expected.refId);
+  const url = new URL(request.url);
+  assert.equal(url.origin + url.pathname, 'https://api.digiflazz.com/v1/buyer/otomax/transaction');
+  assert.equal(request.options.method, 'GET');
+  assert.deepEqual(Object.fromEntries(url.searchParams), { id: 'otomax-id', pin: '1234', user: 'otomax-user', pass: 'otomax-pass', kodeproduk: 'mlcek', tujuan: '12345100', idtrx: expected.refId, hargamax: '5', testing: 'true' });
+  assert.equal(request.expected.refId, expected.refId);
+  assert.equal(checkReady({ ...checkEnv, DIGIFLAZZ_TESTING: 'false' }), true);
+  const productionCheck = checkRequest({ ...checkEnv, DIGIFLAZZ_TESTING: 'true', DIGIFLAZZ_OTOMAX_TESTING: 'false' }, checkGames['MOBILE LEGENDS'], { userId: '12345', zoneId: '100' }, { customer_format: 'ml_concat' }, 5, expected.refId);
+  assert.equal(new URL(productionCheck.url).searchParams.has('testing'), false);
 });
 
 test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
@@ -912,7 +918,7 @@ test('admin pricing sets selling price, blocks unsupported formats and missing S
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('produk menandai dukungan pemeriksaan per brand dan status pemeriksaan mengikuti konfigurasi server', async () => {
+test('produk menandai dukungan pemeriksaan per brand dan Otomax check aktif hanya dengan kredensial lengkap', async () => {
   const rows = [
     { id: 'ml10', name: '10 Diamonds', game: 'MOBILE LEGENDS', price: 25000, format: 'ml_concat', category: 'Games' },
     { id: 'ff12', name: 'Free Fire 12 Diamond', game: 'FREE FIRE', price: 20000, format: 'plain', category: 'Games' },
@@ -920,14 +926,14 @@ test('produk menandai dukungan pemeriksaan per brand dan status pemeriksaan meng
   ];
   const pool = { async query(sql) { if (sql.startsWith('SELECT p.id, p.name, p.game')) return { rows }; throw Error('unexpected SQL: ' + sql); } };
   const open = (serverEnv) => createServer(createHandler({ pool, env: serverEnv, fetchImpl: withAuth(() => { throw Error('unexpected external request'); }) })).listen(portAman(), '127.0.0.1');
-  const first = open({ ...env, DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', DIGIFLAZZ_TESTING: 'true' });
+  const first = open({ ...env, DIGIFLAZZ_OTOMAX_TESTING: 'true' });
   try {
     await new Promise(resolve => first.once('listening', resolve));
     const body = await (await fetch(`http://127.0.0.1:${first.address().port}/api/products`)).json();
     assert.deepEqual(body.products.map(product => product.checkable), [true, true, false]);
     assert.equal(body.checkAvailable, false);
   } finally { await new Promise(resolve => first.close(resolve)); }
-  const second = open({ ...env, DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', DIGIFLAZZ_TESTING: 'false' });
+  const second = open({ ...env, DIGIFLAZZ_OTOMAX_ID: 'otomax-id', DIGIFLAZZ_OTOMAX_PIN: '1234', DIGIFLAZZ_OTOMAX_USER: 'otomax-user', DIGIFLAZZ_OTOMAX_PASS: 'otomax-pass', DIGIFLAZZ_OTOMAX_TESTING: 'false' });
   try {
     await new Promise(resolve => second.once('listening', resolve));
     const body = await (await fetch(`http://127.0.0.1:${second.address().port}/api/products`)).json();
@@ -935,7 +941,14 @@ test('produk menandai dukungan pemeriksaan per brand dan status pemeriksaan meng
   } finally { await new Promise(resolve => second.close(resolve)); }
 });
 
-const checkEnv = { ...env, DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', DIGIFLAZZ_TESTING: 'false' };
+const checkEnv = { ...env, DIGIFLAZZ_OTOMAX_TESTING: 'true', DIGIFLAZZ_OTOMAX_ID: 'otomax-id', DIGIFLAZZ_OTOMAX_PIN: '1234', DIGIFLAZZ_OTOMAX_USER: 'otomax-user', DIGIFLAZZ_OTOMAX_PASS: 'otomax-pass' };
+const otomaxReply = (sku, customer, status = 'success', nickname = 'Player') => status === 'pending'
+  ? `Request ${sku} ke ${customer} segera diproses Saldo=95`
+  : status === 'failed'
+    ? `TRX ${sku}.${customer} GAGAL, Nomor tujuan salah. SISA SALDO 95`
+    : `TRX ${sku}.${customer} BERHASIL, HRG:5 SN:${nickname}. SISA SALDO:95`;
+const otomaxResponse = (reply, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => reply });
+
 
 test('pemeriksaan nickname memakai layanan sesuai brand produk, menyimpan hasil, dan mencatat panggilan provider', async () => {
   const statements = [];
@@ -953,9 +966,10 @@ test('pemeriksaan nickname memakai layanan sesuai brand produk, menyimpan hasil,
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
     provider = { url, options };
-    const request = JSON.parse(options.body);
-    return { ok: true, status: 200, json: async () => ({ data: { ref_id: request.ref_id, customer_no: request.customer_no, buyer_sku_code: request.buyer_sku_code, status: 'Sukses', rc: '00', sn: 'Purbaya Sadewa. RI' } }) };
+    const request = new URL(url);
+    return otomaxResponse(otomaxReply(request.searchParams.get('kodeproduk'), request.searchParams.get('tujuan'), 'success', 'Purbaya Sadewa. RI'));
   }) });
+
   const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
@@ -966,14 +980,11 @@ test('pemeriksaan nickname memakai layanan sesuai brand produk, menyimpan hasil,
     assert.equal(check.region, '');
     assert.equal(check.cached, false);
     assert.equal(checkGames['MOBILE LEGENDS'].sku, 'mlcek');
-    assert.equal(provider.url, 'https://api.digiflazz.com/v1/transaction');
-    const digiRequest = JSON.parse(provider.options.body);
-    assert.equal(digiRequest.username, 'buyer');
-    assert.equal(digiRequest.buyer_sku_code, 'mlcek');
-    assert.equal(digiRequest.customer_no, '12345100');
-    assert.equal(digiRequest.max_price, 5);
-    assert.ok(digiRequest.ref_id);
-    assert.equal(digiRequest.sign, createHash('md5').update(`buyerapi-secret${digiRequest.ref_id}`).digest('hex'));
+    const otomaxRequest = new URL(provider.url);
+    assert.equal(otomaxRequest.origin + otomaxRequest.pathname, 'https://api.digiflazz.com/v1/buyer/otomax/transaction');
+    assert.equal(provider.options.method, 'GET');
+    assert.deepEqual(Object.fromEntries(otomaxRequest.searchParams), { id: 'otomax-id', pin: '1234', user: 'otomax-user', pass: 'otomax-pass', kodeproduk: 'mlcek', tujuan: '12345100', idtrx: otomaxRequest.searchParams.get('idtrx'), hargamax: '5', testing: 'true' });
+    assert.ok(otomaxRequest.searchParams.get('idtrx'));
     const saved = statements.find(item => item.sql.startsWith('INSERT INTO account_checks'));
     assert.match(saved.sql, /ON CONFLICT \(game, user_id, zone_id\) DO UPDATE SET nickname = EXCLUDED\.nickname/);
     assert.deepEqual(saved.params, ['MOBILE LEGENDS', '12345', '100', 'Purbaya Sadewa. RI', '']);
@@ -1000,7 +1011,7 @@ test('cache tetap gratis walau kuota provider habis; cache miss menghabiskan sat
     if (sql.startsWith('INSERT INTO account_checks')) { cached = true; return { rows: [] }; }
     throw Error('unexpected SQL: ' + sql);
   } };
-  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => { providerCalls++; const request = JSON.parse(options.body); return { ok: true, status: 200, json: async () => ({ data: { ref_id: request.ref_id, customer_no: request.customer_no, buyer_sku_code: request.buyer_sku_code, status: 'Sukses', rc: '00', sn: 'New Player' } }) }; }) });
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async url => { providerCalls++; const request = new URL(url); return otomaxResponse(otomaxReply(request.searchParams.get('kodeproduk'), request.searchParams.get('tujuan'), 'success', 'New Player')); }) });
   const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
@@ -1026,7 +1037,7 @@ test('cache tetap gratis walau kuota provider habis; cache miss menghabiskan sat
 });
 
 test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa melewati data tersimpan', async () => {
-  const bodies = [];
+  const requests = [];
   const statements = [];
   const pool = { async query(sql, params) {
     statements.push(sql);
@@ -1038,10 +1049,10 @@ test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa
     if (sql.startsWith('INSERT') || sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
-  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
-    bodies.push(JSON.parse(options.body));
-    const request = bodies[0];
-    return { ok: true, status: 200, json: async () => ({ data: { ref_id: request.ref_id, customer_no: request.customer_no, buyer_sku_code: request.buyer_sku_code, status: 'Sukses', rc: '00', sn: 'FreeFire Player' } }) };
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async url => {
+    const request = new URL(url);
+    requests.push(request);
+    return otomaxResponse(otomaxReply(request.searchParams.get('kodeproduk'), request.searchParams.get('tujuan'), 'success', 'FreeFire Player'));
   }) });
   const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
@@ -1049,12 +1060,11 @@ test('brand Free Fire memakai layanan pemeriksaan Free Fire tanpa Zone ID; paksa
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders }, body: JSON.stringify({ productId: 'ff12', userId: '456', force: true }) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).check.nickname, 'FreeFire Player');
-    assert.equal(bodies[0].username, 'buyer');
-    assert.equal(bodies[0].buyer_sku_code, 'pre34729032');
-    assert.equal(bodies[0].customer_no, '456');
-    assert.equal(bodies[0].max_price, 5);
-    assert.ok(bodies[0].ref_id);
-    assert.equal(bodies[0].sign, createHash('md5').update(`buyerapi-secret${bodies[0].ref_id}`).digest('hex'));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].searchParams.get('kodeproduk'), 'pre34729032');
+    assert.equal(requests[0].searchParams.get('tujuan'), '456');
+    assert.equal(requests[0].searchParams.get('hargamax'), '5');
+    assert.ok(requests[0].searchParams.get('idtrx'));
     assert.ok(statements.every(sql => !sql.startsWith('SELECT nickname')));
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
@@ -1108,11 +1118,11 @@ test('cek nickname pending memakai ulang ref_id setelah jeda dan tidak membuat t
     if (sql.startsWith('INSERT INTO account_checks')) return { rows: [] };
     throw Error('unexpected SQL: ' + sql);
   } };
-  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async (url, options) => {
-    const request = JSON.parse(options.body);
+  const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async url => {
+    const request = new URL(url);
     requests.push(request);
-    const status = requests.length === 1 ? 'Pending' : 'Sukses';
-    return { ok: status !== 'Pending', status: status === 'Pending' ? 400 : 200, json: async () => ({ data: { ref_id: request.ref_id, customer_no: request.customer_no, buyer_sku_code: request.buyer_sku_code, status, rc: status === 'Pending' ? '03' : '00', sn: status === 'Sukses' ? 'Player' : '' } }) };
+    const reply = requests.length === 1 ? otomaxReply('mlcek', '30001400', 'pending') : otomaxReply('mlcek', '30001400', 'success');
+    return otomaxResponse(reply);
   }) });
   const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
@@ -1174,8 +1184,8 @@ test('ID tidak ketemu dan provider mati tidak disimpan ke cache', async () => {
     throw Error('unexpected SQL: ' + sql);
   } };
   const handler = createHandler({ pool, env: checkEnv, fetchImpl: withAuth(async () => mode === 'missing'
-    ? { ok: true, status: 200, json: async () => ({ error: true, code: 404, message: 'Account not found', data: null }) }
-    : { ok: false, status: 500, json: async () => ({}) }) });
+    ? otomaxResponse('Account not found')
+    : otomaxResponse('Provider unavailable', 500)) });
   const server = createServer(handler).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));
@@ -1189,8 +1199,8 @@ test('ID tidak ketemu dan provider mati tidak disimpan ke cache', async () => {
     assert.equal(down.status, 502);
     assert.match((await down.json()).error, /tidak tersedia/);
     assert.equal(savedChecks, 0);
-    assert.ok(diagnostics.some(line => line.includes('Digiflazz response not verified: http=200')));
-    assert.ok(diagnostics.some(line => line.includes('Digiflazz rejected request: http=500')));
+    assert.ok(diagnostics.some(line => line.includes('Otomax response not verified: http=200')));
+    assert.ok(diagnostics.some(line => line.includes('Otomax rejected request: http=500')));
     assert.ok(diagnostics.every(line => !line.includes('999') && !line.includes('Account not found')));
   } finally {
     console.error = originalError;
