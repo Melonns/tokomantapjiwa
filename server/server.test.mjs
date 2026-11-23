@@ -4,7 +4,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './core.mjs';
 import { createHandler, digiRequest, reconcilePending } from './app.mjs';
-import { checkGames, checkReady, checkRequest, checkResult } from './check.mjs';
+import { checkGames, checkReady, checkReport, checkRequest, checkResult } from './check.mjs';
 
 // Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
 // (misalnya 6000 atau 6665-6669) sehingga tes gagal tanpa sebab yang jelas.
@@ -34,6 +34,23 @@ test('Otomax nickname check builds GET requests and parses only matching pending
   assert.equal(checkReady({ ...checkEnv, DIGIFLAZZ_TESTING: 'false' }), true);
   const productionCheck = checkRequest({ ...checkEnv, DIGIFLAZZ_TESTING: 'true', DIGIFLAZZ_OTOMAX_TESTING: 'false' }, checkGames['MOBILE LEGENDS'], { userId: '12345', zoneId: '100' }, { customer_format: 'ml_concat' }, 5, expected.refId);
   assert.equal(new URL(productionCheck.url).searchParams.has('testing'), false);
+});
+
+test('checkReport parses Otomax callback query params strictly by check SKU and statuscode', () => {
+  const refId = '44444444-4444-4444-8444-444444444444';
+  assert.deepEqual(checkReport(new URLSearchParams({
+    clientid: refId, kp: 'MLCEK', msisdn: '12345100', statuscode: '1', sn: 'Player.',
+  })), { refId, sku: 'mlcek', customerNo: '12345100', status: 'success', nickname: 'Player' });
+  assert.deepEqual(checkReport({
+    clientid: refId, kp: 'pre34729032', msisdn: '98765', statuscode: '1', sn: '',
+    msg: 'TRX pre34729032.98765 BERHASIL, HRG:5 SN:FF Hero. SISA SALDO:95',
+  }), { refId, sku: 'pre34729032', customerNo: '98765', status: 'success', nickname: 'FF Hero' });
+  assert.deepEqual(checkReport({
+    clientid: refId, kp: 'mlcek', msisdn: '12345100', statuscode: '2', sn: '',
+  }), { refId, sku: 'mlcek', customerNo: '12345100', status: 'failed', nickname: '' });
+  assert.equal(checkReport({ clientid: refId, kp: 'ml10', msisdn: '12345100', statuscode: '1', sn: 'Player' }), null);
+  assert.equal(checkReport({ clientid: refId, kp: 'mlcek', msisdn: '12345100', statuscode: '1', sn: '', msg: 'invalid' }), null);
+  assert.equal(checkReport({ clientid: refId, kp: 'mlcek', msisdn: '12345100', statuscode: '9', sn: 'Player' }), null);
 });
 
 test('checkout validates identifiers and rejects non-scalar/oversized input', () => {
@@ -713,6 +730,67 @@ test('webhook Digiflazz menyimpan nickname cek hanya untuk transaksi yang cocok'
     assert.equal(log.status, 'success');
     assert.equal(log.nickname, 'Player');
     assert.deepEqual(cached, ['MOBILE LEGENDS', '30001', '400', 'Player', '']);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('report callback Otomax memverifikasi token rahasia lalu memperbarui status dan cache nickname', async () => {
+  const refId = '44444444-4444-4444-8444-444444444444';
+  const secret = 'otomax-report-secret';
+  let log = null;
+  let cached = null;
+  let dbCalls = 0;
+  const pool = { async query(sql, params) {
+    dbCalls++;
+    if (sql.startsWith('UPDATE account_check_logs')) {
+      assert.deepEqual(params.slice(0, 3), [refId, 'mlcek', '30001400']);
+      if (!log || !['pending', 'unknown'].includes(log.status)) return { rows: [] };
+      log = { ...log, status: params[3], nickname: params[3] === 'success' ? params[4] : log.nickname };
+      return { rows: [log] };
+    }
+    if (sql.startsWith('INSERT INTO account_checks')) { cached = params; return { rows: [] }; }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+
+  const unconfigured = createServer(createHandler({ pool, env: { ...env }, fetchImpl: async () => { throw Error('unexpected external request'); } })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => unconfigured.once('listening', resolve));
+    const res = await fetch(`http://127.0.0.1:${unconfigured.address().port}/api/webhooks/otomax/${secret}?clientid=${refId}&kp=mlcek&msisdn=30001400&statuscode=1&sn=Player`);
+    assert.equal(res.status, 503);
+    assert.equal(dbCalls, 0);
+  } finally { await new Promise(resolve => unconfigured.close(resolve)); }
+
+  const server = createServer(createHandler({ pool, env: { ...env, DIGIFLAZZ_OTOMAX_REPORT_SECRET: secret }, fetchImpl: async () => { throw Error('unexpected external request'); } })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}/api/webhooks/otomax`;
+
+    const wrongToken = await fetch(`${base}/wrong-secret?clientid=${refId}&kp=mlcek&msisdn=30001400&statuscode=1&sn=Player`);
+    assert.equal(wrongToken.status, 401);
+    assert.equal(dbCalls, 0);
+
+    const ping = await fetch(`${base}/${secret}`);
+    assert.equal(ping.status, 200);
+    assert.deepEqual(await ping.json(), { received: true, applied: false });
+    const badId = await fetch(`${base}/${secret}?clientid=not-a-uuid&kp=mlcek&msisdn=30001400&statuscode=1&sn=Player`);
+    assert.equal(badId.status, 200);
+    assert.deepEqual(await badId.json(), { received: true, applied: false });
+    assert.equal(dbCalls, 0);
+
+    log = { game: 'MOBILE LEGENDS', user_id: '30001', zone_id: '400', nickname: null, region: '', status: 'pending' };
+    const successRes = await fetch(`${base}/${secret}?clientid=${refId}&kp=mlcek&msisdn=30001400&statuscode=1&sn=ProPlayer`);
+    assert.equal(successRes.status, 200);
+    assert.deepEqual(await successRes.json(), { received: true, applied: true });
+    assert.equal(log.status, 'success');
+    assert.equal(log.nickname, 'ProPlayer');
+    assert.deepEqual(cached, ['MOBILE LEGENDS', '30001', '400', 'ProPlayer', '']);
+
+    cached = null;
+    log = { game: 'MOBILE LEGENDS', user_id: '30001', zone_id: '400', nickname: null, region: '', status: 'pending' };
+    const failRes = await fetch(`${base}/${secret}?clientid=${refId}&kp=mlcek&msisdn=30001400&statuscode=2&sn=`);
+    assert.equal(failRes.status, 200);
+    assert.deepEqual(await failRes.json(), { received: true, applied: true });
+    assert.equal(log.status, 'failed');
+    assert.equal(cached, null);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 

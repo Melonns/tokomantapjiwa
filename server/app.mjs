@@ -2,7 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { paymentProvider, sumopodBody, sumopodConfig, sumopodExpiresAt, sumopodMethods, sumopodPaymentDetail, sumopodReady, sumopodTokenValid, sumopodWebhook } from './sumopod.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
-import { checkGames, checkableGame, checkReady, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
+import { checkGames, checkableGame, checkReady, checkReport, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
 import { clientIp, createRateLimiter } from './ratelimit.mjs';
@@ -433,6 +433,12 @@ async function readRaw(req, limit = 16384) {
     if (text.length > limit) throw error(413, 'Data terlalu besar.');
   }
   return text;
+}
+
+async function applyAsyncCheck(pool, { refId, sku, customerNo, status, nickname }) {
+  const { rows: checks } = await pool.query("UPDATE account_check_logs SET status = $4, nickname = CASE WHEN $4 = 'success' THEN $5 ELSE nickname END, retry_at = CASE WHEN $4 = 'pending' THEN now() + interval '1 minute' ELSE retry_at END WHERE ref_id = $1 AND buyer_sku_code = $2 AND customer_no = $3 AND status IN ('pending', 'unknown') RETURNING game, user_id, zone_id, nickname, region, status", [refId, sku, customerNo, status, nickname]);
+  if (checks[0]?.status === 'success' && checks[0].nickname) await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [checks[0].game, checks[0].user_id, checks[0].zone_id, checks[0].nickname, checks[0].region || '']);
+  return Boolean(checks[0]);
 }
 
 // ponytail: status ketika dana sudah masuk tetapi item belum terkirim; satu-satunya status yang boleh direfund.
@@ -947,7 +953,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
             throw error(502, 'Digiflazz belum memberi nickname yang dapat diverifikasi.');
           }
           if (result.status === 'pending') {
-            await pool.query("UPDATE account_check_logs SET status = 'pending', retry_at = now() + interval '1 minute' WHERE id = $1", [logId]);
+            await pool.query("UPDATE account_check_logs SET status = 'pending', retry_at = now() + interval '1 minute' WHERE id = $1 AND status IN ('pending', 'unknown')", [logId]);
             return send(res, 200, { check: { status: 'pending', retryAfterSeconds: 60 } });
           }
           if (result.status === 'failed') {
@@ -1161,9 +1167,9 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         const nickname = typeof data?.sn === 'string' ? data.sn.trim().slice(0, 120) : '';
         const checkStatus = status === 'Pending' || String(data?.rc) === '03' ? 'pending' : status === 'Sukses' && String(data?.rc) === '00' && nickname ? 'success' : status === 'Gagal' ? 'failed' : null;
         if (checkStatus && Object.values(checkGames).some(game => game.sku === data?.buyer_sku_code)) {
-          const { rows: checks } = await pool.query("UPDATE account_check_logs SET status = $4, nickname = CASE WHEN $4 = 'success' THEN $5 ELSE nickname END, retry_at = CASE WHEN $4 = 'pending' THEN now() + interval '1 minute' ELSE retry_at END WHERE ref_id = $1 AND buyer_sku_code = $2 AND customer_no = $3 AND status IN ('pending', 'unknown') RETURNING game, user_id, zone_id, nickname, region, status", [refId, data?.buyer_sku_code, data?.customer_no, checkStatus, nickname]);
-          if (checks[0]?.status === 'success' && checks[0].nickname) await pool.query('INSERT INTO account_checks (game, user_id, zone_id, nickname, region, checked_at) VALUES ($1,$2,$3,$4,$5, now()) ON CONFLICT (game, user_id, zone_id) DO UPDATE SET nickname = EXCLUDED.nickname, region = EXCLUDED.region, checked_at = now()', [checks[0].game, checks[0].user_id, checks[0].zone_id, checks[0].nickname, checks[0].region || '']);
-          if (checks[0]) return send(res, 200, { received: true, applied: true });
+          if (await applyAsyncCheck(pool, { refId, sku: data?.buyer_sku_code, customerNo: data?.customer_no, status: checkStatus, nickname })) {
+            return send(res, 200, { received: true, applied: true });
+          }
         }
         if (status === 'Pending') {
           await pool.query("UPDATE orders SET updated_at = now() WHERE id = $1 AND digi_sku = $2 AND customer_no = $3 AND status = 'fulfillment_pending'", [refId, data?.buyer_sku_code, data?.customer_no]);
@@ -1177,6 +1183,23 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env }) {
         if (next === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', refId);
         else if (next === 'fulfillment_failed') notifyOrder(pool, fetchImpl, env, 'failed', refId);
         return send(res, 200, { received: true });
+      }
+      // ponytail: report callback Otomax (GET dengan token path rahasia) memperbarui hasil cek nickname segera tanpa menunggu jeda 1 menit.
+      if (req.method === 'GET' && path.startsWith('/api/webhooks/otomax/')) {
+        const secret = String(env.DIGIFLAZZ_OTOMAX_REPORT_SECRET || '').trim();
+        if (!secret) throw error(503, 'Report Otomax belum dikonfigurasi.');
+        let provided = '';
+        try { provided = decodeURIComponent(path.slice('/api/webhooks/otomax/'.length)).trim(); } catch {}
+        const left = Buffer.from(provided, 'utf8');
+        const right = Buffer.from(secret, 'utf8');
+        if (!provided || left.length !== right.length || !timingSafeEqual(left, right)) {
+          console.error('[webhook] otomax: token tidak sah');
+          throw error(401, 'Token tidak sah.');
+        }
+        const report = checkReport(new URL(req.url, 'http://localhost').searchParams);
+        if (!report || !idPattern.test(report.refId)) return send(res, 200, { received: true, applied: false });
+        const applied = await applyAsyncCheck(pool, report);
+        return send(res, 200, { received: true, applied });
       }
       // ponytail: refund hanya untuk pesanan yang sudah dibayar tetapi itemnya belum terkirim; 'manual' menandai dana yang dikembalikan di luar sistem.
       if (req.method === 'GET' && path === '/api/admin/refunds') {

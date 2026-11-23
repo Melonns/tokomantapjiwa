@@ -35,6 +35,8 @@ export function checkRequest(env, game, input, product, price, refId = randomUUI
   };
 }
 
+const cleanNickname = value => typeof value === 'string' ? value.trim().replace(/\.$/, '').slice(0, 120) : '';
+
 export function checkResult(reply, expected) {
   if (typeof reply !== 'string') return null;
   const sku = expected.sku.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -46,7 +48,30 @@ export function checkResult(reply, expected) {
   if (failed.test(reply.trim())) return { status: 'failed' };
   const match = reply.trim().match(success);
   if (!match) return null;
-  const nickname = typeof match[1] === 'string' ? match[1].trim().replace(/\.$/, '').slice(0, 120) : '';
+  const nickname = cleanNickname(match[1]);
   if (!nickname) return { status: 'unavailable' };
   return { status: 'success', nickname, region: '' };
+}
+
+export function checkReport(params) {
+  const get = key => {
+    const raw = params instanceof URLSearchParams ? params.get(key) : params?.[key];
+    return typeof raw === 'string' ? raw.trim() : '';
+  };
+  const refId = get('clientid');
+  const rawSku = get('kp');
+  const customerNo = get('msisdn');
+  const statuscode = get('statuscode');
+  const sku = Object.values(checkGames).find(game => game.sku.toLowerCase() === rawSku.toLowerCase())?.sku || '';
+  if (!refId || !sku || !customerNo) return null;
+  if (statuscode === '2') return { refId, sku, customerNo, status: 'failed', nickname: '' };
+  if (statuscode !== '1') return null;
+  let nickname = cleanNickname(get('sn'));
+  if (!nickname) {
+    const msg = get('msg');
+    const parsed = msg ? checkResult(msg, { sku, customerNo }) : null;
+    if (parsed?.status === 'success') nickname = parsed.nickname;
+  }
+  if (!nickname) return null;
+  return { refId, sku, customerNo, status: 'success', nickname };
 }
