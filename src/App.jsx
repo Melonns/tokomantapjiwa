@@ -2023,7 +2023,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                     <div className="check-block" aria-live="polite">
                       {(checkState === 'loading' || checkState === 'pending') && <p className="check-status" role="status"><span className="check-spinner" aria-hidden="true" />{checkState === 'pending' ? 'Menunggu...' : 'Memeriksa nickname...'}</p>}
                       {checkState === 'done' && checkResult ? (
-                        <p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''} <span className="check-note">{checkResult.cached ? 'hasil tersimpan' : 'baru diperiksa'}</span></p>
+                        <p className="check-result" role="status">Nickname: <strong>{checkResult.nickname}</strong>{checkResult.region ? ` · Region ${checkResult.region}` : ''}</p>
                       ) : null}
                       {checkState === 'error' && <p className="check-error" role="alert">{checkError}</p>}
                       {checkState === 'failed' && <p className="check-error" role="alert">Pemeriksaan gagal dari Digiflazz. Coba lagi beberapa saat lagi.</p>}

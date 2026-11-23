@@ -46,9 +46,9 @@ test('error sementara mempertahankan loading dan lanjut cek status dalam 2 detik
   assert.match(source, /error\.status = response\.status/)
 })
 
-test('hasil pemeriksaan menampilkan nama dan asal data tanpa tombol', () => {
+test('hasil pemeriksaan menampilkan nama tanpa label asal data atau tombol', () => {
   assert.match(source, /Nickname: <strong>\{checkResult\.nickname\}<\/strong>/)
-  assert.match(source, /'hasil tersimpan' : 'baru diperiksa'/)
+  assert.doesNotMatch(source, /hasil tersimpan|baru diperiksa/)
   assert.doesNotMatch(source, /className="check-again-button"|Periksa ulang/)
 })
 

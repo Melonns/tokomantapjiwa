@@ -4,7 +4,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './core.mjs';
 import { createHandler, digiRequest, reconcilePending } from './app.mjs';
-import { checkGames, checkReady, checkReport, checkRequest, checkResult } from './check.mjs';
+import { checkGames, checkReady, checkReport, checkRequest, checkResult, cleanNickname } from './check.mjs';
 
 // Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
 // (misalnya 6000 atau 6665-6669) sehingga tes gagal tanpa sebab yang jelas.
@@ -23,6 +23,9 @@ test('Otomax nickname check builds GET requests and parses only matching pending
   const expected = { refId: 'ref-fixed', customerNo: '12345100', sku: 'mlcek' };
   assert.deepEqual(checkResult('Request mlcek ke 12345100 segera diproses Saldo=95', expected), { status: 'pending' });
   assert.deepEqual(checkResult('TRX mlcek.12345100 BERHASIL, HRG:5 SN:Player. SISA SALDO:95', expected), { status: 'success', nickname: 'Player', region: '' });
+  assert.deepEqual(checkResult('TRX mlcek.12345100 BERHASIL, HRG:5 SN:User ID 73815589 Zone 2031 / Username Purbaya Sadewa. RI. SISA SALDO:95', expected), { status: 'success', nickname: 'Purbaya Sadewa. RI', region: '' });
+  assert.equal(cleanNickname('User ID 73815589 Zone 2031 / Username Purbaya Sadewa. RI'), 'Purbaya Sadewa. RI');
+  assert.equal(cleanNickname('Nickname: ProPlayer.'), 'ProPlayer');
   assert.deepEqual(checkResult('TRX mlcek.12345100 GAGAL, ID salah. SISA SALDO:100', expected), { status: 'failed' });
   assert.equal(checkResult('TRX mlcek.999 BERHASIL, HRG:5 SN:Player. SISA SALDO:95', expected), null);
   const request = checkRequest(checkEnv, checkGames['MOBILE LEGENDS'], { userId: '12345', zoneId: '100' }, { customer_format: 'ml_concat' }, 5, expected.refId);
@@ -41,6 +44,9 @@ test('checkReport parses Otomax callback query params strictly by check SKU and 
   assert.deepEqual(checkReport(new URLSearchParams({
     clientid: refId, kp: 'MLCEK', msisdn: '12345100', statuscode: '1', sn: 'Player.',
   })), { refId, sku: 'mlcek', customerNo: '12345100', status: 'success', nickname: 'Player' });
+  assert.deepEqual(checkReport(new URLSearchParams({
+    clientid: refId, kp: 'mlcek', msisdn: '738155892031', statuscode: '1', sn: 'User ID 73815589 Zone 2031 / Username Purbaya Sadewa. RI',
+  })), { refId, sku: 'mlcek', customerNo: '738155892031', status: 'success', nickname: 'Purbaya Sadewa. RI' });
   assert.deepEqual(checkReport({
     clientid: refId, kp: 'pre34729032', msisdn: '98765', statuscode: '1', sn: '',
     msg: 'TRX pre34729032.98765 BERHASIL, HRG:5 SN:FF Hero. SISA SALDO:95',

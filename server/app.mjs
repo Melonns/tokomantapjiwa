@@ -2,7 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { paymentProvider, sumopodBody, sumopodConfig, sumopodExpiresAt, sumopodMethods, sumopodPaymentDetail, sumopodReady, sumopodTokenValid, sumopodWebhook } from './sumopod.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
-import { checkGames, checkableGame, checkReady, checkReport, checkRequest, checkResult, maxChecksPerDay } from './check.mjs';
+import { checkGames, checkableGame, checkReady, checkReport, checkRequest, checkResult, cleanNickname, maxChecksPerDay } from './check.mjs';
 import { suggestPrice, voucherDiscount } from '../src/pricing.mjs';
 import { mailReady, orderEmail, sendOrderEmail } from './mail.mjs';
 import { clientIp, createRateLimiter } from './ratelimit.mjs';
@@ -930,7 +930,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         if (body?.statusOnly === true) {
           const log = pendingRows[0];
           if (!log) throw error(409, 'Status pemeriksaan nickname tidak ditemukan.');
-          if (log.status === 'success' && log.nickname) return send(res, 200, { check: { nickname: log.nickname, region: log.region || '', cached: false } });
+          if (log.status === 'success' && log.nickname) return send(res, 200, { check: { nickname: cleanNickname(log.nickname) || log.nickname, region: log.region || '', cached: false } });
           if (log.status === 'failed') return send(res, 200, { check: { status: 'failed' } });
           return send(res, 200, { check: { status: 'pending', retryAfterSeconds: log.retryAfterSeconds } });
         }
@@ -938,7 +938,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         if (!pendingRows[0] && body?.force !== true) {
           const cached = await pool.query("SELECT nickname, region, checked_at FROM account_checks WHERE game = $1 AND user_id = $2 AND zone_id = $3 AND checked_at > now() - interval '7 days'", [brand, input.userId, input.zoneId]);
           if (cached.rows[0]) {
-            return send(res, 200, { check: { nickname: cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
+            return send(res, 200, { check: { nickname: cleanNickname(cached.rows[0].nickname) || cached.rows[0].nickname, region: cached.rows[0].region || '', cached: true, checkedAt: new Date(cached.rows[0].checked_at).toISOString() } });
           }
         }
         if (!checkReady(env)) throw error(503, 'Fitur periksa nickname belum aktif di server ini.');
@@ -1008,7 +1008,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
             }
             if (res.destroyed || res.writableEnded) return;
             if (outcome?.status === 'success' && outcome.nickname) {
-              return send(res, 200, { check: { nickname: outcome.nickname, region: outcome.region || '', cached: false, checkedAt: new Date().toISOString() } });
+              return send(res, 200, { check: { nickname: cleanNickname(outcome.nickname) || outcome.nickname, region: outcome.region || '', cached: false, checkedAt: new Date().toISOString() } });
             }
             if (outcome?.status === 'failed') {
               return send(res, 200, { check: { status: 'failed' } });
@@ -1226,7 +1226,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           return send(res, 200, { received: true, applied: false });
         }
         const status = String(data?.status || '');
-        const nickname = typeof data?.sn === 'string' ? data.sn.trim().slice(0, 120) : '';
+        const nickname = cleanNickname(data?.sn);
         const checkStatus = status === 'Pending' || String(data?.rc) === '03' ? 'pending' : status === 'Sukses' && String(data?.rc) === '00' && nickname ? 'success' : status === 'Gagal' ? 'failed' : null;
         if (checkStatus && Object.values(checkGames).some(game => game.sku === data?.buyer_sku_code)) {
           if (await applyAndNotifyCheck({ refId, sku: data?.buyer_sku_code, customerNo: data?.customer_no, status: checkStatus, nickname })) {

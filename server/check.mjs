@@ -35,7 +35,13 @@ export function checkRequest(env, game, input, product, price, refId = randomUUI
   };
 }
 
-const cleanNickname = value => typeof value === 'string' ? value.trim().replace(/\.$/, '').slice(0, 120) : '';
+export function cleanNickname(value) {
+  if (typeof value !== 'string') return '';
+  let text = value.trim().replace(/\.$/, '').trim();
+  const match = text.match(/(?:^|\/|\|)\s*(?:username|user\s*name|nickname|nick)\s*[:=-]?\s*(.+)$/i);
+  if (match) text = match[1].trim().replace(/\.$/, '').trim();
+  return text.slice(0, 120);
+}
 
 export function checkResult(reply, expected) {
   if (typeof reply !== 'string') return null;
