@@ -2001,3 +2001,44 @@ test('checkout sumopod membuat tautan QRIS dan menyimpan detail tagihan', async 
     assert.equal(stored[4], 'https://sumo.sandbox.pymnt.global/abc');
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test('webhook Digiflazz sukses mengirim notifikasi Telegram pesanan selesai bila dikonfigurasi', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const secret = 'webhook-test-secret';
+  const telegramCalls = [];
+  const pool = { async query(sql) {
+    if (sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
+    if (sql.includes('UPDATE orders SET status = $2')) {
+      return { rows: [{ id, status: 'fulfilled', productName: '86 Diamonds', price: 21600, sn: 'SN-ML-86' }] };
+    }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const fetchImpl = async (url, options) => {
+    telegramCalls.push({ url, body: JSON.parse(options.body) });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const server = createServer(createHandler({
+    pool,
+    env: { ...env, DIGIFLAZZ_WEBHOOK_SECRET: secret, TELEGRAM_BOT_TOKEN: 'bot-token-test', TELEGRAM_CHAT_ID: '123456789' },
+    fetchImpl,
+  })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const raw = JSON.stringify({ data: { ref_id: id, buyer_sku_code: 'ml86', customer_no: '738155892031', status: 'Sukses', rc: '00', sn: 'SN-ML-86' } });
+    const signature = createHmac('sha1', secret).update(raw, 'utf8').digest('hex');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/digiflazz`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-hub-signature': `sha1=${signature}` },
+      body: raw,
+    });
+    assert.equal(response.status, 200);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(telegramCalls.length, 1);
+    assert.equal(telegramCalls[0].url, 'https://api.telegram.org/botbot-token-test/sendMessage');
+    assert.equal(telegramCalls[0].body.chat_id, '123456789');
+    assert.match(telegramCalls[0].body.text, /Pesanan selesai/);
+    assert.match(telegramCalls[0].body.text, /86 Diamonds/);
+    assert.match(telegramCalls[0].body.text, /Rp 21\.600/);
+    assert.match(telegramCalls[0].body.text, /SN-ML-86/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

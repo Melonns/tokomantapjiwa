@@ -213,9 +213,12 @@ async function submitDigi(pool, fetchImpl, env, row) {
     }
     const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
     const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
-    const { rows: done } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending' RETURNING id, status", [row.id, status, sn, note]);
-    if (done[0]?.status === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', row.id);
-    else if (done[0]?.status === 'fulfillment_failed') {
+    const { rows: done } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending' RETURNING id, status, product_name AS \"productName\", price, fulfillment_sn AS \"sn\"", [row.id, status, sn, note]);
+    if (done[0]?.status === 'fulfilled') {
+      notifyOrder(pool, fetchImpl, env, 'fulfilled', row.id);
+      const priceLabel = Number.isFinite(Number(done[0].price)) ? ` · Rp ${new Intl.NumberFormat('id-ID').format(Number(done[0].price))}` : '';
+      sendTelegramAlert(fetchImpl, env, `Pesanan selesai · ${done[0].productName || row.digi_sku || 'Produk'}${priceLabel} · pesanan ${row.id}${done[0].sn ? ` · SN: ${done[0].sn}` : ''}`);
+    } else if (done[0]?.status === 'fulfillment_failed') {
       notifyOrder(pool, fetchImpl, env, 'failed', row.id);
       alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz gagal', note || 'transaksi gagal di provider');
     } else if (done[0]?.status === 'manual_review') alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz belum pasti', note || 'balasan tidak final');
@@ -1267,10 +1270,13 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         const next = status === 'Sukses' && String(data?.rc) === '00' ? 'fulfilled' : status === 'Gagal' && String(data?.rc) === '02' ? 'fulfillment_failed' : 'manual_review';
         const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
         const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
-        const { rows } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND digi_sku = $5 AND customer_no = $6 AND status IN ('fulfillment_pending', 'manual_review') RETURNING id, status", [refId, next, sn, note, data?.buyer_sku_code, data?.customer_no]);
+        const { rows } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND digi_sku = $5 AND customer_no = $6 AND status IN ('fulfillment_pending', 'manual_review') RETURNING id, status, product_name AS \"productName\", price, fulfillment_sn AS \"sn\"", [refId, next, sn, note, data?.buyer_sku_code, data?.customer_no]);
         if (!rows[0]) return send(res, 200, { received: true, applied: false });
-        if (next === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', refId);
-        else if (next === 'fulfillment_failed') {
+        if (next === 'fulfilled') {
+          notifyOrder(pool, fetchImpl, env, 'fulfilled', refId);
+          const priceLabel = Number.isFinite(Number(rows[0].price)) ? ` · Rp ${new Intl.NumberFormat('id-ID').format(Number(rows[0].price))}` : '';
+          sendTelegramAlert(fetchImpl, env, `Pesanan selesai · ${rows[0].productName || data?.buyer_sku_code || 'Produk'}${priceLabel} · pesanan ${refId}${rows[0].sn || sn ? ` · SN: ${rows[0].sn || sn}` : ''}`);
+        } else if (next === 'fulfillment_failed') {
           notifyOrder(pool, fetchImpl, env, 'failed', refId);
           alertPayment(fetchImpl, env, refId, 'Pengiriman Digiflazz gagal', note || 'transaksi gagal di provider');
         } else if (next === 'manual_review') {
