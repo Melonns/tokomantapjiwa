@@ -40,7 +40,7 @@ test('pending cek status cepat tanpa mengulang transaksi Digiflazz sebelum jatuh
 
 test('error sementara mempertahankan loading dan lanjut cek status dalam 2 detik', () => {
   assert.match(source, /const checkPendingRef = useRef\(false\)/)
-  assert.match(source, /checkPendingRef\.current && \(error\?\.status === 429 \|\| error\?\.status >= 500 \|\| error instanceof TypeError \|\| error\?\.name === 'AbortError'\)/)
+  assert.match(source, /checkPendingRef\.current && \(error\?\.status === 429 \|\| error\?\.status >= 500 \|\| error instanceof TypeError \|\| error\?\.name === 'AbortError'\) && checkErrorRetryRef\.current < 5/)
   assert.match(source, /checkNickname\(false, true\)[\s\S]*}, Math\.min\(10000, 2000 \* 2 \*\*/)
   assert.match(source, /checkRetryRef\.current = setTimeout\(\(\) => \{[\s\S]*checkNickname\(false, statusOnly \? retryAfterSeconds > 0 : true\)[\s\S]*statusOnly \? Math\.min\(2000, retryAfterSeconds \* 1000\) : 2000/)
   assert.match(source, /error\.status = response\.status/)

@@ -1859,7 +1859,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
       setCheckState('done')
     } catch (error) {
       if (run !== checkRunRef.current) return
-      if (checkPendingRef.current && (error?.status === 429 || error?.status >= 500 || error instanceof TypeError || error?.name === 'AbortError')) {
+      if (checkPendingRef.current && (error?.status === 429 || error?.status >= 500 || error instanceof TypeError || error?.name === 'AbortError') && checkErrorRetryRef.current < 5) {
         checkErrorRetryRef.current += 1
         setCheckState('pending')
         checkRetryRef.current = setTimeout(() => {

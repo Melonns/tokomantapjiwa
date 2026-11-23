@@ -215,8 +215,10 @@ async function submitDigi(pool, fetchImpl, env, row) {
     const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
     const { rows: done } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending' RETURNING id, status", [row.id, status, sn, note]);
     if (done[0]?.status === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', row.id);
-    else if (done[0]?.status === 'fulfillment_failed') notifyOrder(pool, fetchImpl, env, 'failed', row.id);
-    else if (done[0]?.status === 'manual_review') alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz belum pasti', note || 'balasan tidak final');
+    else if (done[0]?.status === 'fulfillment_failed') {
+      notifyOrder(pool, fetchImpl, env, 'failed', row.id);
+      alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz gagal', note || 'transaksi gagal di provider');
+    } else if (done[0]?.status === 'manual_review') alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz belum pasti', note || 'balasan tidak final');
   } catch (err) {
     console.error('Digiflazz request unresolved; reconcile ref_id manually:', row.id, err?.upstreamStatus ? `HTTP ${err.upstreamStatus}` : '', err.message);
     const { rows } = await pool.query("UPDATE orders SET status = 'manual_review', updated_at = now() WHERE id = $1 AND status = 'fulfillment_pending' RETURNING id", [row.id]);
@@ -462,11 +464,27 @@ function notifyOrder(pool, fetchImpl, env, event, orderId) {
   })();
 }
 
+function sendTelegramAlert(fetchImpl, env, text) {
+  const token = String(env.TELEGRAM_BOT_TOKEN || '').trim();
+  const chatId = String(env.TELEGRAM_CHAT_ID || '').trim();
+  if (!token || !chatId) return;
+  void fetchImpl(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text: `[Melonbyte] ${text}` }),
+    redirect: 'error',
+    signal: AbortSignal.timeout(8000),
+  }).then(async (res) => {
+    if (!res.ok) console.error('[alert][telegram]', `HTTP ${res.status}`);
+  }).catch((err) => console.error('[alert][telegram]', err?.message || String(err)));
+}
+
 // ponytail: kegagalan pembayaran yang butuh manusia harus meninggalkan jejak di log dan email support.
 // Jangan pernah menaruh detail kartu/charge di sini; cukup nomor pesanan dan alasan operasional.
 function alertPayment(fetchImpl, env, orderId, reason, detail = '') {
   const text = `${reason}${orderId ? ` · pesanan ${orderId}` : ''}${detail ? ` · ${detail}` : ''}`;
   console.error('[alert][pembayaran]', text);
+  sendTelegramAlert(fetchImpl, env, text);
   const to = String(env.ALERT_EMAIL || env.SUPPORT_EMAIL || '').trim();
   if (!mailReady(env) || !to) return;
   void sendOrderEmail(fetchImpl, env, to, {
@@ -551,7 +569,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       if ((req.method === 'GET' || req.method === 'HEAD') && path === '/api/health') {
         try {
           await pool.query('SELECT 1');
-          return send(res, 200, { ok: true, db: 'ok', version: '2026-11-22-v2', time: new Date().toISOString() });
+          return send(res, 200, { ok: true, db: 'ok', time: new Date().toISOString() });
         } catch {
           return send(res, 503, { ok: false, db: 'error' });
         }
@@ -1060,7 +1078,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         if (!qrUrl) throw error(404, 'Kode QR tidak tersedia.');
         let target;
         try { target = new URL(qrUrl); } catch { throw error(404, 'Kode QR tidak tersedia.'); }
-        if (target.protocol !== 'https:' || !/^api(\.sandbox)?\.midtrans\.com$/.test(target.hostname)) throw error(404, 'Kode QR tidak tersedia.');
+        if (target.protocol !== 'https:' || !/^(api(\.sandbox)?|merchants-app(\.sbx)?)\.midtrans\.com$/.test(target.hostname)) throw error(404, 'Kode QR tidak tersedia.');
         const upstream = await fetchImpl(target.toString(), { signal: AbortSignal.timeout(12000) });
         if (!upstream.ok) throw error(502, 'Kode QR belum dapat diunduh.');
         const image = Buffer.from(await upstream.arrayBuffer());
@@ -1252,7 +1270,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         const { rows } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND digi_sku = $5 AND customer_no = $6 AND status IN ('fulfillment_pending', 'manual_review') RETURNING id, status", [refId, next, sn, note, data?.buyer_sku_code, data?.customer_no]);
         if (!rows[0]) return send(res, 200, { received: true, applied: false });
         if (next === 'fulfilled') notifyOrder(pool, fetchImpl, env, 'fulfilled', refId);
-        else if (next === 'fulfillment_failed') notifyOrder(pool, fetchImpl, env, 'failed', refId);
+        else if (next === 'fulfillment_failed') {
+          notifyOrder(pool, fetchImpl, env, 'failed', refId);
+          alertPayment(fetchImpl, env, refId, 'Pengiriman Digiflazz gagal', note || 'transaksi gagal di provider');
+        } else if (next === 'manual_review') {
+          alertPayment(fetchImpl, env, refId, 'Pengiriman Digiflazz perlu ditinjau', note || `status=${status || '-'}`);
+        }
         return send(res, 200, { received: true });
       }
       // ponytail: report callback Otomax (GET dengan token path rahasia) memperbarui hasil cek nickname segera tanpa menunggu jeda 1 menit.

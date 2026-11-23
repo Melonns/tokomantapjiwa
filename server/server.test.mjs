@@ -617,6 +617,75 @@ test('unduh QR hanya untuk pemilik dan hanya dari host Midtrans', async () => {
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('unduh QR mengizinkan host merchants-app Midtrans dan menolak host asing', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  let qrUrl = 'https://merchants-app.sbx.midtrans.com/qr-code/123';
+  const seen = [];
+  const pool = { async query(sql) {
+    if (sql.startsWith("SELECT payment_detail->>'qrUrl'")) return { rows: [{ qrUrl }] };
+    throw Error('unexpected SQL');
+  } };
+  const handler = createHandler({ pool, env, fetchImpl: withAuth(async (url) => {
+    seen.push(url);
+    return { ok: true, status: 200, arrayBuffer: async () => png };
+  }) });
+  const server = createServer(handler).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const allowed = await fetch(base + `/api/orders/${id}/qr.png`, { headers: authHeaders });
+    assert.equal(allowed.status, 200);
+    assert.deepEqual(seen, ['https://merchants-app.sbx.midtrans.com/qr-code/123']);
+
+    qrUrl = 'https://evil.example/qr-code/123';
+    const rejected = await fetch(base + `/api/orders/${id}/qr.png`, { headers: authHeaders });
+    assert.equal(rejected.status, 404);
+    assert.equal(seen.length, 1);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('alert operasional mengirim notifikasi Telegram bila token dan chat id diisi, atau dilewati bila kosong', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const pool = { async query(sql) {
+    if (sql.includes("SET status = 'payment_paid'") || sql.includes("SET status = 'manual_review'")) return { rows: [] };
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const body = { order_id: id, status_code: '200', gross_amount: '25000.00', transaction_status: 'settlement' };
+  body.signature_key = createHash('sha512').update(id + body.status_code + body.gross_amount + env.MIDTRANS_SERVER_KEY).digest('hex');
+
+  let callsNoTg = 0;
+  const noTg = createServer(createHandler({ pool, env, fetchImpl: async () => { callsNoTg++; return { ok: true, status: 200 }; } })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => noTg.once('listening', resolve));
+    const res = await fetch(`http://127.0.0.1:${noTg.address().port}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(res.status, 200);
+    assert.equal(callsNoTg, 0);
+  } finally { await new Promise(resolve => noTg.close(resolve)); }
+
+  let sent;
+  let markSent;
+  const waitSent = new Promise(resolve => { markSent = resolve; });
+  const withTg = createServer(createHandler({
+    pool,
+    env: { ...env, TELEGRAM_BOT_TOKEN: '12345:bot-secret', TELEGRAM_CHAT_ID: '-100999' },
+    fetchImpl: async (url, options) => {
+      sent = { url, body: JSON.parse(options.body) };
+      markSent();
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    },
+  })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => withTg.once('listening', resolve));
+    const res = await fetch(`http://127.0.0.1:${withTg.address().port}/api/webhooks/midtrans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(res.status, 200);
+    await waitSent;
+    assert.equal(sent.url, 'https://api.telegram.org/bot12345%3Abot-secret/sendMessage');
+    assert.equal(sent.body.chat_id, '-100999');
+    assert.match(sent.body.text, /\[Melonbyte\] Pembayaran sah tidak dapat diterapkan/);
+  } finally { await new Promise(resolve => withTg.close(resolve)); }
+});
+
 test('admin memakai harga modal tanpa margin, pembeli biasa tetap harga jual', async () => {
   let insertedPrice, charged;
   const row = { id: 'ml10', name: '10 Diamonds', game: 'Mobile Legends', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat', category: 'Games', admin_cost: 18000, admin: true };

@@ -20,10 +20,10 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('PORT tidak
 // HOST tetap dapat diubah untuk pengujian lokal, tetapi produksi memakai 127.0.0.1.
 const host = process.env.HOST || '127.0.0.1';
 const server = createServer(createHandler({ pool }));
-server.requestTimeout = 20000;
+server.requestTimeout = 35000;
 server.headersTimeout = 10000;
 server.keepAliveTimeout = 5000;
-server.timeout = 30000;
+server.timeout = 40000;
 server.maxHeadersCount = 50;
 server.maxRequestsPerSocket = 1000;
 server.listen(port, host, () => console.log(`Melonbyte API listening on ${host}:${port}`));
