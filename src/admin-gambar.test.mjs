@@ -5,6 +5,7 @@ import test from 'node:test'
 
 const server = readFileSync(new URL('../server/app.mjs', import.meta.url), 'utf8')
 const app = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8')
+const service = readFileSync(new URL('../deploy/melonbyte-api.service', import.meta.url), 'utf8')
 
 test('server menyediakan endpoint perbarui gambar khusus admin', () => {
   const awal = server.indexOf("path === '/api/admin/game-icons/refresh'")
@@ -20,4 +21,9 @@ test('panel admin punya tombol dan status hasil perbarui gambar', () => {
   assert.match(app, /'\/api\/admin\/game-icons\/refresh'/)
   assert.match(app, /gambarBusy \? 'Memperbarui\.\.\.'/)
   assert.match(app, /gambarNotice && <p className="catalog-sync-notice" role="status">/)
+})
+
+test('systemd service memberi izin tulis untuk public dan dist logo game', () => {
+  assert.match(service, /ReadWritePaths=.*\/srv\/melonbyte\/public\/logo\/game/)
+  assert.match(service, /ReadWritePaths=.*\/srv\/melonbyte\/dist\/logo\/game/)
 })

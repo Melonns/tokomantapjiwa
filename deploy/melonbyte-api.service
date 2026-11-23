@@ -23,7 +23,7 @@ SyslogIdentifier=melonbyte-api
 
 # Pengerasan untuk VPS kecil. API hanya membaca repo dan bicara ke luar lewat HTTPS.
 # Satu-satunya folder yang boleh ditulis: ikon game hasil tombol admin.
-ReadWritePaths=/srv/melonbyte/public/logo/game
+ReadWritePaths=/srv/melonbyte/public/logo/game -/srv/melonbyte/dist/logo/game
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
