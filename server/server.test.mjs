@@ -2042,3 +2042,72 @@ test('webhook Digiflazz sukses mengirim notifikasi Telegram pesanan selesai bila
     assert.match(telegramCalls[0].body.text, /SN-ML-86/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test('voucher target kategori dan game hanya berlaku untuk produk yang cocok', async () => {
+  const voucher = {
+    code: 'OPENML', label: '', kind: 'fixed', value: 1500, min_order: 25000, max_discount: null,
+    quota: 50, used: 0, per_user: 1, new_buyers_only: false, target_category: 'Games', target_game: 'MOBILE LEGENDS',
+    active: true, ends_at: null,
+  };
+  let product = { id: 'ml86', name: '86 Diamonds', price: 25000, gangguan: false, game: 'MOBILE LEGENDS', category: 'Games' };
+  const pool = {
+    async query(sql) {
+      if (sql.startsWith('SELECT id, name, price, gangguan')) return { rows: [product] };
+      if (sql.startsWith('SELECT code, label, kind')) return { rows: [voucher] };
+      if (sql.startsWith('SELECT count(*)::int AS count FROM voucher_redemptions')) return { rows: [{ count: 0 }] };
+      throw Error('unexpected SQL: ' + sql);
+    },
+  };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('net touched'); }) })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const check = (productId) => fetch(`http://127.0.0.1:${server.address().port}/api/voucher`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ code: 'OPENML', productId }),
+    });
+    const okMl = await check('ml86');
+    assert.equal(okMl.status, 200);
+    assert.equal((await okMl.json()).voucher.discount, 1500);
+
+    product = { id: 'ff100', name: '100 Diamonds', price: 25000, gangguan: false, game: 'FREE FIRE', category: 'Games' };
+    const wrongGame = await check('ff100');
+    assert.equal(wrongGame.status, 400);
+    assert.match((await wrongGame.json()).error, /MOBILE LEGENDS/);
+
+    voucher.target_game = null;
+    const okGames = await check('ff100');
+    assert.equal(okGames.status, 200);
+
+    product = { id: 'dana25', name: 'DANA 25.000', price: 26000, gangguan: false, game: 'DANA', category: 'E-Money' };
+    const wrongCat = await check('dana25');
+    assert.equal(wrongCat.status, 400);
+    assert.match((await wrongCat.json()).error, /kategori Games/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('admin dapat membuat voucher persentase dengan plafon dan target kategori/game', async () => {
+  let savedParams = null;
+  const pool = {
+    async query(sql, params) {
+      if (sql.startsWith('SELECT user_id FROM admin_users')) return { rows: [{ user_id: ownerId }] };
+      if (sql.startsWith('INSERT INTO vouchers')) { savedParams = params; return { rows: [{ code: params[0] }] }; }
+      if (sql.startsWith('SELECT code, label, kind')) return { rows: [{ code: 'GAS4PCT', label: '', kind: 'percent', value: 4, min_order: 20000, max_discount: 5000, quota: 50, used: 0, per_user: 1, new_buyers_only: true, target_category: 'Games', target_game: null, active: true, ends_at: null }] };
+      throw Error('unexpected SQL: ' + sql);
+    },
+  };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('net touched'); }) })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/vouchers`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ code: 'GAS4PCT', kind: 'percent', value: 4, maxDiscount: 5000, minOrder: 20000, quota: 50, perUser: 1, newBuyersOnly: true, days: 30, targetCategory: 'Games', targetGame: null }),
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.code, 'GAS4PCT');
+    assert.equal(savedParams[2], 'percent');
+    assert.equal(savedParams[5], 5000);
+    assert.equal(savedParams[9], 'Games');
+    assert.equal(savedParams[10], null);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

@@ -243,14 +243,23 @@ async function claimAndFulfill(pool, fetchImpl, env, orderId) {
   return true;
 }
 
-// ponytail: aturan voucher dijaga di server (kuota, masa berlaku, batas per akun, khusus pembeli baru) - browser cuma menampilkan hasil hitungannya.
-async function voucherFor(pool, code, ownerId, total) {
+// ponytail: aturan voucher dijaga di server (kuota, masa berlaku, batas per akun, khusus pembeli baru, target kategori/game) - browser cuma menampilkan hasil hitungannya.
+async function voucherFor(pool, code, ownerId, total, product = null) {
   if (!code) return null;
-  const { rows } = await pool.query('SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, active, ends_at FROM vouchers WHERE code = $1', [code]);
+  const { rows } = await pool.query('SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, target_category, target_game, active, ends_at FROM vouchers WHERE code = $1', [code]);
   const voucher = rows[0];
   if (!voucher || !voucher.active) return { error: 'Kode voucher tidak dikenal atau sudah tidak aktif.' };
   if (voucher.ends_at && new Date(voucher.ends_at).getTime() < Date.now()) return { error: 'Voucher sudah kedaluwarsa.' };
   if (voucher.quota != null && voucher.used >= voucher.quota) return { error: 'Kuota voucher sudah habis.' };
+  if (voucher.target_game) {
+    const productGame = String(product?.game || '').trim().toUpperCase();
+    const targetGame = String(voucher.target_game).trim().toUpperCase();
+    if (productGame !== targetGame) return { error: `Voucher ini hanya berlaku untuk ${voucher.target_game}.` };
+  } else if (voucher.target_category) {
+    const productCategory = String(product?.category || '').trim().toLowerCase();
+    const targetCategory = String(voucher.target_category).trim().toLowerCase();
+    if (productCategory !== targetCategory) return { error: `Voucher ini hanya berlaku untuk kategori ${voucher.target_category}.` };
+  }
   if (total < voucher.min_order) return { error: `Voucher berlaku mulai belanja Rp ${new Intl.NumberFormat('id-ID').format(voucher.min_order)}.` };
   const { rows: mine } = await pool.query('SELECT count(*)::int AS count FROM voucher_redemptions WHERE code = $1 AND owner_id = $2', [voucher.code, ownerId]);
   if (mine[0].count >= voucher.per_user) return { error: 'Anda sudah memakai voucher ini.' };
@@ -727,8 +736,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       if (path === '/api/admin/vouchers' || path.startsWith('/api/admin/vouchers/')) {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const list = async () => {
-          const { rows } = await pool.query('SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, active, ends_at FROM vouchers ORDER BY created_at DESC, code ASC');
-          return rows.map(row => ({ code: row.code, label: row.label, kind: row.kind, value: row.value, minOrder: row.min_order, maxDiscount: row.max_discount, quota: row.quota, used: row.used, perUser: row.per_user, newBuyersOnly: row.new_buyers_only, active: row.active, endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null }));
+          const { rows } = await pool.query('SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, target_category, target_game, active, ends_at FROM vouchers ORDER BY created_at DESC, code ASC');
+          return rows.map(row => ({ code: row.code, label: row.label, kind: row.kind, value: row.value, minOrder: row.min_order, maxDiscount: row.max_discount, quota: row.quota, used: row.used, perUser: row.per_user, newBuyersOnly: row.new_buyers_only, targetCategory: row.target_category ?? null, targetGame: row.target_game ?? null, active: row.active, endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null }));
         };
         if (req.method === 'GET' && path === '/api/admin/vouchers') return send(res, 200, { vouchers: await list() });
         if (req.method === 'POST' && path === '/api/admin/vouchers') {
@@ -738,10 +747,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           const kind = body?.kind === 'percent' ? 'percent' : 'fixed';
           const value = Number(body?.value);
           const minOrder = Number(body?.minOrder ?? 0);
-          const maxDiscount = body?.maxDiscount == null ? null : Number(body.maxDiscount);
+          const maxDiscount = kind === 'percent' && body?.maxDiscount != null && body?.maxDiscount !== '' ? Number(body.maxDiscount) : null;
           const quota = body?.quota == null || body?.quota === '' ? null : Number(body.quota);
           const perUser = Number(body?.perUser ?? 1);
           const days = Number(body?.days ?? 30);
+          const targetGame = String(body?.targetGame || '').trim().toUpperCase() || null;
+          const targetCategory = targetGame ? null : (String(body?.targetCategory || '').trim() || null);
           const cap = kind === 'percent' ? 90 : 1000000;
           if (!/^[A-Z0-9_-]{3,24}$/.test(code)) throw error(400, 'Kode voucher 3-24 karakter, hanya huruf, angka, tanda hubung, dan garis bawah.');
           if (!Number.isSafeInteger(value) || value < 1 || value > cap) throw error(400, kind === 'percent' ? 'Persentase potongan harus 1-90.' : 'Nominal potongan tidak valid.');
@@ -750,11 +761,13 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           if (quota != null && (!Number.isSafeInteger(quota) || quota < 1 || quota > 100000)) throw error(400, 'Kuota tidak valid.');
           if (!Number.isSafeInteger(perUser) || perUser < 1 || perUser > 100) throw error(400, 'Batas per akun tidak valid.');
           if (!Number.isSafeInteger(days) || days < 1 || days > 365) throw error(400, 'Masa berlaku harus 1-365 hari.');
-          const { rows } = await pool.query(`INSERT INTO vouchers (code, label, kind, value, min_order, max_discount, quota, per_user, new_buyers_only, active, ends_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true, now() + ($10 || ' days')::interval)
+          if (targetCategory && targetCategory.length > 60) throw error(400, 'Kategori target tidak valid.');
+          if (targetGame && targetGame.length > 80) throw error(400, 'Game target tidak valid.');
+          const { rows } = await pool.query(`INSERT INTO vouchers (code, label, kind, value, min_order, max_discount, quota, per_user, new_buyers_only, target_category, target_game, active, ends_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true, now() + ($12 || ' days')::interval)
             ON CONFLICT (code) DO UPDATE SET label = EXCLUDED.label, kind = EXCLUDED.kind, value = EXCLUDED.value, min_order = EXCLUDED.min_order,
               max_discount = EXCLUDED.max_discount, quota = EXCLUDED.quota, per_user = EXCLUDED.per_user, new_buyers_only = EXCLUDED.new_buyers_only,
-              active = true, ends_at = EXCLUDED.ends_at RETURNING code`, [code, String(body?.label || '').slice(0, 80), kind, value, minOrder, maxDiscount, quota, perUser, body?.newBuyersOnly === true, String(days)]);
+              target_category = EXCLUDED.target_category, target_game = EXCLUDED.target_game, active = true, ends_at = EXCLUDED.ends_at RETURNING code`, [code, String(body?.label || '').slice(0, 80), kind, value, minOrder, maxDiscount, quota, perUser, body?.newBuyersOnly === true, targetCategory, targetGame, String(days)]);
           return send(res, 201, { code: rows[0].code, vouchers: await list() });
         }
         if (req.method === 'PATCH' && path.startsWith('/api/admin/vouchers/')) {
@@ -776,14 +789,15 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
         const code = String(body?.code || '').trim().toUpperCase();
         if (!/^[A-Z0-9_-]{3,24}$/.test(code)) throw error(400, 'Kode voucher tidak valid.');
-        const { rows } = await pool.query(`SELECT id, name, price, gangguan,
+        const { rows } = await pool.query(`SELECT id, name, price, gangguan, game,
+          (SELECT s.category FROM supplier_products s WHERE s.sku = products.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products) LIMIT 1) AS category,
           (SELECT s.price FROM supplier_products s WHERE s.sku = products.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products) LIMIT 1) AS admin_cost,
           EXISTS(SELECT 1 FROM admin_users a WHERE a.user_id = $2) AS admin
           FROM products WHERE id = $1 AND enabled = true`, [body?.productId, ownerId]);
         if (!rows[0]) throw error(404, 'Produk tidak tersedia.');
         if (rows[0].gangguan === true) throw error(409, 'Produk ini sedang mengalami gangguan. Pilih nominal lain atau coba kembali beberapa saat lagi.');
         const harga = modalAdmin(rows[0], rows[0].price);
-        const picked = await voucherFor(pool, code, ownerId, harga);
+        const picked = await voucherFor(pool, code, ownerId, harga, rows[0]);
         if (!picked) throw error(400, 'Kode voucher tidak valid.');
         if (picked.error) throw error(400, picked.error);
         return send(res, 200, { voucher: { code: picked.voucher.code, label: picked.voucher.label, discount: picked.discount, total: harga - picked.discount } });
@@ -794,7 +808,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         let input;
         try { input = validateCheckout(await readJson(req)); } catch (err) { throw err.status ? err : error(400, err.message); }
         if (!checkoutReady(env)) throw error(503, 'Checkout belum siap.');
-        const { rows } = await pool.query(`SELECT id, name, price, digi_sku, customer_format, gangguan,
+        const { rows } = await pool.query(`SELECT id, name, price, digi_sku, customer_format, gangguan, game,
+          (SELECT s.category FROM supplier_products s WHERE s.sku = products.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products) LIMIT 1) AS category,
           (SELECT s.price FROM supplier_products s WHERE s.sku = products.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products) LIMIT 1) AS admin_cost,
           EXISTS(SELECT 1 FROM admin_users a WHERE a.user_id = $2) AS admin
           FROM products WHERE id = $1 AND enabled = true`, [input.productId, ownerId]);
@@ -804,7 +819,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         if (!Object.values(customerFormats).includes(product.customer_format)) throw error(422, 'Format tujuan belum didukung.');
         // ponytail: admin membeli dengan harga modal supplier, pembeli biasa tetap memakai harga jual.
         const harga = modalAdmin(product, product.price);
-        const picked = input.voucherCode ? await voucherFor(pool, input.voucherCode, ownerId, harga) : null;
+        const picked = input.voucherCode ? await voucherFor(pool, input.voucherCode, ownerId, harga, product) : null;
         if (picked?.error) throw error(400, picked.error);
         const discount = picked?.discount ?? 0;
         // ponytail: price = jumlah yang benar-benar ditagih (setelah potongan) karena webhook mencocokkan gross_amount dengan price.

@@ -492,3 +492,14 @@
 @media(max-width:620px){.hero-carousel{width:calc(100% - 32px);margin:16px auto 24px;border-radius:22px}.hero-slide{display:flex;flex-direction:column;align-items:stretch;gap:0;padding:24px 20px 16px}.hero-title{font-size:clamp(1.9rem,8.8vw,2.7rem);line-height:1.06;margin-bottom:14px;max-width:none}.hero-slide .hero-description{font-size:.94rem;line-height:1.55;margin-bottom:0;max-width:none}.hero-controls{padding:2px 20px 14px}}
 @media(max-width:360px){.hero-controls{gap:8px;padding-inline:16px}.hero-dots button{width:36px}.hero-arrows button{width:40px;height:40px}}
 @media(prefers-reduced-motion:reduce){.hero-track{transition:none}}
+/* Perbaikan UI mobile/desktop: navigasi admin dapat digulir, kontrol voucher 16px, toast 44px, ringkasan checkout sticky. */
+.admin-nav{overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.admin-nav::-webkit-scrollbar{display:none}
+.admin-nav a{flex:0 0 auto}
+.voucher-field input,.voucher-field select{width:100%;min-height:44px;background:#0e1610;border:1px solid #849e80;border-radius:var(--r-tile);color:var(--text);padding:10px 12px;font-size:1rem;font-family:inherit}
+.voucher-field select:focus-visible{outline:2px solid var(--lime);outline-offset:1px;border-color:var(--lime)}
+.voucher-item-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.voucher-tag{display:inline-flex;align-items:center;padding:2px 9px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:.72rem;font-weight:700;color:var(--muted)}
+.voucher-tag.is-active{border-color:#8aa985;background:#141d10;color:var(--lime)}
+.toast-close{min-width:44px;min-height:44px;display:grid;place-items:center;margin:-8px -8px -8px auto}
+@media(min-width:831px){.summary{position:sticky;top:116px}}
