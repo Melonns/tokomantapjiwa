@@ -2154,7 +2154,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                   </div>
                   <div className={slide.isPromo ? 'hero-graphic hero-graphic-promo' : 'hero-graphic'} aria-hidden="true">
                     {slide.isPromo
-                      ? <img className="hero-promo-img" src="/promo-opening.png" alt="" width="512" height="512" decoding="async" />
+                      ? <img className="hero-promo-img" src="/promo-opening.png?v=2" alt="" width="512" height="512" decoding="async" />
                       : <>
                         <img className="hero-mark" src="/melonbyte-mark.png" alt="" width="512" height="512" decoding="async" />
                         <span className="graphic-caption">{slide.caption}</span>

@@ -6,11 +6,8 @@ import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './cor
 import { createHandler, digiRequest, reconcilePending, syncCatalogAndNotify } from './app.mjs';
 import { checkGames, checkReady, checkReport, checkRequest, checkResult, cleanNickname } from './check.mjs';
 
-// Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
-// (misalnya 6000 atau 6665-6669) sehingga tes gagal tanpa sebab yang jelas.
-// Setiap tes memakai port tetap di rentang aman dan berbeda.
-let portUji = 34100;
-const portAman = () => { portUji += 1; return portUji; };
+// Port 0 membuat OS memilih port kosong yang dijamin tidak bentrok di CI maupun lokal.
+const portAman = () => 0;
 
 const env = { MIDTRANS_SERVER_KEY: 'sandbox-secret', DIGIFLAZZ_USERNAME: 'buyer', DIGIFLAZZ_API_KEY: 'api-secret', MIDTRANS_ENV: 'sandbox', DIGIFLAZZ_TESTING: 'true', CHECKOUT_ENABLED: 'true', DATABASE_URL: 'test', SUPABASE_URL: 'https://sample.supabase.co', SUPABASE_ANON_KEY: 'public-key' };
 const ownerId = '22222222-2222-4222-8222-222222222222';
