@@ -2160,3 +2160,28 @@ test('syncCatalogAndNotify menyembunyikan produk gangguan dan mengirim alert Tel
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(telegramCalls.length, 1);
 });
+
+test('GET /api/vouchers/active mengembalikan voucher aktif publik tanpa autentikasi', async () => {
+  const pool = {
+    async query(sql) {
+      assert.match(sql, /FROM\s+vouchers/i);
+      return {
+        rows: [
+          { code: 'OPENML', label: '', kind: 'fixed', value: 1500, min_order: 25000, max_discount: null, quota: 50, used: 3, per_user: 1, new_buyers_only: true, target_category: 'Games', target_game: 'MOBILE LEGENDS', ends_at: '2026-12-31T00:00:00Z' },
+        ],
+      };
+    },
+  };
+  const server = createServer(createHandler({ pool, env, fetchImpl: async () => { throw Error('net touched'); } })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/vouchers/active`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.vouchers.length, 1);
+    assert.equal(body.vouchers[0].code, 'OPENML');
+    assert.equal(body.vouchers[0].remaining, 47);
+    assert.equal(body.vouchers[0].targetCategory, 'Games');
+    assert.equal(body.vouchers[0].targetGame, 'MOBILE LEGENDS');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

@@ -628,6 +628,29 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         const email = String(env.SUPPORT_EMAIL || 'halo@melonbyte.id').trim();
         return send(res, 200, { email, whatsapp, whatsappLabel: whatsapp ? `+${whatsapp.split('/').pop()}` : null });
       }
+      if (req.method === 'GET' && path === '/api/vouchers/active') {
+        const { rows } = await pool.query(`SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, target_category, target_game, ends_at
+          FROM vouchers
+          WHERE active = true AND (ends_at IS NULL OR ends_at > now()) AND (quota IS NULL OR used < quota)
+          ORDER BY created_at DESC, code ASC
+          LIMIT 5`);
+        return send(res, 200, {
+          vouchers: rows.map((row) => ({
+            code: row.code,
+            label: row.label,
+            kind: row.kind,
+            value: row.value,
+            minOrder: row.min_order,
+            maxDiscount: row.max_discount,
+            remaining: row.quota == null ? null : Math.max(0, row.quota - row.used),
+            perUser: row.per_user,
+            newBuyersOnly: row.new_buyers_only,
+            targetCategory: row.target_category ?? null,
+            targetGame: row.target_game ?? null,
+            endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null,
+          })),
+        });
+      }
       if (req.method === 'GET' && path === '/api/me') {
         const ownerId = await authenticatedOwner(req, fetchImpl, env);
         const { rows } = await pool.query('SELECT user_id FROM admin_users WHERE user_id = $1', [ownerId]);

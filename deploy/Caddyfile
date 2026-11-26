@@ -69,7 +69,7 @@ melonbyte.biz.id {
 	@ikon path /favicon.svg /favicon-32.png /icon-192.png /apple-touch-icon.png /og.png /robots.txt
 	header @ikon Cache-Control "public, max-age=86400"
 	# Aset merek dan ikon game: namanya tetap, jadi tahan lama di peramban dan CDN.
-	@gambar path /melonbyte-mark.png /melonbyte-lockup.png /melonbyte-logo.png /logo/*
+	@gambar path /melonbyte-mark.png /melonbyte-lockup.png /melonbyte-logo.png /promo-opening.png /logo/*
 	header @gambar Cache-Control "public, max-age=604800"
 	@halaman path / /index.html
 	header @halaman Cache-Control "no-cache"
@@ -92,6 +92,7 @@ melonbyte.biz.id {
 	handle {
 		root * /srv/melonbyte/dist
 		try_files {path} /index.html
+		header ?Cache-Control "no-cache"
 		file_server
 	}
 

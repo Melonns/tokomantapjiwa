@@ -19,3 +19,10 @@ test('halaman akun tamu memakai panel form + kartu pintasan, bukan kolom teks ge
   assert.match(css, /\.auth-fields\{[^}]*repeat\(2,minmax\(0,1fr\)\)[^}]*\}/);
   assert.match(css, /@media\(max-width:620px\)\{\.auth-fields\{grid-template-columns:minmax\(0,1fr\)\}\}/);
 });
+
+test('Caddyfile menonaktifkan cache HTML rute SPA dan storefront menampilkan promo aktif', async () => {
+  const caddy = await readFile(new URL('../deploy/Caddyfile', import.meta.url), 'utf8');
+  assert.match(caddy, /try_files \{path\} \/index\.html[\s\S]*header \?Cache-Control "no-cache"/);
+  assert.match(source, /\/api\/vouchers\/active/);
+  assert.match(source, /className="promo-banner wrap"/);
+});

@@ -503,6 +503,8 @@ function App() {
   const [voucher, setVoucher] = useState(null)
   const [voucherBusy, setVoucherBusy] = useState(false)
   const [voucherNotice, setVoucherNotice] = useState('')
+  const [activeVouchers, setActiveVouchers] = useState([])
+  const [copiedPromo, setCopiedPromo] = useState('')
   const [adminVouchers, setAdminVouchers] = useState([])
   const [voucherDraft, setVoucherDraft] = useState({
     code: '', kind: 'fixed', value: '1500', maxDiscount: '',
@@ -727,6 +729,9 @@ function App() {
 
   useEffect(() => { setHargaView('admin') }, [session?.user?.id])
   useEffect(() => { setVoucher(null); setVoucherNotice(''); setPromoCode('') }, [hargaView])
+  useEffect(() => {
+    request('/api/vouchers/active').then((data) => setActiveVouchers(data.vouchers || [])).catch(() => setActiveVouchers([]))
+  }, [])
   useEffect(() => { if (view === 'checkout' && canManage && hargaView === 'user') setHargaView('admin') }, [view, canManage, hargaView])
   // ponytail: dependency = URL harga + status admin saja. Token tidak ikut (dibaca authHeaders saat fetch), jadi sesi pulih tidak memicu fetch kedua; admin yang login tetap ambil ulang karena harga modal beda.
   const productUrl = canManage && hargaView === 'user' ? '/api/products?harga=user' : '/api/products'
@@ -1604,6 +1609,12 @@ function App() {
   function activeVoucher() {
     return voucher && selected && voucher.productId === selected.id ? voucher : null
   }
+  function copyPromoCode(code) {
+    if (!code) return
+    copyText(code)
+    setCopiedPromo(code)
+    setTimeout(() => setCopiedPromo((current) => (current === code ? '' : current)), 2000)
+  }
   function voucherCut() {
     const picked = activeVoucher()
     return picked ? picked.discount : 0
@@ -2128,6 +2139,30 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             </div>
           </div>
         </section>
+
+        {activeVouchers[0] && (() => {
+          const promo = activeVouchers[0]
+          const targetGameMatch = promo.targetGame ? products.find((item) => String(item.game || '').trim().toUpperCase() === promo.targetGame.toUpperCase())?.game : null
+          const details = [
+            `Min. belanja ${rupiah(promo.minOrder)}`,
+            promo.newBuyersOnly ? 'Khusus pembeli baru' : '',
+            promo.remaining != null ? `Sisa ${promo.remaining} kuota` : '',
+            promo.endsAt ? `Berlaku s.d. ${new Date(promo.endsAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })}` : '',
+          ].filter(Boolean).join(' · ')
+          return <section className="promo-banner wrap" aria-label="Promo aktif">
+            <div className="promo-copy">
+              <p className="eyebrow"><span className="eyebrow-line" /> {promo.targetGame ? `PROMO ${promo.targetGame}` : promo.targetCategory ? `PROMO KATEGORI ${promo.targetCategory.toUpperCase()}` : 'PROMO AKTIF'}</p>
+              <h2>{promo.kind === 'percent' ? `Diskon ${promo.value}%${promo.maxDiscount ? ` maks. ${rupiah(promo.maxDiscount)}` : ''}` : `Potongan ${rupiah(promo.value)}`}</h2>
+              <p>{details}</p>
+              <div className="promo-actions">
+                <code className="promo-code">{promo.code}</code>
+                <button type="button" className="primary-button" onClick={() => copyPromoCode(promo.code)}>{copiedPromo === promo.code ? 'Kode tersalin' : 'Salin kode'}</button>
+                {targetGameMatch && <a className="secondary-button" href={`/game/${encodeURIComponent(targetGameMatch)}`} onClick={(event) => { event.preventDefault(); go(`/game/${encodeURIComponent(targetGameMatch)}`) }}>Buka {promo.targetGame}</a>}
+              </div>
+            </div>
+            <div className="promo-art"><img src="/promo-opening.png" alt="" width="640" height="360" loading="lazy" decoding="async" /></div>
+          </section>
+        })()}
 
         <section className="shop-section" id="katalog" aria-labelledby="catalog-title">
           <div className="wrap shop-inner">
