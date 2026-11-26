@@ -580,6 +580,8 @@ function App() {
   const [toast, setToast] = useState(null)
   const toastTimer = useRef(null)
   const [userId, setUserId] = useState('')
+  const userIdRef = useRef('')
+  useEffect(() => { userIdRef.current = userId }, [userId])
   const [zoneId, setZoneId] = useState('')
   const [checkoutState, setCheckoutState] = useState('idle')
   const [checkoutError, setCheckoutError] = useState('')
@@ -798,7 +800,11 @@ function App() {
       setLoginMessage('')
       applyPageMeta(route, currentPath())
       requestAnimationFrame(() => {
-        if (['game', 'checkout', 'admin', 'receipt', 'terms', 'privacy', 'contact', 'notfound', 'account', 'register'].includes(route.view)) window.scrollTo(0, 0)
+        if (route.view === 'checkout' && userIdRef.current.trim()) {
+          const payEl = document.getElementById('metode-bayar')
+          if (payEl) payEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          else window.scrollTo(0, 0)
+        } else if (['game', 'checkout', 'admin', 'receipt', 'terms', 'privacy', 'contact', 'notfound', 'account', 'register'].includes(route.view)) window.scrollTo(0, 0)
         else {
           const target = currentPath() === '/katalog' ? 'katalog' : 'main'
           if (document.getElementById(target)) document.getElementById(target).scrollIntoView()
@@ -2267,7 +2273,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">3</span><h3>Jumlah pembelian</h3><span className="step-tag">Terkunci</span></div>
                   <p className="qty-fixed" aria-label="Jumlah pembelian 1 item"><strong>1</strong><span>item</span></p>
                 </li>
-                <li className="order-step">
+                <li className="order-step" id="metode-bayar">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">4</span><h3>Metode pembayaran</h3></div>
                   <div className="pay-options" role="radiogroup" aria-label="Metode pembayaran">{availablePaymentMethods(paymentMethods, selected ? selected.price - voucherCut() : 0).map((method, index, options) => <Fragment key={method.id}>{index === 0 || options[index - 1].group !== method.group ? <p className="pay-group">{method.group}</p> : null}<label className={paymentMethod === method.id ? 'pay-option active' : 'pay-option'}><input type="radio" name="payment" value={method.id} checked={paymentMethod === method.id} onChange={() => setPaymentMethod(method.id)} autoComplete="off" /><span><strong>{method.label}</strong><small>{method.note}</small></span></label></Fragment>)}</div>{availablePaymentMethods(paymentMethods, selected ? selected.price - voucherCut() : 0).length < paymentMethods.length && <p className="pay-note">Virtual Account &amp; Mandiri Bill tersedia untuk pesanan mulai {rupiah(VA_MIN_ORDER)}.</p>}
                 </li>

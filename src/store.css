@@ -508,6 +508,7 @@
 .promo-actions .secondary-button{display:inline-flex;align-items:center;text-decoration:none}
 .hero-graphic-promo{padding:0;overflow:hidden;border-radius:var(--r-card);border:1px solid rgba(198,230,67,.22);background:#101b13}
 .hero-promo-img{display:block;width:100%;height:100%;object-fit:cover}
+#metode-bayar{scroll-margin-top:116px}
 .voucher-item-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .voucher-tag{display:inline-flex;align-items:center;padding:2px 9px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:.72rem;font-weight:700;color:var(--muted)}
 .voucher-tag.is-active{border-color:#8aa985;background:#141d10;color:var(--lime)}
