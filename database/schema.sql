@@ -180,6 +180,8 @@ CREATE TABLE IF NOT EXISTS account_check_logs (
 );
 CREATE INDEX IF NOT EXISTS account_check_logs_owner_idx ON account_check_logs (owner_id, created_at DESC);
 -- Instalasi lama yang sudah memiliki tabel log menambah kolom rekonsiliasi berikut.
+ALTER TABLE account_check_logs ALTER COLUMN owner_id DROP NOT NULL;
+ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS guest_token_hash text CHECK (guest_token_hash IS NULL OR guest_token_hash ~ '^[a-f0-9]{64}$');
 ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS user_id text;
 ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS zone_id text NOT NULL DEFAULT '';
 ALTER TABLE account_check_logs ADD COLUMN IF NOT EXISTS ref_id text;

@@ -1505,13 +1505,20 @@ test('brand tanpa layanan pemeriksaan ditolak dengan pesan jelas (422)', async (
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('pemeriksaan nickname menolak tanpa sesi terverifikasi dan saat provider belum diset', async () => {
+test('pemeriksaan nickname menolak token tidak valid, mendukung tamu dari cache, dan menolak saat provider belum diset', async () => {
   const unauthorized = createServer(createHandler({ pool: { query() { throw Error('db touched'); } }, env: checkEnv, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) })).listen(portAman(), '127.0.0.1');
   try {
     await new Promise(resolve => unauthorized.once('listening', resolve));
-    const response = await fetch(`http://127.0.0.1:${unauthorized.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    const response = await fetch(`http://127.0.0.1:${unauthorized.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer tidak-valid' }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
     assert.equal(response.status, 401);
   } finally { await new Promise(resolve => unauthorized.close(resolve)); }
+  const guestCached = createServer(createHandler({ pool: { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] }; if (sql.startsWith('SELECT id, ref_id AS "refId"')) return { rows: [] }; if (sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [{ nickname: 'TamuPro', region: 'ID', checked_at: new Date().toISOString() }] }; throw Error('unexpected SQL: ' + sql); } }, env: checkEnv, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => guestCached.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${guestCached.address().port}/api/check-account`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100' }) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).check.nickname, 'TamuPro');
+  } finally { await new Promise(resolve => guestCached.close(resolve)); }
   let fetchCalls = 0;
   const inactive = createServer(createHandler({ pool: { async query(sql) { if (sql.startsWith('SELECT id, game, customer_format FROM products')) return { rows: [{ id: 'ml10', game: 'MOBILE LEGENDS', customer_format: 'ml_concat' }] }; if (sql.startsWith('SELECT id, ref_id AS "refId"') || sql.startsWith('SELECT nickname, region, checked_at FROM account_checks')) return { rows: [] }; throw Error('unexpected SQL: ' + sql); } }, env, fetchImpl: withAuth(async () => { fetchCalls++; return { ok: true, json: async () => ({}) }; }) })).listen(portAman(), '127.0.0.1');
   try {

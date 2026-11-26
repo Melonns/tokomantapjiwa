@@ -2016,7 +2016,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
 
   // ponytail: cek nickname tidak pernah memblokir checkout; gagal ditampilkan apa adanya.
   async function checkNickname(force, statusOnly = false) {
-    if (!checkProduct || !checkAvailable || !loggedIn) return
+    if (!checkProduct || !checkAvailable) return
     clearCheckRetry()
     const id = userId.trim()
     const zone = zoneId.trim()
@@ -2029,7 +2029,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
       if (statusOnly) body.statusOnly = true
       const data = await request('/api/check-account', {
         method: 'POST',
-        headers: await authHeaders(),
+        headers: loggedIn ? await authHeaders() : { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       })
       if (run !== checkRunRef.current) return
@@ -2072,7 +2072,6 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
     checkPendingRef.current = false
     setCheckResult(null); setCheckError('')
     if (!checkProduct || !checkAvailable) { setCheckState('idle'); return }
-    if (!loggedIn) { setCheckState('locked'); return }
     const id = userId.trim()
     const zone = zoneId.trim()
     const valid = checkFormat === 'plain' ? /^[0-9]{1,32}$/.test(id) : /^[0-9]{1,32}$/.test(id) && /^[0-9]{1,20}$/.test(zone)
@@ -2259,7 +2258,6 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                       ) : null}
                       {checkState === 'error' && <p className="check-error" role="alert">{checkError}</p>}
                       {checkState === 'failed' && <p className="check-error" role="alert">Pemeriksaan gagal dari Digiflazz. Coba lagi beberapa saat lagi.</p>}
-                      {checkState === 'locked' && <p className="field-hint"><a href="/akun">Masuk</a> untuk memeriksa nickname otomatis.</p>}
                       {checkState === 'idle' && <p className="field-hint">{checkFormat === 'plain' ? 'Nickname muncul otomatis setelah User ID diisi.' : 'Nickname muncul otomatis setelah User ID dan Zone ID diisi.'}</p>}
                       {!checkAvailable && <p className="field-hint">Periksa nickname belum tersedia saat ini.</p>}
                     </div>

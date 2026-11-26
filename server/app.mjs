@@ -1079,7 +1079,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       }
       // ponytail: periksa nickname adalah layanan pemeriksaan per brand (ML memakai cek ML, FF memakai cek FF); hasil disimpan agar tidak membayar berulang.
       if (req.method === 'POST' && path === '/api/check-account') {
-        const ownerId = await authenticatedOwner(req, fetchImpl, env);
+        const ownerId = req.headers.authorization ? await authenticatedOwner(req, fetchImpl, env) : null;
+        const guestHash = ownerId ? null : createHash('sha256').update(`guest-check:${clientIp(req)}`).digest('hex');
         let body, input;
         try { body = await readJson(req); input = validateCheckout(body); } catch (err) { throw err.status ? err : error(400, err.message); }
         guard(body?.statusOnly === true ? 'checkAccountStatus' : 'checkAccount');
@@ -1093,7 +1094,9 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         try { customer = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
         const brand = String(product.game || '').toUpperCase();
         const statuses = body?.statusOnly === true ? ['pending', 'unknown', 'success', 'failed'] : ['pending', 'unknown'];
-        const { rows: pendingRows } = await pool.query("SELECT id, ref_id AS \"refId\", status, nickname, region, GREATEST(0, CEIL(EXTRACT(EPOCH FROM (retry_at - now()))))::int AS \"retryAfterSeconds\" FROM account_check_logs WHERE owner_id = $1 AND game = $2 AND user_id = $3 AND zone_id = $4 AND status = ANY($5::text[]) ORDER BY created_at DESC LIMIT 1", [ownerId, brand, input.userId, input.zoneId, statuses]);
+        const { rows: pendingRows } = ownerId
+          ? await pool.query("SELECT id, ref_id AS \"refId\", status, nickname, region, GREATEST(0, CEIL(EXTRACT(EPOCH FROM (retry_at - now()))))::int AS \"retryAfterSeconds\" FROM account_check_logs WHERE owner_id = $1 AND game = $2 AND user_id = $3 AND zone_id = $4 AND status = ANY($5::text[]) ORDER BY created_at DESC LIMIT 1", [ownerId, brand, input.userId, input.zoneId, statuses])
+          : await pool.query("SELECT id, ref_id AS \"refId\", status, nickname, region, GREATEST(0, CEIL(EXTRACT(EPOCH FROM (retry_at - now()))))::int AS \"retryAfterSeconds\" FROM account_check_logs WHERE owner_id IS NULL AND guest_token_hash = $1 AND game = $2 AND user_id = $3 AND zone_id = $4 AND status = ANY($5::text[]) ORDER BY created_at DESC LIMIT 1", [guestHash, brand, input.userId, input.zoneId, statuses]);
         if (body?.statusOnly === true) {
           const log = pendingRows[0];
           if (!log) throw error(409, 'Status pemeriksaan nickname tidak ditemukan.');
@@ -1120,10 +1123,14 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           logId = claimed.rows[0].id;
           refId = claimed.rows[0].refId;
         } else {
-          const used = await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId]);
+          const used = ownerId
+            ? await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id = $1 AND created_at > now() - interval '24 hours'", [ownerId])
+            : await pool.query("SELECT count(*)::int AS count FROM account_check_logs WHERE owner_id IS NULL AND guest_token_hash = $1 AND created_at > now() - interval '24 hours'", [guestHash]);
           if (used.rows[0].count >= maxChecksPerDay) throw error(429, 'Batas pemeriksaan nickname harian tercapai. Coba lagi besok.');
           const provider = checkRequest(env, checkGame, input, product, Number(skuRows[0].price));
-          const inserted = await pool.query("INSERT INTO account_check_logs (owner_id, game, user_id, zone_id, ref_id, customer_no, buyer_sku_code, status, retry_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now() + interval '1 minute') ON CONFLICT (owner_id, game, user_id, zone_id) WHERE status IN ('pending', 'unknown') DO NOTHING RETURNING id, ref_id AS \"refId\"", [ownerId, brand, input.userId, input.zoneId, provider.expected.refId, customer, checkGame.sku]);
+          const inserted = ownerId
+            ? await pool.query("INSERT INTO account_check_logs (owner_id, game, user_id, zone_id, ref_id, customer_no, buyer_sku_code, status, retry_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now() + interval '1 minute') ON CONFLICT (owner_id, game, user_id, zone_id) WHERE status IN ('pending', 'unknown') DO NOTHING RETURNING id, ref_id AS \"refId\"", [ownerId, brand, input.userId, input.zoneId, provider.expected.refId, customer, checkGame.sku])
+            : await pool.query("INSERT INTO account_check_logs (owner_id, guest_token_hash, game, user_id, zone_id, ref_id, customer_no, buyer_sku_code, status, retry_at) VALUES (NULL,$1,$2,$3,$4,$5,$6,$7,'pending',now() + interval '1 minute') RETURNING id, ref_id AS \"refId\"", [guestHash, brand, input.userId, input.zoneId, provider.expected.refId, customer, checkGame.sku]);
           if (!inserted.rows[0]) return send(res, 200, { check: { status: 'pending', retryAfterSeconds: 60 } });
           logId = inserted.rows[0].id;
           refId = inserted.rows[0].refId;
