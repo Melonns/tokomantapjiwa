@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './core.mjs';
-import { createHandler, digiRequest, reconcilePending, syncCatalogAndNotify } from './app.mjs';
+import { createHandler, digiRequest, handleTelegramCommand, reconcilePending, resetBalanceCache, setCachedBalance, syncCatalogAndNotify } from './app.mjs';
 import { checkGames, checkReady, checkReport, checkRequest, checkResult, cleanNickname } from './check.mjs';
 
 // Port 0 membuat OS memilih port kosong yang dijamin tidak bentrok di CI maupun lokal.
@@ -2181,4 +2181,118 @@ test('GET /api/vouchers/active mengembalikan voucher aktif publik tanpa autentik
     assert.equal(body.vouchers[0].targetCategory, 'Games');
     assert.equal(body.vouchers[0].targetGame, 'MOBILE LEGENDS');
   } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('handleTelegramCommand /saldo mengecek deposit Digiflazz dan membalas ke Telegram', async () => {
+  const sent = [];
+  const fetchImpl = async (url, options) => {
+    if (url === 'https://api.digiflazz.com/v1/cek-saldo') {
+      const body = JSON.parse(options.body);
+      assert.equal(body.cmd, 'deposit');
+      assert.equal(body.username, 'buyer');
+      assert.equal(body.sign, createHash('md5').update('buyerapi-secretdepo').digest('hex'));
+      return { ok: true, status: 200, json: async () => ({ data: { deposit: 175500 } }) };
+    }
+    if (url.includes('api.telegram.org')) {
+      sent.push(JSON.parse(options.body));
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    throw Error('unexpected fetch: ' + url);
+  };
+  const res = await handleTelegramCommand(fetchImpl, { ...env, TELEGRAM_BOT_TOKEN: 'bot-tok', TELEGRAM_CHAT_ID: '12345' }, '/saldo');
+  assert.equal(res.handled, true);
+  assert.equal(res.balance, 175500);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /Rp 175\.500/);
+});
+
+test('webhook Digiflazz rc 44 (saldo tidak cukup) menandai fulfillment_failed dan memberi alert Telegram', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const secret = 'webhook-test-secret';
+  const telegramCalls = [];
+  let updatedStatus = null;
+  const pool = { async query(sql, params) {
+    if (sql.startsWith('UPDATE account_check_logs')) return { rows: [] };
+    if (sql.includes('UPDATE orders SET status = $2')) {
+      updatedStatus = params[1];
+      return { rows: [{ id, status: updatedStatus, productName: '86 Diamonds', price: 21600, sn: null }] };
+    }
+    throw Error('unexpected SQL: ' + sql);
+  } };
+  const fetchImpl = async (url, options) => {
+    if (url.includes('api.telegram.org')) {
+      telegramCalls.push(JSON.parse(options.body));
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    throw Error('unexpected fetch: ' + url);
+  };
+  const server = createServer(createHandler({
+    pool,
+    env: { ...env, DIGIFLAZZ_WEBHOOK_SECRET: secret, TELEGRAM_BOT_TOKEN: 'bot-tok', TELEGRAM_CHAT_ID: '12345' },
+    fetchImpl,
+  })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const raw = JSON.stringify({ data: { ref_id: id, buyer_sku_code: 'ml86', customer_no: '738155892031', status: 'Gagal', rc: '44', message: 'Saldo tidak cukup' } });
+    const signature = createHmac('sha1', secret).update(raw, 'utf8').digest('hex');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/webhooks/digiflazz`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature': `sha1=${signature}` }, body: raw,
+    });
+    assert.equal(response.status, 200);
+    assert.equal(updatedStatus, 'fulfillment_failed');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(telegramCalls.length, 1);
+    assert.match(telegramCalls[0].text, /Saldo Digiflazz tidak cukup/);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('alert saldo menipis dan penjaga checkout 0ms menahan pesanan saat saldo cache kurang dari modal', async () => {
+  resetBalanceCache();
+  const telegramCalls = [];
+  const testEnv = { ...env, TELEGRAM_BOT_TOKEN: 'bot-tok', TELEGRAM_CHAT_ID: '12345', DIGIFLAZZ_LOW_BALANCE_RP: '100000' };
+  const tgFetch = async (url, options) => {
+    if (url.includes('api.telegram.org')) {
+      telegramCalls.push(JSON.parse(options.body));
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    throw Error('unexpected fetch: ' + url);
+  };
+  try {
+    setCachedBalance(50000, tgFetch, testEnv);
+    setCachedBalance(40000, tgFetch, testEnv); // tidak spam ulang
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(telegramCalls.length, 1);
+    assert.match(telegramCalls[0].text, /Saldo Digiflazz menipis: Rp 50\.000/);
+
+    let midtransCalled = false;
+    const pool = {
+      async query(sql) {
+        if (sql.startsWith('SELECT id, name, price, digi_sku')) {
+          return { rows: [{ id: 'gp100', name: 'Google Play 100k', price: 91200, digi_sku: 'gp100', customer_format: 'plain', gangguan: false, game: 'GOOGLE PLAY INDONESIA', category: 'Voucher', admin_cost: 85400, admin: false }] };
+        }
+        throw Error('unexpected SQL: ' + sql);
+      },
+    };
+    const server = createServer(createHandler({
+      pool,
+      env: testEnv,
+      fetchImpl: withAuth(async (url, options) => {
+        if (url.includes('api.telegram.org')) return tgFetch(url, options);
+        midtransCalled = true;
+        throw Error('Midtrans should not be called');
+      }),
+    })).listen(portAman(), '127.0.0.1');
+    try {
+      await new Promise(resolve => server.once('listening', resolve));
+      const res = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, {
+        method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ productId: 'gp100', userId: '08123456789' }),
+      });
+      assert.equal(res.status, 503);
+      assert.equal(midtransCalled, false);
+    } finally { await new Promise(resolve => server.close(resolve)); }
+  } finally {
+    resetBalanceCache();
+  }
 });

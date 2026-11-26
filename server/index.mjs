@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
-import { createHandler, reconcilePending, syncCatalogAndNotify } from './app.mjs';
+import { createHandler, fetchDigiflazzBalance, handleTelegramCommand, reconcilePending, syncCatalogAndNotify } from './app.mjs';
 
 if (!process.env.DATABASE_URL) throw Error('DATABASE_URL wajib diisi.');
 // ponytail: Sertifikat akar Supabase lama dipakai hanya bila berkasnya ada. Berkas itu tidak ikut Git
@@ -78,6 +78,59 @@ async function catalogSyncSweep() {
 if (catalogSyncMinutes > 0) {
   setInterval(catalogSyncSweep, catalogSyncMinutes * 60 * 1000).unref();
   console.log(`[catalog-sync] sinkron otomatis aktif setiap ${catalogSyncMinutes} menit`);
+}
+
+// ponytail: Polling perintah Telegram (hanya dari TELEGRAM_CHAT_ID) agar admin bisa cek saldo Digiflazz dengan /saldo.
+const tgToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+const tgChatId = String(process.env.TELEGRAM_CHAT_ID || '').trim();
+if (tgToken && tgChatId) {
+  let telegramOffset = null;
+  let telegramPollBusy = false;
+  setInterval(async () => {
+    if (telegramPollBusy) return;
+    telegramPollBusy = true;
+    try {
+      const qs = telegramOffset == null ? 'limit=20&timeout=0' : `offset=${telegramOffset}&limit=10&timeout=0`;
+      const res = await fetch(`https://api.telegram.org/bot${encodeURIComponent(tgToken)}/getUpdates?${qs}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return;
+      const body = await res.json().catch(() => null);
+      const updates = Array.isArray(body?.result) ? body.result : [];
+      if (telegramOffset == null) {
+        telegramOffset = updates.length ? updates[updates.length - 1].update_id + 1 : 0;
+        return;
+      }
+      for (const update of updates) {
+        telegramOffset = update.update_id + 1;
+        if (String(update?.message?.chat?.id || '') !== tgChatId) continue;
+        await handleTelegramCommand(fetch, process.env, update.message.text);
+      }
+    } catch {} finally {
+      telegramPollBusy = false;
+    }
+  }, 5000).unref();
+  console.log('[telegram] perintah /saldo aktif untuk admin');
+}
+
+// ponytail: Refresh cache saldo Digiflazz tiap 10 menit (terpisah dari sinkron katalog 30 menit)
+// agar alert saldo menipis & penjaga checkout 0ms selalu punya angka terbaru tanpa nembak API saat checkout.
+const rawBalanceMinutes = Number(process.env.BALANCE_CHECK_INTERVAL_MINUTES ?? 10);
+const balanceMinutes = Number.isFinite(rawBalanceMinutes) && rawBalanceMinutes > 0 ? Math.max(5, rawBalanceMinutes) : 0;
+let balanceCheckBusy = false;
+async function balanceSweep() {
+  if (balanceCheckBusy) return;
+  balanceCheckBusy = true;
+  try {
+    await fetchDigiflazzBalance(fetch, process.env);
+  } catch {} finally {
+    balanceCheckBusy = false;
+  }
+}
+if (balanceMinutes > 0 && process.env.DIGIFLAZZ_USERNAME && process.env.DIGIFLAZZ_API_KEY) {
+  setTimeout(balanceSweep, 5000).unref();
+  setInterval(balanceSweep, balanceMinutes * 60 * 1000).unref();
+  console.log(`[digiflazz] pemantau saldo aktif setiap ${balanceMinutes} menit`);
 }
 
 // Tutup koneksi dengan rapi, tetapi jangan biarkan systemd menunggu selamanya.

@@ -208,7 +208,7 @@ async function submitDigi(pool, fetchImpl, env, row) {
     let status = 'manual_review';
     if (data?.ref_id === row.id && data?.buyer_sku_code === row.digi_sku && data?.customer_no === row.customer_no) {
       if (data.status === 'Sukses' && data.rc === '00') status = 'fulfilled';
-      else if (data.status === 'Gagal' && data.rc === '02') status = 'fulfillment_failed';
+      else if (data.status === 'Gagal' && ['02', '44'].includes(String(data.rc))) status = 'fulfillment_failed';
       else if (String(data.status || '').trim().toLowerCase() === 'pending') status = 'fulfillment_pending';
     }
     const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
@@ -220,7 +220,8 @@ async function submitDigi(pool, fetchImpl, env, row) {
       sendTelegramAlert(fetchImpl, env, `Pesanan selesai · ${done[0].productName || row.digi_sku || 'Produk'}${priceLabel} · pesanan ${row.id}${done[0].sn ? ` · SN: ${done[0].sn}` : ''}`);
     } else if (done[0]?.status === 'fulfillment_failed') {
       notifyOrder(pool, fetchImpl, env, 'failed', row.id);
-      alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz gagal', note || 'transaksi gagal di provider');
+      const reason = String(data?.rc) === '44' ? 'Saldo Digiflazz tidak cukup — isi saldo lalu klik Kirim ulang di Admin' : 'Pengiriman Digiflazz gagal';
+      alertPayment(fetchImpl, env, row.id, reason, note || 'transaksi gagal di provider');
     } else if (done[0]?.status === 'manual_review') alertPayment(fetchImpl, env, row.id, 'Pengiriman Digiflazz belum pasti', note || 'balasan tidak final');
   } catch (err) {
     console.error('Digiflazz request unresolved; reconcile ref_id manually:', row.id, err?.upstreamStatus ? `HTTP ${err.upstreamStatus}` : '', err.message);
@@ -489,6 +490,69 @@ function notifyOrder(pool, fetchImpl, env, event, orderId) {
       console.error('[mail]', event, orderId, err?.message || String(err));
     }
   })();
+}
+
+const BALANCE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
+let cachedBalance = { amount: null, updatedAt: 0, lowAlerted: false };
+
+export function resetBalanceCache() {
+  cachedBalance = { amount: null, updatedAt: 0, lowAlerted: false };
+}
+
+export function getCachedBalance() {
+  if (cachedBalance.amount == null) return null;
+  if (Date.now() - cachedBalance.updatedAt >= BALANCE_CACHE_MAX_AGE_MS) return null;
+  return cachedBalance.amount;
+}
+
+export function setCachedBalance(amount, fetchImpl = fetch, env = process.env) {
+  const num = Number(amount);
+  if (!Number.isFinite(num) || num < 0) return;
+  cachedBalance.amount = num;
+  cachedBalance.updatedAt = Date.now();
+  const threshold = Number(env?.DIGIFLAZZ_LOW_BALANCE_RP ?? 100000);
+  if (Number.isFinite(threshold) && threshold > 0) {
+    if (num < threshold && !cachedBalance.lowAlerted) {
+      cachedBalance.lowAlerted = true;
+      sendTelegramAlert(fetchImpl, env, `Saldo Digiflazz menipis: Rp ${new Intl.NumberFormat('id-ID').format(num)} (di bawah ambang Rp ${new Intl.NumberFormat('id-ID').format(threshold)}). Segera isi deposit.`);
+    } else if (num >= threshold) {
+      cachedBalance.lowAlerted = false;
+    }
+  }
+}
+
+export async function fetchDigiflazzBalance(fetchImpl, env) {
+  const username = String(env.DIGIFLAZZ_USERNAME || '').trim();
+  const apiKey = String(env.DIGIFLAZZ_API_KEY || '').trim();
+  if (!username || !apiKey) return null;
+  const response = await externalJson(fetchImpl, 'https://api.digiflazz.com/v1/cek-saldo', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cmd: 'deposit', username, sign: createHash('md5').update(`${username}${apiKey}depo`).digest('hex') }),
+  });
+  const deposit = Number(response?.data?.deposit);
+  if (Number.isFinite(deposit) && deposit >= 0) {
+    setCachedBalance(deposit, fetchImpl, env);
+    return deposit;
+  }
+  throw new Error(response?.data?.message || 'Saldo Digiflazz belum dapat dibaca.');
+}
+
+export async function handleTelegramCommand(fetchImpl, env, text) {
+  const cmd = String(text || '').trim().toLowerCase().split(/\s+/)[0].replace(/@.+$/, '');
+  if (cmd !== '/saldo' && cmd !== 'saldo') return { handled: false };
+  try {
+    const balance = await fetchDigiflazzBalance(fetchImpl, env);
+    if (balance == null) {
+      sendTelegramAlert(fetchImpl, env, 'Kredensial Digiflazz belum dikonfigurasi di server.');
+      return { handled: true, balance: null };
+    }
+    sendTelegramAlert(fetchImpl, env, `Saldo Digiflazz saat ini: Rp ${new Intl.NumberFormat('id-ID').format(balance)}`);
+    return { handled: true, balance };
+  } catch (err) {
+    sendTelegramAlert(fetchImpl, env, `Gagal cek saldo Digiflazz: ${err?.message || String(err)}`);
+    return { handled: true, balance: null };
+  }
 }
 
 function sendTelegramAlert(fetchImpl, env, text) {
@@ -855,6 +919,12 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         if (!product) throw error(404, 'Produk tidak tersedia.');
         if (product.gangguan === true) throw error(409, 'Produk ini sedang mengalami gangguan. Pilih nominal lain atau coba kembali beberapa saat lagi.');
         if (!Object.values(customerFormats).includes(product.customer_format)) throw error(422, 'Format tujuan belum didukung.');
+        const knownBalance = getCachedBalance();
+        const productCost = Number(product.admin_cost);
+        if (knownBalance != null && Number.isFinite(productCost) && productCost > 0 && knownBalance < productCost) {
+          sendTelegramAlert(fetchImpl, env, `Checkout ditahan: saldo Digiflazz (Rp ${new Intl.NumberFormat('id-ID').format(knownBalance)}) tidak cukup untuk ${product.name} (modal Rp ${new Intl.NumberFormat('id-ID').format(productCost)}).`);
+          throw error(503, 'Layanan sedang dalam penyesuaian stok. Silakan coba beberapa saat lagi.');
+        }
         // ponytail: admin membeli dengan harga modal supplier, pembeli biasa tetap memakai harga jual.
         const harga = modalAdmin(product, product.price);
         const picked = input.voucherCode ? await voucherFor(pool, input.voucherCode, ownerId, harga, product) : null;
@@ -1320,7 +1390,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           await pool.query("UPDATE orders SET updated_at = now() WHERE id = $1 AND digi_sku = $2 AND customer_no = $3 AND status = 'fulfillment_pending'", [refId, data?.buyer_sku_code, data?.customer_no]);
           return send(res, 200, { received: true });
         }
-        const next = status === 'Sukses' && String(data?.rc) === '00' ? 'fulfilled' : status === 'Gagal' && String(data?.rc) === '02' ? 'fulfillment_failed' : 'manual_review';
+        const next = status === 'Sukses' && String(data?.rc) === '00' ? 'fulfilled' : status === 'Gagal' && ['02', '44'].includes(String(data?.rc)) ? 'fulfillment_failed' : 'manual_review';
         const sn = typeof data?.sn === 'string' && data.sn.trim() ? data.sn.trim().slice(0, 120) : null;
         const note = typeof data?.message === 'string' && data.message.trim() ? data.message.trim().slice(0, 200) : null;
         const { rows } = await pool.query("UPDATE orders SET status = $2, fulfillment_sn = COALESCE($3, fulfillment_sn), fulfillment_note = COALESCE($4, fulfillment_note), updated_at = now() WHERE id = $1 AND digi_sku = $5 AND customer_no = $6 AND status IN ('fulfillment_pending', 'manual_review') RETURNING id, status, product_name AS \"productName\", price, fulfillment_sn AS \"sn\"", [refId, next, sn, note, data?.buyer_sku_code, data?.customer_no]);
@@ -1331,7 +1401,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           sendTelegramAlert(fetchImpl, env, `Pesanan selesai · ${rows[0].productName || data?.buyer_sku_code || 'Produk'}${priceLabel} · pesanan ${refId}${rows[0].sn || sn ? ` · SN: ${rows[0].sn || sn}` : ''}`);
         } else if (next === 'fulfillment_failed') {
           notifyOrder(pool, fetchImpl, env, 'failed', refId);
-          alertPayment(fetchImpl, env, refId, 'Pengiriman Digiflazz gagal', note || 'transaksi gagal di provider');
+          const reason = String(data?.rc) === '44' ? 'Saldo Digiflazz tidak cukup — isi saldo lalu klik Kirim ulang di Admin' : 'Pengiriman Digiflazz gagal';
+          alertPayment(fetchImpl, env, refId, reason, note || 'transaksi gagal di provider');
         } else if (next === 'manual_review') {
           alertPayment(fetchImpl, env, refId, 'Pengiriman Digiflazz perlu ditinjau', note || `status=${status || '-'}`);
         }
