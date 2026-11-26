@@ -21,15 +21,15 @@ test('kontak terisi dari profil tetapi tetap bisa diubah', () => {
   assert.match(app, /setContactEmail\(\(current\) => current \|\| profilEmail\)/)
   assert.match(app, /setContactPhone\(\(current\) => current \|\| profilPhone\)/)
   assert.match(app, /Terisi dari profil akun\./);
-  assert.match(app, /Masuk ke akun untuk menyelesaikan pesanan\./);
+  assert.match(app, /Isi email atau nomor HP untuk menerima struk pesanan\./);
 })
 
 test('kontak ikut dikirim dan disimpan di pesanan', () => {
-  assert.match(app, /contactEmail: email,/)
+  assert.match(app, /contactEmail: email/)
   assert.match(app, /\.\.\.\(phone \? \{ contactPhone: phone \} : \{\}\)/)
   assert.match(core, /contactEmail !== undefined && \(typeof contactEmail !== 'string'/)
   assert.match(core, /if \(contactEmail\) input\.contactEmail = contactEmail\.trim\(\)/)
-  assert.match(server, /INSERT INTO orders \([^)]*contact_email, contact_phone, payment_environment\)/)
+  assert.match(server, /INSERT INTO orders \([^)]*contact_email, contact_phone, payment_environment/)
   assert.match(server, /COALESCE\(o\.contact_email, \(SELECT email FROM auth\.users/)
   assert.match(schema, /contact_email text CHECK \(contact_email IS NULL OR length\(contact_email\) BETWEEN 3 AND 120\)/)
   assert.match(schema, /contact_phone text CHECK \(contact_phone IS NULL OR length\(contact_phone\) BETWEEN 8 AND 20\)/)

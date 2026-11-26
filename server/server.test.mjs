@@ -2296,3 +2296,55 @@ test('alert saldo menipis dan penjaga checkout 0ms menahan pesanan saat saldo ca
     resetBalanceCache();
   }
 });
+
+test('guest checkout berhasil tanpa login dan struk hanya bisa dibuka dengan guestToken', async () => {
+  let savedHash = null;
+  const pool = {
+    async query(sql, params) {
+      if (sql.startsWith('SELECT id, name, price, digi_sku')) {
+        return { rows: [{ id: 'ml10', name: '10 Diamonds', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat', gangguan: false, game: 'MOBILE LEGENDS', category: 'Games', admin_cost: 20000, admin: false }] };
+      }
+      if (sql.startsWith('INSERT INTO orders')) {
+        savedHash = params[14];
+        return { rows: [] };
+      }
+      if (sql.startsWith('UPDATE orders SET payment_channel')) return { rows: [] };
+      if (sql.startsWith('SELECT id, status, product_name')) {
+        if (params[0] === savedHash) return { rows: [{ id: params[1], status: 'pending', productName: '10 Diamonds', price: 25000 }] };
+        return { rows: [] };
+      }
+      throw Error('unexpected SQL: ' + sql);
+    },
+  };
+  const fetchImpl = async (url) => {
+    if (url.includes('midtrans.com/v2/charge')) {
+      return { ok: true, status: 200, json: async () => ({ transaction_status: 'pending', expiry_time: '2026-10-15 12:35:07', actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) };
+    }
+    throw Error('unexpected fetch: ' + url);
+  };
+  const server = createServer(createHandler({ pool, env, fetchImpl })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const voucherReject = await fetch(`${base}/api/checkout`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', voucherCode: 'OPENML', contactPhone: '08123456789' }),
+    });
+    assert.equal(voucherReject.status, 401);
+
+    const okRes = await fetch(`${base}/api/checkout`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', contactPhone: '08123456789' }),
+    });
+    assert.equal(okRes.status, 201);
+    const body = await okRes.json();
+    assert.ok(body.guestToken);
+    assert.equal(savedHash, createHash('sha256').update(body.guestToken).digest('hex'));
+
+    const noToken = await fetch(`${base}/api/orders/${body.orderId}`);
+    assert.equal(noToken.status, 401);
+
+    const withToken = await fetch(`${base}/api/orders/${body.orderId}`, { headers: { 'x-guest-token': body.guestToken } });
+    assert.equal(withToken.status, 200);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

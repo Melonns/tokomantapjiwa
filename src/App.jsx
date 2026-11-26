@@ -147,6 +147,26 @@ function currentPath() {
   return window.location.pathname.replace(/\/+$/, '') || '/'
 }
 
+function getGuestToken(orderId) {
+  try {
+    const fromQuery = new URLSearchParams(window.location.search).get('token') || ''
+    if (fromQuery) return fromQuery
+    const saved = JSON.parse(window.localStorage.getItem('melonbyte_guest_tokens') || '{}')
+    return typeof saved?.[orderId] === 'string' ? saved[orderId] : ''
+  } catch {
+    return ''
+  }
+}
+
+function saveGuestToken(orderId, token) {
+  if (!orderId || !token) return
+  try {
+    const saved = JSON.parse(window.localStorage.getItem('melonbyte_guest_tokens') || '{}')
+    saved[orderId] = token
+    window.localStorage.setItem('melonbyte_guest_tokens', JSON.stringify(saved))
+  } catch {}
+}
+
 function migrateLegacyHash() {
   const hash = window.location.hash
   if (!hash || hash === '#' || hash === '#main') return
@@ -899,24 +919,27 @@ function App() {
   }, [orderQuery])
 
   useEffect(() => {
-    if (view !== 'receipt' || !session) { setReceipt(null); setReceiptState('idle'); return }
+    const receiptGuestToken = receiptId ? getGuestToken(receiptId) : ''
+    if (view !== 'receipt' || (!session && !receiptGuestToken)) { setReceipt(null); setReceiptState('idle'); return }
     if (!receiptId) { setReceipt(null); setReceiptError('Pesanan tidak ditemukan. Buka struk dari riwayat pesanan di akun.'); setReceiptState('error'); return }
     let active = true
     setReceiptState((current) => (current === 'ready' ? current : 'loading'))
-    authHeaders().then((headers) => request(`/api/orders/${encodeURIComponent(receiptId)}`, { headers })).then((data) => {
+    const loadHeaders = session ? authHeaders() : Promise.resolve({ 'x-guest-token': receiptGuestToken })
+    loadHeaders.then((headers) => request(`/api/orders/${encodeURIComponent(receiptId)}`, { headers })).then((data) => {
       if (active) { setReceipt(data.order || null); setReceiptError(''); setReceiptState('ready') }
     }).catch((error) => { if (active) { setReceiptError(error.message); setReceiptState((current) => (current === 'ready' ? current : 'error')) } })
     return () => { active = false }
   }, [view, session?.access_token, receiptId, receiptRetry])
 
   useEffect(() => {
-    if (view !== 'receipt' || !session) return
+    const receiptGuestToken = receiptId ? getGuestToken(receiptId) : ''
+    if (view !== 'receipt' || (!session && !receiptGuestToken)) return
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') setReceiptRetry((value) => value + 1)
     }
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => document.removeEventListener('visibilitychange', refreshWhenVisible)
-  }, [view, session?.access_token])
+  }, [view, session?.access_token, receiptId])
 
   useEffect(() => {
     const aktif = ACTIVE_STATUSES.includes(receipt?.status) || (receipt?.status === 'manual_review' && !receipt?.paidAt)
@@ -1617,8 +1640,8 @@ function App() {
       setCheckoutState('error')
       return
     }
-    if (!supabase || !session) {
-      setCheckoutError('Masuk ke akun Anda terlebih dahulu sebelum membuat pesanan.')
+    if (!session && !contactEmail.trim() && !contactPhone.trim()) {
+      setCheckoutError('Isi email atau nomor HP agar struk pesanan dapat dikirim.')
       setCheckoutState('error')
       return
     }
@@ -1650,6 +1673,10 @@ function App() {
   // ponytail: angka potongan diminta ke server, bukan dihitung di browser, supaya layar dan tagihan tidak pernah beda.
   async function applyVoucher() {
     if (!selected || voucherBusy) return
+    if (!session) {
+      setVoucherNotice('Masuk ke akun terlebih dahulu untuk memakai kode promo.')
+      return
+    }
     const code = promoCode.trim().toUpperCase()
     if (!code) return
     setVoucherBusy(true)
@@ -1764,23 +1791,29 @@ function App() {
     setCheckoutState('loading')
     setCheckoutError('')
     try {
-      if (!supabase || !session) throw new Error('Masuk ke akun Anda terlebih dahulu sebelum membuat pesanan.')
       const email = contactEmail.trim()
       const phone = contactPhone.trim()
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw new Error('Isi email kontak yang valid sebelum membuat pesanan.')
+      if (!email && !phone) throw new Error('Isi email atau nomor HP agar struk pesanan dapat dikirim.')
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw new Error('Isi email kontak yang valid sebelum membuat pesanan.')
       if (phone && !/^[0-9+()\s-]{8,20}$/.test(phone)) throw new Error('Isi nomor HP kontak yang valid sebelum membuat pesanan.')
       const voucherUse = activeVoucher()
       const payable = selected.price - (voucherUse ? voucherUse.discount : 0)
+      const headers = session ? await authHeaders() : {}
       const data = await request('/api/checkout', {
         method: 'POST',
-        headers: await authHeaders(),
-        body: JSON.stringify({ ...(selected.format === 'plain' || selected.format === 'riot' ? { productId: selected.id, userId: userId.trim() } : { productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim() }), paymentMethod: activePaymentMethod(payable), voucherCode: voucherUse?.code, contactEmail: email, ...(phone ? { contactPhone: phone } : {}) }),
+        headers,
+        body: JSON.stringify({ ...(selected.format === 'plain' || selected.format === 'riot' ? { productId: selected.id, userId: userId.trim() } : { productId: selected.id, userId: userId.trim(), zoneId: zoneId.trim() }), paymentMethod: activePaymentMethod(payable), voucherCode: voucherUse?.code, ...(email ? { contactEmail: email } : {}), ...(phone ? { contactPhone: phone } : {}) }),
       })
       if (!data.orderId) throw new Error('Pesanan tidak terbentuk. Coba lagi beberapa saat nanti.')
       setConfirmOpen(false)
       setCheckoutState('idle')
       setReceipt(null)
-      go(`/struk/${encodeURIComponent(data.orderId)}`)
+      if (data.guestToken) {
+        saveGuestToken(data.orderId, data.guestToken)
+        go(`/struk/${encodeURIComponent(data.orderId)}?token=${encodeURIComponent(data.guestToken)}`)
+      } else {
+        go(`/struk/${encodeURIComponent(data.orderId)}`)
+      }
     } catch (error) {
       setCheckoutError(error.message)
       setCheckoutState('error')
@@ -1821,7 +1854,8 @@ function App() {
     setQrState('loading')
     setQrError('')
     try {
-      const headers = await authHeaders()
+      const guestToken = getGuestToken(id)
+      const headers = session ? await authHeaders() : { 'x-guest-token': guestToken }
       const response = await fetch(`/api/orders/${encodeURIComponent(id)}/qr.png`, { headers })
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}))
@@ -2247,12 +2281,12 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
                 <li className="order-step">
                   <div className="order-step-head"><span className="step-badge" aria-hidden="true">6</span><h3>Detail kontak</h3></div>
                   <div className="field-row"><label><span className="field-label">Email</span><input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} type="email" aria-required="true" maxLength="120" autoComplete="off" placeholder="nama@email.com" aria-describedby="kontak-bisa-diubah" /></label><label><span className="field-label">Nomor HP (opsional)</span><input value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} type="tel" maxLength="20" inputMode="tel" autoComplete="off" placeholder="08..." aria-describedby="kontak-bisa-diubah" /></label></div>
-                  <p className="field-hint" id="kontak-bisa-diubah">{session ? 'Email wajib. Nomor HP opsional. Terisi dari profil akun.' : 'Masuk ke akun untuk menyelesaikan pesanan.'}</p>
+                  <p className="field-hint" id="kontak-bisa-diubah">{session ? 'Email wajib. Nomor HP opsional. Terisi dari profil akun.' : 'Isi email atau nomor HP untuk menerima struk pesanan. Tanpa login tetap bisa checkout; login hanya diperlukan untuk memakai voucher.'}</p>
                 </li>
               </ol>
               {!checkoutAvailable && <p className="field-hint" role="status">Checkout belum tersedia. Coba lagi nanti.</p>}
               {checkoutError && <p className="form-error" role="alert">{checkoutError}</p>}
-              <button className="checkout-button" type="submit" disabled={!checkoutAvailable || !selected || !session || checkoutState === 'loading'}>{checkoutState === 'loading' ? 'Membuat pesanan...' : 'Buat pesanan'}</button>
+              <button className="checkout-button" type="submit" disabled={!checkoutAvailable || !selected || checkoutState === 'loading'}>{checkoutState === 'loading' ? 'Membuat pesanan...' : 'Buat pesanan'}</button>
             </form>
             {confirmOpen && <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && checkoutState !== 'loading') setConfirmOpen(false) }}>
               <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
@@ -2282,7 +2316,7 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             <div><a className="back-button" href="/akun">‹ Semua pesanan</a><h1>Invoice <span className="invoice-code">#{(receipt?.id || receiptId || '').slice(0, 8)}</span></h1>{receipt?.createdAt && <p className="invoice-meta">Dibuat {labelTanggalJam(receipt.createdAt)}</p>}</div>
             {receipt && <span className={`receipt-status status-${receipt.status}`}>{statusLabel(receipt.status)}</span>}
           </div>
-          {!session ? <div className="notice" role="status"><p>Masuk untuk membuka invoice ini.</p><a className="secondary-button" href="/akun">Masuk</a></div> : receiptState === 'error' ? <p role="alert">Gagal memuat invoice. {receiptError} <button type="button" onClick={() => setReceiptRetry((value) => value + 1)}>Coba lagi</button> <a href="/akun">Kembali ke akun</a></p> : !receipt ? <p role="status">Memuat invoice...</p> : <>
+          {!session && !(receiptId && getGuestToken(receiptId)) ? <div className="notice" role="status"><p>Masuk untuk membuka invoice ini.</p><a className="secondary-button" href="/akun">Masuk</a></div> : receiptState === 'error' ? <p role="alert">Gagal memuat invoice. {receiptError} <button type="button" onClick={() => setReceiptRetry((value) => value + 1)}>Coba lagi</button> <a href="/akun">Kembali ke akun</a></p> : !receipt ? <p role="status">Memuat invoice...</p> : <>
             <section className={`invoice-banner banner-${receipt.status}`} aria-label="Status pesanan">
               <div><h2>{statusLabel(receipt.status)}</h2>{statusHint(receipt.status) && <p>{statusHint(receipt.status)}</p>}</div>
               {receipt.status === 'pending' && receipt.paymentExpiresAt && <p className="invoice-timer">{invoiceRemaining > 0 ? <>Sisa waktu bayar <strong>{invoiceRemainingLabel}</strong></> : 'Waktu pembayaran habis. Buat pesanan baru untuk mencoba kembali.'}</p>}

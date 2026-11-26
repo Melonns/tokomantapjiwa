@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS supplier_products (
 );
 CREATE TABLE IF NOT EXISTS orders (
   id uuid PRIMARY KEY,
-  owner_id uuid NOT NULL REFERENCES auth.users(id),
+  owner_id uuid REFERENCES auth.users(id),
+  guest_token_hash text CHECK (guest_token_hash IS NULL OR guest_token_hash ~ '^[a-f0-9]{64}$'),
   product_id text NOT NULL REFERENCES products(id),
   product_name text NOT NULL,
   price integer NOT NULL CHECK (price BETWEEN 1 AND 100000000),
@@ -86,6 +87,8 @@ CREATE TABLE IF NOT EXISTS orders (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (digiflazz_claimed_at IS NULL OR status IN ('fulfillment_pending', 'fulfilled', 'fulfillment_failed', 'manual_review', 'refunded'))
 );
+ALTER TABLE orders ALTER COLUMN owner_id DROP NOT NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS guest_token_hash text CHECK (guest_token_hash IS NULL OR guest_token_hash ~ '^[a-f0-9]{64}$');
 CREATE INDEX IF NOT EXISTS orders_owner_created_idx ON orders (owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS orders_attention_idx ON orders (updated_at) WHERE status IN ('payment_paid', 'fulfillment_pending', 'manual_review', 'fulfillment_failed');
 CREATE INDEX IF NOT EXISTS orders_environment_paid_at_idx ON orders (payment_environment, paid_at) WHERE paid_at IS NOT NULL;
@@ -140,7 +143,8 @@ ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS target_game text CHECK (target_gam
 CREATE TABLE IF NOT EXISTS voucher_redemptions (
   order_id uuid PRIMARY KEY,
   code text NOT NULL REFERENCES vouchers(code) ON DELETE CASCADE,
-  owner_id uuid NOT NULL REFERENCES auth.users(id),
+  owner_id uuid REFERENCES auth.users(id),
+  guest_token_hash text CHECK (guest_token_hash IS NULL OR guest_token_hash ~ '^[a-f0-9]{64}$'),
   amount integer NOT NULL CHECK (amount > 0),
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -160,7 +164,8 @@ CREATE TABLE IF NOT EXISTS account_checks (
 -- Catatan transaksi provider cek nickname per akun, termasuk ref_id agar pending bisa direkonsiliasi.
 CREATE TABLE IF NOT EXISTS account_check_logs (
   id bigserial PRIMARY KEY,
-  owner_id uuid NOT NULL REFERENCES auth.users(id),
+  owner_id uuid REFERENCES auth.users(id),
+  guest_token_hash text CHECK (guest_token_hash IS NULL OR guest_token_hash ~ '^[a-f0-9]{64}$'),
   game text NOT NULL CHECK (length(game) BETWEEN 1 AND 80),
   user_id text NOT NULL,
   zone_id text NOT NULL DEFAULT '',

@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { paidStatus, paymentSignature, validateCheckout, verifiedPayment, customerNo as buildCustomerNo } from './core.mjs';
 import { paymentProvider, sumopodBody, sumopodConfig, sumopodExpiresAt, sumopodMethods, sumopodPaymentDetail, sumopodReady, sumopodTokenValid, sumopodWebhook } from './sumopod.mjs';
 import { fetchSupplierCatalog } from './catalog.mjs';
@@ -9,6 +9,11 @@ import { clientIp, createRateLimiter } from './ratelimit.mjs';
 import { refreshGameIcons } from './game-icons.mjs';
 
 const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
+const guestTokenHash = (raw) => {
+  const token = String(raw || '').trim();
+  return /^[a-f0-9]{32,128}$/i.test(token) ? createHash('sha256').update(token).digest('hex') : null;
+};
+const requestGuestToken = (req) => req.headers['x-guest-token'] || new URL(req.url, 'http://localhost').searchParams.get('token') || '';
 // ponytail: Format tujuan per brand. Brand di luar daftar ini hanya dapat disimpan sebagai draf harga
 // sampai format tujuannya dipastikan. Telco/e-money/PLN/TV = input polos (nomor tujuan apa adanya).
 // Genshin/Honkai memakai uid_server (UID|server; token server mengikuti petunjuk seller "[UID]|[Server]"); Valorant memakai Riot ID bertag apa adanya (riot).
@@ -906,9 +911,18 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       }
       if (req.method === 'POST' && path === '/api/checkout') {
         guard('checkout');
-        const ownerId = await authenticatedOwner(req, fetchImpl, env);
+        let ownerId = null;
+        if (req.headers.authorization) ownerId = await authenticatedOwner(req, fetchImpl, env);
         let input;
         try { input = validateCheckout(await readJson(req)); } catch (err) { throw err.status ? err : error(400, err.message); }
+        let guestToken = null;
+        let tokenHash = null;
+        if (!ownerId) {
+          if (input.voucherCode) throw error(401, 'Masuk ke akun terlebih dahulu untuk memakai kode voucher.');
+          if (!input.contactEmail && !input.contactPhone) throw error(400, 'Isi email atau nomor HP agar struk pesanan dapat dikirim.');
+          guestToken = randomBytes(32).toString('hex');
+          tokenHash = guestTokenHash(guestToken);
+        }
         if (!checkoutReady(env)) throw error(503, 'Checkout belum siap.');
         const { rows } = await pool.query(`SELECT id, name, price, digi_sku, customer_format, gangguan, game,
           (SELECT s.category FROM supplier_products s WHERE s.sku = products.id AND s.synced_at = (SELECT max(synced_at) FROM supplier_products) LIMIT 1) AS category,
@@ -940,20 +954,20 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         const id = randomUUID();
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
-        // ponytail: satu tagihan hidup per tujuan yang sama. Klik ganda atau retry setelah respons putus mengembalikan
-        // pesanan yang sudah ada, bukan membuat tagihan kedua.
-        const { rows: kembar } = await pool.query(`SELECT id, status, ${PAYMENT_DETAIL_COLUMNS}, payment_detail->>'provider' AS provider
+        // ponytail: satu tagihan hidup per tujuan yang sama untuk akun login. Klik ganda atau retry setelah respons putus
+        // mengembalikan pesanan yang sudah ada, bukan membuat tagihan kedua.
+        const kembar = ownerId ? await pool.query(`SELECT id, status, ${PAYMENT_DETAIL_COLUMNS}, payment_detail->>'provider' AS provider
           FROM orders WHERE owner_id = $1 AND product_id = $2 AND customer_no = $3 AND user_id = $4 AND status = 'pending' AND created_at > now() - interval '30 minutes'
-            AND COALESCE(voucher_code, '') = $5 ORDER BY created_at DESC LIMIT 1`, [ownerId, product.id, customerNo, input.userId, picked?.voucher.code ?? '']);
-        if (kembar[0]) {
-          const lama = kembar[0];
+            AND COALESCE(voucher_code, '') = $5 ORDER BY created_at DESC LIMIT 1`, [ownerId, product.id, customerNo, input.userId, picked?.voucher.code ?? '']) : { rows: [] };
+        if (kembar.rows[0]) {
+          const lama = kembar.rows[0];
           return send(res, 200, {
             orderId: lama.id, paymentChannel: lama.paymentChannel, paymentDetail: lama.paymentDetail ?? null,
             paymentExpiresAt: lama.paymentExpiresAt ? new Date(lama.paymentExpiresAt).toISOString() : null,
             manualReview: lama.status === 'manual_review', reused: true
           });
         }
-        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone, payment_environment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null, paymentEnvironment(env)]);
+        await pool.query('INSERT INTO orders (id, product_id, product_name, price, digi_sku, customer_no, user_id, zone_id, owner_id, discount, voucher_code, contact_email, contact_phone, payment_environment, guest_token_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)', [id, product.id, product.name, amount, product.digi_sku, customerNo, input.userId, input.zoneId, ownerId, discount, picked?.voucher.code ?? null, input.contactEmail ?? null, input.contactPhone ?? null, paymentEnvironment(env), tokenHash]);
         if (picked && !await redeemVoucher(pool, picked.voucher, id, ownerId, discount)) {
           // Voucher gagal dipakai (misalnya kalah balapan dengan checkout lain): tutup pesanan yang belum ditagih.
           await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
@@ -984,13 +998,13 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
             const note = 'Status tagihan belum pasti. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
             await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = $3, payment_expires_at = NULL, fulfillment_note = $4, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, { provider: 'sumopod' }, note]);
             alertPayment(fetchImpl, env, id, 'Charge Sumopod ambigu', status ? `HTTP ${status}` : 'tanpa status');
-            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true });
+            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true, ...(guestToken ? { guestToken } : {}) });
           }
           if (String(charge?.order_id || '') !== id || Number(charge?.amount) !== amount) {
             const note = 'Tagihan Sumopod dibuat, tetapi data pesanan tidak cocok. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
             await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = $3, payment_expires_at = NULL, fulfillment_note = $4, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, { provider: 'sumopod' }, note]);
             alertPayment(fetchImpl, env, id, 'Tagihan Sumopod tidak cocok', `order_id=${String(charge?.order_id || '-').slice(0, 80)} amount=${charge?.amount ?? '-'}`);
-            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true });
+            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true, ...(guestToken ? { guestToken } : {}) });
           }
           const detail = sumopodPaymentDetail(charge);
           const expiresAt = sumopodExpiresAt(charge);
@@ -1002,7 +1016,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           }
           await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = $3, payment_expires_at = $4, redirect_url = $5, updated_at = now() WHERE id = $1', [id, methodId, detail, expiresAt, detail.redirectUrl]);
           notifyOrder(pool, fetchImpl, env, 'created', id);
-          return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, redirectUrl: detail.redirectUrl });
+          return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, redirectUrl: detail.redirectUrl, ...(guestToken ? { guestToken } : {}) });
         }
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas tanpa
         // percobaan ambigu menutup pesanan; kegagalan ambigu (5xx/timeout) masuk manual review untuk rekonsiliasi.
@@ -1061,7 +1075,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         }
         await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = $3, payment_expires_at = $4, updated_at = now() WHERE id = $1', [id, methodId, detail, expiresAt]);
         notifyOrder(pool, fetchImpl, env, 'created', id);
-        return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null });
+        return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, ...(guestToken ? { guestToken } : {}) });
       }
       // ponytail: periksa nickname adalah layanan pemeriksaan per brand (ML memakai cek ML, FF memakai cek FF); hasil disimpan agar tidak membayar berulang.
       if (req.method === 'POST' && path === '/api/check-account') {
@@ -1196,10 +1210,17 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       // ponytail: tombol unduh butuh PNG dari Midtrans, tetapi endpoint itu tanpa header CORS sehingga fetch browser
       // selalu gagal. Server yang mengambil, dan hanya untuk pemilik pesanan serta host Midtrans.
       if (req.method === 'GET' && /^\/api\/orders\/[^/]+\/qr\.png$/.test(path)) {
-        const ownerId = await authenticatedOwner(req, fetchImpl, env);
         const id = path.split('/')[3];
         if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
-        const { rows } = await pool.query("SELECT payment_detail->>'qrUrl' AS \"qrUrl\" FROM orders WHERE owner_id = $1 AND id = $2", [ownerId, id]);
+        let rows;
+        if (req.headers.authorization) {
+          const ownerId = await authenticatedOwner(req, fetchImpl, env);
+          ({ rows } = await pool.query("SELECT payment_detail->>'qrUrl' AS \"qrUrl\" FROM orders WHERE owner_id = $1 AND id = $2", [ownerId, id]));
+        } else {
+          const tokenHash = guestTokenHash(requestGuestToken(req));
+          if (!tokenHash) throw error(401, 'Sesi tidak valid.');
+          ({ rows } = await pool.query("SELECT payment_detail->>'qrUrl' AS \"qrUrl\" FROM orders WHERE owner_id IS NULL AND guest_token_hash = $1 AND id = $2", [tokenHash, id]));
+        }
         const qrUrl = rows[0]?.qrUrl;
         if (!qrUrl) throw error(404, 'Kode QR tidak tersedia.');
         let target;
@@ -1229,10 +1250,17 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         return send(res, 200, { orders: rows, total: counted[0]?.total || 0, page, pageSize });
       }
       if (req.method === 'GET' && path.startsWith('/api/orders/')) {
-        const ownerId = await authenticatedOwner(req, fetchImpl, env);
         const id = path.slice('/api/orders/'.length);
         if (!idPattern.test(id)) throw error(404, 'Pesanan tidak ditemukan.');
-        const { rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", fulfillment_note AS "fulfillmentNote", refund_note AS "refundNote", refunded_at AS "refundedAt", ${PAYMENT_DETAIL_COLUMNS}, (SELECT score FROM order_ratings WHERE order_id = orders.id) AS "ratingScore", (SELECT note FROM order_ratings WHERE order_id = orders.id) AS "ratingNote" FROM orders WHERE owner_id = $1 AND id = $2`, [ownerId, id]);
+        let rows;
+        if (req.headers.authorization) {
+          const ownerId = await authenticatedOwner(req, fetchImpl, env);
+          ({ rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", fulfillment_note AS "fulfillmentNote", refund_note AS "refundNote", refunded_at AS "refundedAt", ${PAYMENT_DETAIL_COLUMNS}, (SELECT score FROM order_ratings WHERE order_id = orders.id) AS "ratingScore", (SELECT note FROM order_ratings WHERE order_id = orders.id) AS "ratingNote" FROM orders WHERE owner_id = $1 AND id = $2`, [ownerId, id]));
+        } else {
+          const tokenHash = guestTokenHash(requestGuestToken(req));
+          if (!tokenHash) throw error(401, 'Sesi tidak valid.');
+          ({ rows } = await pool.query(`SELECT id, status, product_name AS "productName", price, discount, voucher_code AS "voucherCode", user_id AS "userId", zone_id AS "zoneId", fulfillment_sn AS "sn", fulfillment_note AS "fulfillmentNote", refund_note AS "refundNote", refunded_at AS "refundedAt", ${PAYMENT_DETAIL_COLUMNS}, NULL::int AS "ratingScore", NULL::text AS "ratingNote" FROM orders WHERE owner_id IS NULL AND guest_token_hash = $1 AND id = $2`, [tokenHash, id]));
+        }
         if (!rows[0]) throw error(404, 'Pesanan tidak ditemukan.');
         return send(res, 200, { order: await reconcilePending(pool, fetchImpl, env, rows[0]) });
       }
