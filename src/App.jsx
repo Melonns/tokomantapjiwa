@@ -518,13 +518,41 @@ function App() {
   const [heroPaused, setHeroPaused] = useState(false)
   const heroTouchX = useRef(null)
 
+  const promoSlide = activeVouchers[0] ? (() => {
+    const promo = activeVouchers[0]
+    const targetGameMatch = promo.targetGame ? products.find((item) => String(item.game || '').trim().toUpperCase() === promo.targetGame.toUpperCase())?.game : null
+    const details = [
+      `Min. belanja ${rupiah(promo.minOrder)}`,
+      promo.newBuyersOnly ? 'Khusus pembeli baru' : '',
+      promo.remaining != null ? `Sisa ${promo.remaining} kuota` : '',
+      promo.endsAt ? `Berlaku s.d. ${new Date(promo.endsAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })}` : '',
+    ].filter(Boolean).join(' · ')
+    return {
+      id: 'promo',
+      isPromo: true,
+      promo,
+      targetGameMatch,
+      durationMs: 11000,
+      eyebrow: promo.targetGame ? `PROMO ${promo.targetGame}` : promo.targetCategory ? `PROMO KATEGORI ${promo.targetCategory.toUpperCase()}` : 'PROMO PEMBUKAAN',
+      title: [
+        promo.kind === 'percent' ? `Diskon ${promo.value}%${promo.maxDiscount ? ` maks. ${rupiah(promo.maxDiscount)}` : ''},` : `Potongan ${rupiah(promo.value)},`,
+        promo.targetGame ? `khusus ${promo.targetGame}.` : promo.targetCategory ? `khusus kategori ${promo.targetCategory}.` : 'untuk semua layanan.',
+      ],
+      description: details,
+      caption: `PROMO / ${promo.code}`,
+    }
+  })() : null
+  const heroSlides = promoSlide ? [promoSlide, ...HERO_SLIDES] : HERO_SLIDES
+  const activeHeroSlide = heroSlides.length ? heroSlide % heroSlides.length : 0
+
   useEffect(() => {
-    if (view !== 'home' || heroPaused) return
+    if (view !== 'home' || heroPaused || heroSlides.length <= 1) return
     const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     if (reduceMotion) return
-    const timer = window.setInterval(() => setHeroSlide((index) => (index + 1) % HERO_SLIDES.length), 6500)
-    return () => window.clearInterval(timer)
-  }, [heroPaused, heroSlide, view])
+    const delay = heroSlides[activeHeroSlide]?.durationMs || 6500
+    const timer = window.setTimeout(() => setHeroSlide((index) => (index + 1) % heroSlides.length), delay)
+    return () => window.clearTimeout(timer)
+  }, [heroPaused, activeHeroSlide, heroSlides.length, view])
 
   const [catalogSearch, setCatalogSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -2107,21 +2135,30 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
             heroTouchX.current = null
             const end = event.changedTouches[0]?.clientX
             if (start == null || end == null || Math.abs(end - start) < 45) return
-            setHeroSlide((index) => (index + (end < start ? 1 : -1) + HERO_SLIDES.length) % HERO_SLIDES.length)
+            setHeroSlide((index) => (index + (end < start ? 1 : -1) + heroSlides.length) % heroSlides.length)
           }}>
           <h1 className="sr-only">Top up game, pulsa, e-money, dan tagihan di Melonbyte</h1>
           <div className="hero-viewport">
-            <div className="hero-track" style={{ transform: `translate3d(-${heroSlide * 100}%, 0, 0)` }}>
-              {HERO_SLIDES.map((slide, index) => (
-                <article className="hero-slide" key={slide.id} role="group" aria-roledescription="slide" aria-label={`${index + 1} dari ${HERO_SLIDES.length}: ${slide.eyebrow}`} aria-hidden={index === heroSlide ? undefined : 'true'} inert={index === heroSlide ? undefined : ''}>
+            <div className="hero-track" style={{ transform: `translate3d(-${activeHeroSlide * 100}%, 0, 0)` }}>
+              {heroSlides.map((slide, index) => (
+                <article className="hero-slide" key={slide.id} role="group" aria-roledescription="slide" aria-label={`${index + 1} dari ${heroSlides.length}: ${slide.eyebrow}`} aria-hidden={index === activeHeroSlide ? undefined : 'true'} inert={index === activeHeroSlide ? undefined : ''}>
                   <div className="hero-copy">
                     <p className="eyebrow"><span className="eyebrow-line" /> {slide.eyebrow}</p>
                     <h2 className="hero-title">{slide.title.map((line, lineIndex) => <Fragment key={lineIndex}>{lineIndex === slide.title.length - 1 ? <em>{line}</em> : line}{lineIndex < slide.title.length - 1 ? <br /> : null}</Fragment>)}</h2>
                     <p className="hero-description">{slide.description}</p>
+                    {slide.isPromo && <div className="promo-actions">
+                      <code className="promo-code">{slide.promo.code}</code>
+                      <button type="button" className="primary-button" onClick={() => copyPromoCode(slide.promo.code)}>{copiedPromo === slide.promo.code ? 'Kode tersalin' : 'Salin kode'}</button>
+                      {slide.targetGameMatch && <a className="secondary-button" href={`/game/${encodeURIComponent(slide.targetGameMatch)}`} onClick={(event) => { event.preventDefault(); go(`/game/${encodeURIComponent(slide.targetGameMatch)}`) }}>Buka {slide.promo.targetGame}</a>}
+                    </div>}
                   </div>
-                  <div className="hero-graphic" aria-hidden="true">
-                    <img className="hero-mark" src="/melonbyte-mark.png" alt="" width="512" height="512" decoding="async" />
-                    <span className="graphic-caption">{slide.caption}</span>
+                  <div className={slide.isPromo ? 'hero-graphic hero-graphic-promo' : 'hero-graphic'} aria-hidden="true">
+                    {slide.isPromo
+                      ? <img className="hero-promo-img" src="/promo-opening.png" alt="" width="512" height="512" decoding="async" />
+                      : <>
+                        <img className="hero-mark" src="/melonbyte-mark.png" alt="" width="512" height="512" decoding="async" />
+                        <span className="graphic-caption">{slide.caption}</span>
+                      </>}
                   </div>
                 </article>
               ))}
@@ -2129,40 +2166,16 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
           </div>
           <div className="hero-controls">
             <div className="hero-dots" role="group" aria-label="Pilih slide">
-              {HERO_SLIDES.map((slide, index) => (
-                <button key={slide.id} type="button" className={index === heroSlide ? 'is-active' : ''} aria-label={`Slide ${index + 1}: ${slide.caption}`} aria-current={index === heroSlide ? 'true' : undefined} onClick={() => setHeroSlide(index)} />
+              {heroSlides.map((slide, index) => (
+                <button key={slide.id} type="button" className={index === activeHeroSlide ? 'is-active' : ''} aria-label={`Slide ${index + 1}: ${slide.caption}`} aria-current={index === activeHeroSlide ? 'true' : undefined} onClick={() => setHeroSlide(index)} />
               ))}
             </div>
             <div className="hero-arrows">
-              <button type="button" aria-label="Slide sebelumnya" onClick={() => setHeroSlide((index) => (index - 1 + HERO_SLIDES.length) % HERO_SLIDES.length)}>‹</button>
-              <button type="button" aria-label="Slide berikutnya" onClick={() => setHeroSlide((index) => (index + 1) % HERO_SLIDES.length)}>›</button>
+              <button type="button" aria-label="Slide sebelumnya" onClick={() => setHeroSlide((index) => (index - 1 + heroSlides.length) % heroSlides.length)}>‹</button>
+              <button type="button" aria-label="Slide berikutnya" onClick={() => setHeroSlide((index) => (index + 1) % heroSlides.length)}>›</button>
             </div>
           </div>
         </section>
-
-        {activeVouchers[0] && (() => {
-          const promo = activeVouchers[0]
-          const targetGameMatch = promo.targetGame ? products.find((item) => String(item.game || '').trim().toUpperCase() === promo.targetGame.toUpperCase())?.game : null
-          const details = [
-            `Min. belanja ${rupiah(promo.minOrder)}`,
-            promo.newBuyersOnly ? 'Khusus pembeli baru' : '',
-            promo.remaining != null ? `Sisa ${promo.remaining} kuota` : '',
-            promo.endsAt ? `Berlaku s.d. ${new Date(promo.endsAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })}` : '',
-          ].filter(Boolean).join(' · ')
-          return <section className="promo-banner wrap" aria-label="Promo aktif">
-            <div className="promo-copy">
-              <p className="eyebrow"><span className="eyebrow-line" /> {promo.targetGame ? `PROMO ${promo.targetGame}` : promo.targetCategory ? `PROMO KATEGORI ${promo.targetCategory.toUpperCase()}` : 'PROMO AKTIF'}</p>
-              <h2>{promo.kind === 'percent' ? `Diskon ${promo.value}%${promo.maxDiscount ? ` maks. ${rupiah(promo.maxDiscount)}` : ''}` : `Potongan ${rupiah(promo.value)}`}</h2>
-              <p>{details}</p>
-              <div className="promo-actions">
-                <code className="promo-code">{promo.code}</code>
-                <button type="button" className="primary-button" onClick={() => copyPromoCode(promo.code)}>{copiedPromo === promo.code ? 'Kode tersalin' : 'Salin kode'}</button>
-                {targetGameMatch && <a className="secondary-button" href={`/game/${encodeURIComponent(targetGameMatch)}`} onClick={(event) => { event.preventDefault(); go(`/game/${encodeURIComponent(targetGameMatch)}`) }}>Buka {promo.targetGame}</a>}
-              </div>
-            </div>
-            <div className="promo-art"><img src="/promo-opening.png" alt="" width="640" height="360" loading="lazy" decoding="async" /></div>
-          </section>
-        })()}
 
         <section className="shop-section" id="katalog" aria-labelledby="catalog-title">
           <div className="wrap shop-inner">

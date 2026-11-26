@@ -500,23 +500,14 @@
 .voucher-field select:focus-visible{outline:2px solid var(--lime);outline-offset:1px;border-color:var(--lime)}
 .voucher-field .pilih-server{margin-top:0}
 .voucher-field .pilih-server-tombol{border-radius:var(--r-tile);border-color:#849e80;background:#0e1610;padding:10px 12px;font-size:1rem}
-.promo-banner{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(240px,.75fr);align-items:center;gap:24px;margin:0 auto 28px;padding:clamp(20px,3vw,30px);border:1px solid #3c5138;border-radius:var(--r-card);background:linear-gradient(125deg,#132117,#0d150f 75%)}
-.promo-copy{display:grid;gap:10px;min-width:0}
-.promo-copy .eyebrow{margin:0}
-.promo-copy h2{font-size:clamp(1.45rem,2.4vw,2rem);margin:0}
-.promo-copy p{margin:0;color:var(--muted);line-height:1.55;max-width:56ch}
-.promo-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:4px}
+.hero-slide .promo-actions{margin-top:18px}
+.promo-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 .promo-code{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;border:1px dashed var(--lime);border-radius:var(--r-pill);background:#0c140e;color:var(--lime);font-weight:800;letter-spacing:.06em;font-size:.95rem}
 .promo-actions .primary-button{border:0;border-radius:var(--r-pill);background:var(--lime);color:var(--bg);font-weight:800;min-height:44px;padding:10px 18px;cursor:pointer}
 .promo-actions .primary-button:hover{background:#d6f56d}
 .promo-actions .secondary-button{display:inline-flex;align-items:center;text-decoration:none}
-.promo-art{border-radius:var(--r-tile);overflow:hidden;border:1px solid rgba(198,230,67,.18);background:#101b13}
-.promo-art img{display:block;width:100%;height:auto;aspect-ratio:16/9;object-fit:cover}
-.promo-inline{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 18px;margin:0 0 22px;padding:14px 18px;border:1px solid #3c5138;border-radius:var(--r-card);background:#101b13}
-.promo-inline-copy{display:grid;gap:3px;min-width:0}
-.promo-inline-copy strong{color:var(--lime);font-size:.98rem}
-.promo-inline-copy span{color:var(--muted);font-size:.86rem}
-@media(max-width:760px){.promo-banner{grid-template-columns:minmax(0,1fr);gap:16px}.promo-art{order:-1}}
+.hero-graphic-promo{padding:0;overflow:hidden;border-radius:var(--r-card);border:1px solid rgba(198,230,67,.22);background:#101b13}
+.hero-promo-img{display:block;width:100%;height:100%;object-fit:cover}
 .voucher-item-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .voucher-tag{display:inline-flex;align-items:center;padding:2px 9px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:.72rem;font-weight:700;color:var(--muted)}
 .voucher-tag.is-active{border-color:#8aa985;background:#141d10;color:var(--lime)}

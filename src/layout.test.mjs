@@ -24,5 +24,6 @@ test('Caddyfile menonaktifkan cache HTML rute SPA dan storefront menampilkan pro
   const caddy = await readFile(new URL('../deploy/Caddyfile', import.meta.url), 'utf8');
   assert.match(caddy, /try_files \{path\} \/index\.html[\s\S]*header \?Cache-Control "no-cache"/);
   assert.match(source, /\/api\/vouchers\/active/);
-  assert.match(source, /className="promo-banner wrap"/);
+  assert.match(source, /className="hero-promo-img"/);
+  assert.match(source, /durationMs:\s*11000/);
 });
