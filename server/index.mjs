@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
-import { createHandler, reconcilePending } from './app.mjs';
+import { createHandler, reconcilePending, syncCatalogAndNotify } from './app.mjs';
 
 if (!process.env.DATABASE_URL) throw Error('DATABASE_URL wajib diisi.');
 // ponytail: Sertifikat akar Supabase lama dipakai hanya bila berkasnya ada. Berkas itu tidak ikut Git
@@ -56,6 +56,28 @@ async function reconcileSweep() {
 if (Number.isFinite(reconcileMinutes) && reconcileMinutes > 0) {
   setInterval(reconcileSweep, reconcileMinutes * 60 * 1000).unref();
   console.log(`[reconcile] jaring pengaman aktif setiap ${reconcileMinutes} menit`);
+}
+
+// ponytail: Sinkronisasi katalog Digiflazz berkala (default 30 menit, minimum 10 menit) agar produk yang gangguan/kosong
+// otomatis disembunyikan dan mengirim alert Telegram sekali tanpa melanggar batas rate limit Digiflazz (rc 83).
+const rawCatalogSyncMinutes = Number(process.env.CATALOG_SYNC_INTERVAL_MINUTES ?? 30);
+const catalogSyncMinutes = Number.isFinite(rawCatalogSyncMinutes) && rawCatalogSyncMinutes > 0 ? Math.max(10, rawCatalogSyncMinutes) : 0;
+let catalogSyncBusy = false;
+async function catalogSyncSweep() {
+  if (catalogSyncBusy) return;
+  catalogSyncBusy = true;
+  try {
+    const result = await syncCatalogAndNotify(pool, fetch, process.env);
+    if (result) console.log(`[catalog-sync] ${result.items.length} produk aktif disinkronkan${result.gone.length ? `, ${result.gone.length} produk disembunyikan` : ''}`);
+  } catch (err) {
+    console.error('[catalog-sync] gagal:', err?.message || String(err));
+  } finally {
+    catalogSyncBusy = false;
+  }
+}
+if (catalogSyncMinutes > 0) {
+  setInterval(catalogSyncSweep, catalogSyncMinutes * 60 * 1000).unref();
+  console.log(`[catalog-sync] sinkron otomatis aktif setiap ${catalogSyncMinutes} menit`);
 }
 
 // Tutup koneksi dengan rapi, tetapi jangan biarkan systemd menunggu selamanya.

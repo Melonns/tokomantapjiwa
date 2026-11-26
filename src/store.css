@@ -498,6 +498,8 @@
 .admin-nav a{flex:0 0 auto}
 .voucher-field input,.voucher-field select{width:100%;min-height:44px;background:#0e1610;border:1px solid #849e80;border-radius:var(--r-tile);color:var(--text);padding:10px 12px;font-size:1rem;font-family:inherit}
 .voucher-field select:focus-visible{outline:2px solid var(--lime);outline-offset:1px;border-color:var(--lime)}
+.voucher-field .pilih-server{margin-top:0}
+.voucher-field .pilih-server-tombol{border-radius:var(--r-tile);border-color:#849e80;background:#0e1610;padding:10px 12px;font-size:1rem}
 .voucher-item-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .voucher-tag{display:inline-flex;align-items:center;padding:2px 9px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:.72rem;font-weight:700;color:var(--muted)}
 .voucher-tag.is-active{border-color:#8aa985;background:#141d10;color:var(--lime)}

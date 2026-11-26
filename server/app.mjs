@@ -429,6 +429,21 @@ async function saveSupplierCatalog(pool, fetchImpl, env) {
   return { items, syncedAt };
 }
 
+export async function syncCatalogAndNotify(pool, fetchImpl, env) {
+  if (!env.DIGIFLAZZ_USERNAME || !env.DIGIFLAZZ_API_KEY) return null;
+  const { rows: beforeActive } = await pool.query(`SELECT p.id, p.name, p.game FROM products p JOIN supplier_products s ON s.sku = p.id WHERE p.enabled = true`);
+  const { items, syncedAt } = await saveSupplierCatalog(pool, fetchImpl, env);
+  const repriced = await repriceAutoProducts(pool, paymentProvider(env));
+  const activeIds = new Set(items.map((item) => item.id));
+  const gone = beforeActive.filter((item) => !activeIds.has(item.id));
+  if (gone.length > 0) {
+    const preview = gone.slice(0, 5).map((item) => `${item.game ? `${item.game} - ` : ''}${item.name || item.id}`).join(', ');
+    const extra = gone.length > 5 ? ` (+${gone.length - 5} lainnya)` : '';
+    sendTelegramAlert(fetchImpl, env, `${gone.length} produk aktif sedang gangguan/kosong di Digiflazz dan otomatis disembunyikan: ${preview}${extra}`);
+  }
+  return { items, syncedAt, repriced, gone };
+}
+
 async function supplierList(env, fetchImpl) {
   if (!env.DIGIFLAZZ_USERNAME || !env.DIGIFLAZZ_API_KEY) throw error(503, 'Katalog supplier belum dikonfigurasi di server.');
   try { return await fetchSupplierCatalog(fetchImpl, env); } catch (err) {

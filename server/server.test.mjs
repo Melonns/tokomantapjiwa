@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { validateCheckout, verifiedPayment, paidStatus, customerNo } from './core.mjs';
-import { createHandler, digiRequest, reconcilePending } from './app.mjs';
+import { createHandler, digiRequest, reconcilePending, syncCatalogAndNotify } from './app.mjs';
 import { checkGames, checkReady, checkReport, checkRequest, checkResult, cleanNickname } from './check.mjs';
 
 // Port 0 membuat sistem memilih port acak, dan sebagian port ditolak fetch Node
@@ -2110,4 +2110,53 @@ test('admin dapat membuat voucher persentase dengan plafon dan target kategori/g
     assert.equal(savedParams[9], 'Games');
     assert.equal(savedParams[10], null);
   } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('syncCatalogAndNotify menyembunyikan produk gangguan dan mengirim alert Telegram sekali', async () => {
+  const telegramCalls = [];
+  let beforeActive = [
+    { id: 'ml86', name: '86 Diamonds', game: 'MOBILE LEGENDS' },
+    { id: 'ff100', name: '100 Diamonds', game: 'FREE FIRE' },
+  ];
+  const pool = {
+    async query(sql) {
+      if (sql.startsWith('SELECT p.id, p.name, p.game FROM products')) return { rows: beforeActive };
+      if (sql.startsWith('INSERT INTO supplier_products')) return { rows: [] };
+      if (sql.startsWith('DELETE FROM supplier_products')) return { rows: [] };
+      if (sql.startsWith('SELECT p.id, p.price, s.category')) return { rows: [] };
+      throw Error('unexpected SQL: ' + sql);
+    },
+  };
+  const fetchImpl = async (url, options) => {
+    if (url.includes('api.digiflazz.com/v1/price-list')) {
+      return {
+        ok: true,
+        json: async () => ({
+          data: [
+            { buyer_sku_code: 'ml86', product_name: '86 Diamonds', brand: 'MOBILE LEGENDS', category: 'Games', type: 'Umum', price: 20000, buyer_product_status: true, seller_product_status: true, unlimited_stock: true, stock: 0 },
+            { buyer_sku_code: 'ff100', product_name: '100 Diamonds', brand: 'FREE FIRE', category: 'Games', type: 'Umum', price: 15000, buyer_product_status: true, seller_product_status: false, unlimited_stock: true, stock: 0 },
+          ],
+        }),
+      };
+    }
+    if (url.includes('api.telegram.org')) {
+      telegramCalls.push(JSON.parse(options.body));
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    throw Error('unexpected fetch: ' + url);
+  };
+  const testEnv = { DIGIFLAZZ_USERNAME: 'u', DIGIFLAZZ_API_KEY: 'k', TELEGRAM_BOT_TOKEN: 'bot-tok', TELEGRAM_CHAT_ID: '12345' };
+  const first = await syncCatalogAndNotify(pool, fetchImpl, testEnv);
+  assert.equal(first.gone.length, 1);
+  assert.equal(first.gone[0].id, 'ff100');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(telegramCalls.length, 1);
+  assert.match(telegramCalls[0].text, /1 produk aktif sedang gangguan\/kosong di Digiflazz/);
+  assert.match(telegramCalls[0].text, /FREE FIRE - 100 Diamonds/);
+
+  beforeActive = [{ id: 'ml86', name: '86 Diamonds', game: 'MOBILE LEGENDS' }];
+  const second = await syncCatalogAndNotify(pool, fetchImpl, testEnv);
+  assert.equal(second.gone.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(telegramCalls.length, 1);
 });

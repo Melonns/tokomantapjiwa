@@ -389,6 +389,102 @@ function PilihanServer({ nilai, onPilih }) {
   )
 }
 
+function PilihanDropdown({ id, nilai, pilihan, placeholder = 'Pilih', onPilih }) {
+  const [buka, setBuka] = useState(false)
+  const [sorot, setSorot] = useState(0)
+  const bukaRef = useRef(false)
+  const sorotRef = useRef(0)
+  const kotakRef = useRef(null)
+  const tombolRef = useRef(null)
+  const daftarRef = useRef(null)
+  const terpilih = pilihan.find((option) => option.value === nilai)
+
+  function ubahBuka(next) {
+    bukaRef.current = next
+    setBuka(next)
+  }
+
+  function ubahSorot(posisi) {
+    sorotRef.current = posisi
+    setSorot(posisi)
+  }
+
+  useEffect(() => {
+    if (!buka) return undefined
+    function tutup(event) {
+      if (kotakRef.current && !kotakRef.current.contains(event.target)) ubahBuka(false)
+    }
+    document.addEventListener('pointerdown', tutup)
+    return () => document.removeEventListener('pointerdown', tutup)
+  }, [buka])
+
+  useEffect(() => {
+    if (!buka) return
+    const aktif = daftarRef.current && daftarRef.current.querySelector('[data-sorot="true"]')
+    if (aktif) aktif.scrollIntoView({ block: 'nearest' })
+  }, [buka, sorot])
+
+  function bukaDaftar() {
+    const posisi = pilihan.findIndex((option) => option.value === nilai)
+    ubahSorot(posisi < 0 ? 0 : posisi)
+    ubahBuka(true)
+  }
+
+  function pilih(option) {
+    if (!option) return
+    onPilih(option.value)
+    ubahBuka(false)
+    if (tombolRef.current) tombolRef.current.focus()
+  }
+
+  function tekan(event) {
+    if (!pilihan.length) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (!bukaRef.current) { bukaDaftar(); return }
+      const arah = event.key === 'ArrowDown' ? 1 : -1
+      ubahSorot((sorotRef.current + arah + pilihan.length) % pilihan.length)
+      return
+    }
+    if (event.key === 'Home' || event.key === 'End') {
+      if (!bukaRef.current) return
+      event.preventDefault()
+      ubahSorot(event.key === 'Home' ? 0 : pilihan.length - 1)
+      return
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      if (!bukaRef.current) { bukaDaftar(); return }
+      pilih(pilihan[sorotRef.current])
+      return
+    }
+    if (event.key === 'Escape' && bukaRef.current) {
+      event.preventDefault()
+      ubahBuka(false)
+      return
+    }
+    if (event.key === 'Tab') ubahBuka(false)
+  }
+
+  const listId = `${id}-daftar`
+  return (
+    <div className="pilih-server" ref={kotakRef}>
+      <button type="button" id={id} ref={tombolRef} className={`pilih-server-tombol${buka ? ' buka' : ''}${terpilih ? '' : ' kosong'}`} aria-haspopup="listbox" aria-expanded={buka} aria-controls={listId} onClick={() => (buka ? ubahBuka(false) : bukaDaftar())} onKeyDown={tekan}>
+        <span>{terpilih ? terpilih.label : placeholder}</span>
+        <svg className="pilih-server-panah" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+      {buka && <ul className="pilih-server-daftar" id={listId} role="listbox" aria-labelledby={id} ref={daftarRef}>
+        {pilihan.map((option, index) => (
+          <li key={option.value} role="option" aria-selected={option.value === nilai} data-sorot={index === sorot} className={`pilih-server-opsi${option.value === nilai ? ' aktif' : ''}`} onMouseEnter={() => ubahSorot(index)} onClick={() => pilih(option)}>
+            <span>{option.label}</span>
+            {option.value === nilai ? <IkonCentang /> : null}
+          </li>
+        ))}
+      </ul>}
+    </div>
+  )
+}
+
 
 function App() {
   const [products, setProducts] = useState([])
@@ -2358,8 +2454,8 @@ const games = [...new Set(products.map((item) => item.game).filter(Boolean))]
     {voucherDraft.kind === 'percent' && <label className="voucher-field"><span>Plafon maks. potongan (Rp)</span><input type="number" inputMode="numeric" min="1" autoComplete="off" placeholder="5000" value={voucherDraft.maxDiscount} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, maxDiscount: event.target.value }))} /><small>Kosongkan untuk tanpa batas maksimal.</small></label>}
     <label className="voucher-field"><span>Minimum belanja (Rp)</span><input type="number" inputMode="numeric" min="0" autoComplete="off" value={voucherDraft.minOrder} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, minOrder: event.target.value }))} /><small>Dihitung dari harga sebelum potongan.</small></label>
     <div className="voucher-field"><span>Berlaku untuk</span><div className="category-filter" role="group" aria-label="Target voucher"><button type="button" className={voucherDraft.scope === 'all' ? 'active' : ''} aria-pressed={voucherDraft.scope === 'all'} onClick={() => setVoucherDraft((draft) => ({ ...draft, scope: 'all' }))}>Semua</button><button type="button" className={voucherDraft.scope === 'category' ? 'active' : ''} aria-pressed={voucherDraft.scope === 'category'} onClick={() => setVoucherDraft((draft) => ({ ...draft, scope: 'category' }))}>Kategori</button><button type="button" className={voucherDraft.scope === 'game' ? 'active' : ''} aria-pressed={voucherDraft.scope === 'game'} onClick={() => setVoucherDraft((draft) => ({ ...draft, scope: 'game' }))}>Game</button></div><small>Batasi agar tidak memakan margin produk tipis.</small></div>
-    {voucherDraft.scope === 'category' && <label className="voucher-field"><span>Kategori target</span><input type="text" list="voucher-category-options" autoComplete="off" value={voucherDraft.targetCategory} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, targetCategory: event.target.value }))} /><datalist id="voucher-category-options">{['Games', 'Pulsa', 'Data', 'E-Money', 'PLN', 'Gas', 'TV', 'Voucher'].map((cat) => <option key={cat} value={cat} />)}</datalist><small>Contoh: Games, Pulsa, Data.</small></label>}
-    {voucherDraft.scope === 'game' && <label className="voucher-field"><span>Game / layanan target</span><input type="text" list="voucher-game-options" autoComplete="off" value={voucherDraft.targetGame} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, targetGame: event.target.value.toUpperCase() }))} /><datalist id="voucher-game-options">{Array.from(new Set(['MOBILE LEGENDS', 'FREE FIRE', 'GENSHIN IMPACT', 'HONKAI STAR RAIL', 'VALORANT', 'SPEED DRIFTERS', ...products.map((item) => String(item.game || '').trim().toUpperCase()).filter(Boolean), ...adminCatalog.map((item) => String(item.game || '').trim().toUpperCase()).filter(Boolean)])).sort().map((g) => <option key={g} value={g} />)}</datalist><small>Contoh: MOBILE LEGENDS, FREE FIRE.</small></label>}
+    {voucherDraft.scope === 'category' && <div className="voucher-field"><span>Kategori target</span><PilihanDropdown id="voucher-category" nilai={voucherDraft.targetCategory} placeholder="Pilih kategori" pilihan={['Games', 'Pulsa', 'Data', 'E-Money', 'PLN', 'Gas', 'TV', 'Voucher'].map((cat) => ({ value: cat, label: cat }))} onPilih={(val) => setVoucherDraft((draft) => ({ ...draft, targetCategory: val }))} /><small>Hanya berlaku untuk produk dalam kategori ini.</small></div>}
+    {voucherDraft.scope === 'game' && <div className="voucher-field"><span>Game / layanan target</span><PilihanDropdown id="voucher-game" nilai={voucherDraft.targetGame} placeholder="Pilih game / layanan" pilihan={Array.from(new Set(['MOBILE LEGENDS', 'FREE FIRE', 'GENSHIN IMPACT', 'HONKAI STAR RAIL', 'VALORANT', 'SPEED DRIFTERS', ...products.map((item) => String(item.game || '').trim().toUpperCase()).filter(Boolean), ...adminCatalog.map((item) => String(item.game || '').trim().toUpperCase()).filter(Boolean)])).sort().map((g) => ({ value: g, label: g }))} onPilih={(val) => setVoucherDraft((draft) => ({ ...draft, targetGame: val }))} /><small>Hanya berlaku untuk game atau layanan ini.</small></div>}
     <label className="voucher-field"><span>Kuota pemakaian</span><input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.quota} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, quota: event.target.value }))} /><small>Kosongkan untuk tanpa batas.</small></label>
     <label className="voucher-field"><span>Batas per akun</span><input type="number" inputMode="numeric" min="1" autoComplete="off" value={voucherDraft.perUser} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, perUser: event.target.value }))} /><small>Jumlah pemakaian oleh satu akun.</small></label>
     <label className="voucher-field"><span>Berlaku (hari)</span><input type="number" inputMode="numeric" min="1" max="365" autoComplete="off" value={voucherDraft.days} onChange={(event) => setVoucherDraft((draft) => ({ ...draft, days: event.target.value }))} /><small>Dihitung sejak voucher dibuat.</small></label>
