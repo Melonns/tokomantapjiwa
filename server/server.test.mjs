@@ -2420,3 +2420,35 @@ test('MIDTRANS_USE_SNAP=true membuat transaksi Snap dan mengembalikan redirectUr
     assert.equal(savedRedirect, 'https://app.sandbox.midtrans.com/snap/v4/redirection/snap-tok-1');
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test('checkout anti klik-ganda hanya reuse dalam 30 detik dengan harga dan kanal bayar yang sama', async () => {
+  let dedupSql = null;
+  let dedupParams = null;
+  const pool = {
+    async query(sql, params) {
+      if (sql.includes('FROM products')) return { rows: [{ id: 'ml10', name: '10 Diamond', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat', gangguan: false, game: 'MOBILE LEGENDS', category: 'Games', admin: false }] };
+      if (sql.includes('FROM orders WHERE owner_id = $1 AND product_id')) { dedupSql = sql; dedupParams = params; return { rows: [] }; }
+      if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
+      if (sql.startsWith('UPDATE orders SET payment_channel = $2')) return { rows: [] };
+      if (sql.includes('FROM orders') && sql.includes('WHERE id = $1')) return { rows: [] };
+      throw Error('unexpected SQL: ' + sql);
+    },
+  };
+  const server = createServer(createHandler({
+    pool, env,
+    fetchImpl: withAuth(async () => ({ ok: true, status: 201, json: async () => ({ actions: [{ name: 'generate-qr-code', url: 'https://api.sandbox.midtrans.com/v2/qris/x/qr-code' }] }) })),
+  })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'qris' }),
+    });
+    assert.equal(response.status, 201);
+    assert.match(dedupSql, /interval '30 seconds'/);
+    assert.match(dedupSql, /price = \$6/);
+    assert.match(dedupSql, /payment_channel, ''\) = \$7/);
+    assert.equal(dedupParams[5], 25000);
+    assert.equal(dedupParams[6], 'qris');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

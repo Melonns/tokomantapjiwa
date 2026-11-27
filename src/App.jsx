@@ -587,7 +587,7 @@ function App() {
   const [checkoutError, setCheckoutError] = useState('')
   const [paymentProvider, setPaymentProvider] = useState('midtrans')
   const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0].id)
-  const paymentMethods = paymentProvider === 'sumopod' ? SUMOPOD_PAYMENT_METHODS : PAYMENT_METHODS
+  const paymentMethods = SUMOPOD_PAYMENT_METHODS
   // ponytail: kanal flat (VA/Mandiri) disembunyikan di pesanan kecil supaya fee-nya tidak memakan margin.
   function activePaymentMethod(price) {
     const list = availablePaymentMethods(paymentMethods, price)

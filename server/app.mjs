@@ -968,11 +968,10 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
         const id = randomUUID();
         let customerNo;
         try { customerNo = buildCustomerNo(product.customer_format, input); } catch (err) { throw error(400, err.message); }
-        // ponytail: satu tagihan hidup per tujuan yang sama untuk akun login. Klik ganda atau retry setelah respons putus
-        // mengembalikan pesanan yang sudah ada, bukan membuat tagihan kedua.
+        // ponytail: cegah klik ganda / retry jaringan dalam 30 detik untuk tujuan, harga, dan kanal yang sama.
         const kembar = ownerId ? await pool.query(`SELECT id, status, ${PAYMENT_DETAIL_COLUMNS}, payment_detail->>'provider' AS provider
-          FROM orders WHERE owner_id = $1 AND product_id = $2 AND customer_no = $3 AND user_id = $4 AND status = 'pending' AND created_at > now() - interval '30 minutes'
-            AND COALESCE(voucher_code, '') = $5 ORDER BY created_at DESC LIMIT 1`, [ownerId, product.id, customerNo, input.userId, picked?.voucher.code ?? '']) : { rows: [] };
+          FROM orders WHERE owner_id = $1 AND product_id = $2 AND customer_no = $3 AND user_id = $4 AND status = 'pending' AND created_at > now() - interval '30 seconds'
+            AND COALESCE(voucher_code, '') = $5 AND price = $6 AND COALESCE(payment_channel, '') = $7 ORDER BY created_at DESC LIMIT 1`, [ownerId, product.id, customerNo, input.userId, picked?.voucher.code ?? '', amount, methodId]) : { rows: [] };
         if (kembar.rows[0]) {
           const lama = kembar.rows[0];
           return send(res, 200, {
