@@ -2382,3 +2382,41 @@ test('guest checkout berhasil tanpa login dan struk hanya bisa dibuka dengan gue
     assert.equal(withToken.status, 200);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test('MIDTRANS_USE_SNAP=true membuat transaksi Snap dan mengembalikan redirectUrl', async () => {
+  let snapUrl = null;
+  let snapBody = null;
+  let savedRedirect = null;
+  const pool = {
+    async query(sql, params) {
+      if (sql.includes('FROM products')) return { rows: [{ id: 'ml10', name: '10 Diamond', price: 25000, digi_sku: 'ML10', customer_format: 'ml_concat', gangguan: false, game: 'MOBILE LEGENDS', category: 'Games', admin: false }] };
+      if (sql.includes('FROM orders WHERE owner_id = $1 AND product_id')) return { rows: [] };
+      if (sql.startsWith('INSERT INTO orders')) return { rows: [] };
+      if (sql.startsWith('UPDATE orders SET payment_channel = $2')) { savedRedirect = params[3]; return { rows: [] }; }
+      if (sql.includes('FROM orders') && sql.includes('WHERE id = $1')) return { rows: [] };
+      throw Error('unexpected SQL: ' + sql);
+    },
+  };
+  const snapEnv = { ...env, MIDTRANS_USE_SNAP: 'true' };
+  const server = createServer(createHandler({
+    pool, env: snapEnv,
+    fetchImpl: withAuth(async (url, opts) => {
+      snapUrl = url;
+      snapBody = JSON.parse(opts.body);
+      return { ok: true, status: 201, json: async () => ({ token: 'snap-tok-1', redirect_url: 'https://app.sandbox.midtrans.com/snap/v4/redirection/snap-tok-1' }) };
+    }),
+  })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/checkout`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ productId: 'ml10', userId: '12345', zoneId: '100', paymentMethod: 'qris' }),
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(snapUrl, 'https://app.sandbox.midtrans.com/snap/v1/transactions');
+    assert.deepEqual(snapBody.enabled_payments, ['gopay', 'other_qris']);
+    assert.equal(body.redirectUrl, 'https://app.sandbox.midtrans.com/snap/v4/redirection/snap-tok-1');
+    assert.equal(savedRedirect, 'https://app.sandbox.midtrans.com/snap/v4/redirection/snap-tok-1');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

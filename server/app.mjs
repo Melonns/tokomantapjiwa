@@ -79,6 +79,17 @@ const PAYMENT_METHODS = {
   gopay_app: (id, storeUrl) => ({ payment_type: 'gopay', gopay: { enable_callback: true, callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
   shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
 };
+const SNAP_PAYMENTS = {
+  qris: ['gopay', 'other_qris'],
+  bca_va: ['bca_va'],
+  bni_va: ['bni_va'],
+  bri_va: ['bri_va'],
+  permata_va: ['permata_va'],
+  mandiri_bill: ['echannel'],
+  gopay_app: ['gopay'],
+  shopeepay: ['shopeepay'],
+};
+const useMidtransSnap = (env) => /^(1|true|yes)$/i.test(String(env.MIDTRANS_USE_SNAP || '').trim());
 // ponytail: Midtrans default QRIS hanya 15 menit. TTL dipatok eksplisit supaya hitung mundur di invoice
 // dan masa berlaku tagihan di gateway tidak pernah berbeda. 30 menit cukup untuk pindah aplikasi bank.
 function customExpiry(env) {
@@ -967,6 +978,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           return send(res, 200, {
             orderId: lama.id, paymentChannel: lama.paymentChannel, paymentDetail: lama.paymentDetail ?? null,
             paymentExpiresAt: lama.paymentExpiresAt ? new Date(lama.paymentExpiresAt).toISOString() : null,
+            ...(lama.redirectUrl ? { redirectUrl: lama.redirectUrl } : {}),
             manualReview: lama.status === 'manual_review', reused: true
           });
         }
@@ -1020,6 +1032,48 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = $3, payment_expires_at = $4, redirect_url = $5, updated_at = now() WHERE id = $1', [id, methodId, detail, expiresAt, detail.redirectUrl]);
           notifyOrder(pool, fetchImpl, env, 'created', id);
           return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: detail, paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null, redirectUrl: detail.redirectUrl, ...(guestToken ? { guestToken } : {}) });
+        }
+        if (useMidtransSnap(env)) {
+          const ttl = customExpiry(env);
+          const snapBody = {
+            transaction_details: { order_id: id, gross_amount: amount },
+            ...(SNAP_PAYMENTS[methodId] ? { enabled_payments: SNAP_PAYMENTS[methodId] } : {}),
+            expiry: { unit: ttl.unit, duration: ttl.expiry_duration },
+            ...(/^https?:\/\//i.test(storeUrl) ? { callbacks: { finish: `${storeUrl.replace(/\/$/, '')}/struk/${id}${guestToken ? `?token=${encodeURIComponent(guestToken)}` : ''}` } } : {}),
+          };
+          let snap;
+          try {
+            snap = await externalJson(fetchImpl, `https://app.${env.MIDTRANS_ENV === 'production' ? '' : 'sandbox.'}midtrans.com/snap/v1/transactions`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ':').toString('base64')}` },
+              body: JSON.stringify(snapBody),
+            });
+          } catch (err) {
+            const status = Number(err?.upstreamStatus);
+            const definitive = [400, 401, 402, 403, 404, 406].includes(status);
+            console.error('[checkout] snap gagal:', status ? `HTTP ${status}` : '', err?.message || String(err));
+            if (definitive) {
+              await pool.query("UPDATE orders SET status = 'payment_failed', updated_at = now() WHERE id = $1 AND status = 'pending'", [id]);
+              if (picked) await releaseVoucher(pool, id);
+              throw error(502, 'Pembayaran belum dapat dibuat. Coba lagi atau pilih metode lain.');
+            }
+            const note = 'Status tagihan belum pasti. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+            await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = NULL, payment_expires_at = NULL, fulfillment_note = $3, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, note]);
+            alertPayment(fetchImpl, env, id, 'Snap ambigu tanpa detail', status ? `HTTP ${status}` : 'tanpa status');
+            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: null, manualReview: true, ...(guestToken ? { guestToken } : {}) });
+          }
+          const rawUrl = String(snap?.redirect_url || '').trim();
+          const redirectUrl = /^https:\/\/app\.(sandbox\.)?midtrans\.com\//i.test(rawUrl) ? rawUrl : null;
+          const expiresAt = new Date(Date.now() + ttl.expiry_duration * 60_000);
+          if (!redirectUrl) {
+            const note = 'Tagihan Snap dibuat, tetapi tautan pembayaran belum tersedia. Jangan membuat pesanan baru; hubungi admin dengan nomor pesanan ini.';
+            await pool.query("UPDATE orders SET status = 'manual_review', payment_channel = $2, payment_detail = NULL, payment_expires_at = $3, fulfillment_note = $4, updated_at = now() WHERE id = $1 AND status = 'pending'", [id, methodId, expiresAt, note]);
+            alertPayment(fetchImpl, env, id, 'Tagihan Snap tanpa tautan', `metode=${methodId}`);
+            return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: expiresAt.toISOString(), manualReview: true, ...(guestToken ? { guestToken } : {}) });
+          }
+          await pool.query('UPDATE orders SET payment_channel = $2, payment_detail = NULL, payment_expires_at = $3, redirect_url = $4, updated_at = now() WHERE id = $1', [id, methodId, expiresAt, redirectUrl]);
+          notifyOrder(pool, fetchImpl, env, 'created', id);
+          return send(res, 201, { orderId: id, paymentChannel: methodId, paymentDetail: null, paymentExpiresAt: expiresAt.toISOString(), redirectUrl, ...(guestToken ? { guestToken } : {}) });
         }
         // ponytail: Core API charge (bukan Snap) supaya QR/VA tampil di halaman invoice sendiri. Tolakan tegas tanpa
         // percobaan ambigu menutup pesanan; kegagalan ambigu (5xx/timeout) masuk manual review untuk rekonsiliasi.
