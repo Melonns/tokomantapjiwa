@@ -134,12 +134,14 @@ CREATE TABLE IF NOT EXISTS vouchers (
   new_buyers_only boolean NOT NULL DEFAULT false,
   target_category text CHECK (target_category IS NULL OR length(target_category) BETWEEN 1 AND 60),
   target_game text CHECK (target_game IS NULL OR length(target_game) BETWEEN 1 AND 80),
+  is_public boolean NOT NULL DEFAULT false,
   active boolean NOT NULL DEFAULT true,
   ends_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS target_category text CHECK (target_category IS NULL OR length(target_category) BETWEEN 1 AND 60);
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS target_game text CHECK (target_game IS NULL OR length(target_game) BETWEEN 1 AND 80);
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS voucher_redemptions (
   order_id uuid PRIMARY KEY,
   code text NOT NULL REFERENCES vouchers(code) ON DELETE CASCADE,

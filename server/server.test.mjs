@@ -2104,7 +2104,7 @@ test('admin dapat membuat voucher persentase dengan plafon dan target kategori/g
     await new Promise(resolve => server.once('listening', resolve));
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/vouchers`, {
       method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders },
-      body: JSON.stringify({ code: 'GAS4PCT', kind: 'percent', value: 4, maxDiscount: 5000, minOrder: 20000, quota: 50, perUser: 1, newBuyersOnly: true, days: 30, targetCategory: 'Games', targetGame: null }),
+      body: JSON.stringify({ code: 'GAS4PCT', kind: 'percent', value: 4, maxDiscount: 5000, minOrder: 20000, quota: 50, perUser: 1, newBuyersOnly: true, isPublic: true, days: 30, targetCategory: 'Games', targetGame: null }),
     });
     assert.equal(response.status, 201);
     const body = await response.json();
@@ -2113,6 +2113,7 @@ test('admin dapat membuat voucher persentase dengan plafon dan target kategori/g
     assert.equal(savedParams[5], 5000);
     assert.equal(savedParams[9], 'Games');
     assert.equal(savedParams[10], null);
+    assert.equal(savedParams[11], true);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
@@ -2169,6 +2170,7 @@ test('GET /api/vouchers/active mengembalikan voucher aktif publik tanpa autentik
   const pool = {
     async query(sql) {
       assert.match(sql, /FROM\s+vouchers/i);
+      assert.match(sql, /is_public\s*=\s*true/i);
       return {
         rows: [
           { code: 'OPENML', label: '', kind: 'fixed', value: 1500, min_order: 25000, max_discount: null, quota: 50, used: 3, per_user: 1, new_buyers_only: true, target_category: 'Games', target_game: 'MOBILE LEGENDS', ends_at: '2026-12-31T00:00:00Z' },
@@ -2187,6 +2189,31 @@ test('GET /api/vouchers/active mengembalikan voucher aktif publik tanpa autentik
     assert.equal(body.vouchers[0].remaining, 47);
     assert.equal(body.vouchers[0].targetCategory, 'Games');
     assert.equal(body.vouchers[0].targetGame, 'MOBILE LEGENDS');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('PATCH /api/admin/vouchers/:code dapat mengubah visibilitas isPublic tanpa mengirim active', async () => {
+  let updatedParams = null;
+  const pool = {
+    async query(sql, params) {
+      if (sql.includes('FROM admin_users')) return { rows: [{ user_id: ownerId }] };
+      if (sql.startsWith('UPDATE vouchers SET active = COALESCE')) {
+        updatedParams = params;
+        return { rows: [{ code: 'RAHASIA10' }] };
+      }
+      if (sql.startsWith('SELECT code, label, kind')) return { rows: [] };
+      throw Error('unexpected SQL: ' + sql);
+    },
+  };
+  const server = createServer(createHandler({ pool, env, fetchImpl: withAuth(async () => { throw Error('net touched'); }) })).listen(portAman(), '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/vouchers/RAHASIA10`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ isPublic: false }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(updatedParams, ['RAHASIA10', null, false]);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 

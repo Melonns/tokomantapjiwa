@@ -700,7 +700,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       if (req.method === 'GET' && path === '/api/vouchers/active') {
         const { rows } = await pool.query(`SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, target_category, target_game, ends_at
           FROM vouchers
-          WHERE active = true AND (ends_at IS NULL OR ends_at > now()) AND (quota IS NULL OR used < quota)
+          WHERE active = true AND is_public = true AND (ends_at IS NULL OR ends_at > now()) AND (quota IS NULL OR used < quota)
           ORDER BY created_at DESC, code ASC
           LIMIT 5`);
         return send(res, 200, {
@@ -843,8 +843,8 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
       if (path === '/api/admin/vouchers' || path.startsWith('/api/admin/vouchers/')) {
         await authenticatedAdmin(req, pool, fetchImpl, env);
         const list = async () => {
-          const { rows } = await pool.query('SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, target_category, target_game, active, ends_at FROM vouchers ORDER BY created_at DESC, code ASC');
-          return rows.map(row => ({ code: row.code, label: row.label, kind: row.kind, value: row.value, minOrder: row.min_order, maxDiscount: row.max_discount, quota: row.quota, used: row.used, perUser: row.per_user, newBuyersOnly: row.new_buyers_only, targetCategory: row.target_category ?? null, targetGame: row.target_game ?? null, active: row.active, endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null }));
+          const { rows } = await pool.query('SELECT code, label, kind, value, min_order, max_discount, quota, used, per_user, new_buyers_only, target_category, target_game, is_public, active, ends_at FROM vouchers ORDER BY created_at DESC, code ASC');
+          return rows.map(row => ({ code: row.code, label: row.label, kind: row.kind, value: row.value, minOrder: row.min_order, maxDiscount: row.max_discount, quota: row.quota, used: row.used, perUser: row.per_user, newBuyersOnly: row.new_buyers_only, targetCategory: row.target_category ?? null, targetGame: row.target_game ?? null, isPublic: row.is_public === true, active: row.active, endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null }));
         };
         if (req.method === 'GET' && path === '/api/admin/vouchers') return send(res, 200, { vouchers: await list() });
         if (req.method === 'POST' && path === '/api/admin/vouchers') {
@@ -860,6 +860,7 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           const days = Number(body?.days ?? 30);
           const targetGame = String(body?.targetGame || '').trim().toUpperCase() || null;
           const targetCategory = targetGame ? null : (String(body?.targetCategory || '').trim() || null);
+          const isPublic = body?.isPublic === true;
           const cap = kind === 'percent' ? 90 : 1000000;
           if (!/^[A-Z0-9_-]{3,24}$/.test(code)) throw error(400, 'Kode voucher 3-24 karakter, hanya huruf, angka, tanda hubung, dan garis bawah.');
           if (!Number.isSafeInteger(value) || value < 1 || value > cap) throw error(400, kind === 'percent' ? 'Persentase potongan harus 1-90.' : 'Nominal potongan tidak valid.');
@@ -870,19 +871,21 @@ export function createHandler({ pool, fetchImpl = fetch, env = process.env, chec
           if (!Number.isSafeInteger(days) || days < 1 || days > 365) throw error(400, 'Masa berlaku harus 1-365 hari.');
           if (targetCategory && targetCategory.length > 60) throw error(400, 'Kategori target tidak valid.');
           if (targetGame && targetGame.length > 80) throw error(400, 'Game target tidak valid.');
-          const { rows } = await pool.query(`INSERT INTO vouchers (code, label, kind, value, min_order, max_discount, quota, per_user, new_buyers_only, target_category, target_game, active, ends_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true, now() + ($12 || ' days')::interval)
+          const { rows } = await pool.query(`INSERT INTO vouchers (code, label, kind, value, min_order, max_discount, quota, per_user, new_buyers_only, target_category, target_game, is_public, active, ends_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true, now() + ($13 || ' days')::interval)
             ON CONFLICT (code) DO UPDATE SET label = EXCLUDED.label, kind = EXCLUDED.kind, value = EXCLUDED.value, min_order = EXCLUDED.min_order,
               max_discount = EXCLUDED.max_discount, quota = EXCLUDED.quota, per_user = EXCLUDED.per_user, new_buyers_only = EXCLUDED.new_buyers_only,
-              target_category = EXCLUDED.target_category, target_game = EXCLUDED.target_game, active = true, ends_at = EXCLUDED.ends_at RETURNING code`, [code, String(body?.label || '').slice(0, 80), kind, value, minOrder, maxDiscount, quota, perUser, body?.newBuyersOnly === true, targetCategory, targetGame, String(days)]);
+              target_category = EXCLUDED.target_category, target_game = EXCLUDED.target_game, is_public = EXCLUDED.is_public, active = true, ends_at = EXCLUDED.ends_at RETURNING code`, [code, String(body?.label || '').slice(0, 80), kind, value, minOrder, maxDiscount, quota, perUser, body?.newBuyersOnly === true, targetCategory, targetGame, isPublic, String(days)]);
           return send(res, 201, { code: rows[0].code, vouchers: await list() });
         }
         if (req.method === 'PATCH' && path.startsWith('/api/admin/vouchers/')) {
           const code = decodeURIComponent(path.slice('/api/admin/vouchers/'.length)).toUpperCase();
           let body;
           try { body = await readJson(req); } catch (err) { throw err.status ? err : error(400, err.message); }
-          if (typeof body?.active !== 'boolean') throw error(400, 'Status voucher tidak valid.');
-          const { rows } = await pool.query('UPDATE vouchers SET active = $2 WHERE code = $1 RETURNING code', [code, body.active]);
+          const hasActive = typeof body?.active === 'boolean';
+          const hasPublic = typeof body?.isPublic === 'boolean';
+          if (!hasActive && !hasPublic) throw error(400, 'Status voucher tidak valid.');
+          const { rows } = await pool.query('UPDATE vouchers SET active = COALESCE($2, active), is_public = COALESCE($3, is_public) WHERE code = $1 RETURNING code', [code, hasActive ? body.active : null, hasPublic ? body.isPublic : null]);
           if (!rows[0]) throw error(404, 'Voucher tidak ditemukan.');
           return send(res, 200, { code: rows[0].code, vouchers: await list() });
         }
