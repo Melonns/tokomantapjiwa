@@ -80,7 +80,7 @@ const PAYMENT_METHODS = {
   shopeepay: (id, storeUrl) => ({ payment_type: 'shopeepay', shopeepay: { callback_url: `${storeUrl.replace(/\/$/, '')}/struk/${id}` } }),
 };
 const SNAP_PAYMENTS = {
-  qris: ['gopay', 'other_qris'],
+  qris: ['other_qris'],
   bca_va: ['bca_va'],
   bni_va: ['bni_va'],
   bri_va: ['bri_va'],

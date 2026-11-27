@@ -2415,7 +2415,7 @@ test('MIDTRANS_USE_SNAP=true membuat transaksi Snap dan mengembalikan redirectUr
     assert.equal(response.status, 201);
     const body = await response.json();
     assert.equal(snapUrl, 'https://app.sandbox.midtrans.com/snap/v1/transactions');
-    assert.deepEqual(snapBody.enabled_payments, ['gopay', 'other_qris']);
+    assert.deepEqual(snapBody.enabled_payments, ['other_qris']);
     assert.equal(body.redirectUrl, 'https://app.sandbox.midtrans.com/snap/v4/redirection/snap-tok-1');
     assert.equal(savedRedirect, 'https://app.sandbox.midtrans.com/snap/v4/redirection/snap-tok-1');
   } finally { await new Promise(resolve => server.close(resolve)); }
